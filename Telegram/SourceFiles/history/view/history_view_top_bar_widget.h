@@ -82,12 +82,14 @@ public:
 	void searchEnableJumpToDate(bool enable);
 	void searchEnableChooseFromUser(bool enable, bool visible);
 	bool searchSetFocus();
+	[[nodiscard]] bool searchMode() const;
 	[[nodiscard]] bool searchHasFocus() const;
 	[[nodiscard]] rpl::producer<> searchCancelled() const;
 	[[nodiscard]] rpl::producer<> searchSubmitted() const;
 	[[nodiscard]] rpl::producer<QString> searchQuery() const;
 	[[nodiscard]] QString searchQueryCurrent() const;
 	void searchClear();
+	void searchSetText(const QString &query);
 
 	[[nodiscard]] rpl::producer<> forwardSelectionRequest() const {
 		return _forwardSelection.events();
@@ -112,6 +114,11 @@ public:
 	}
 	[[nodiscard]] rpl::producer<> searchRequest() const;
 
+	void setGeometryWithNarrowRatio(
+		QRect geometry,
+		int narrowWidth,
+		float64 narrowRatio);
+
 protected:
 	void paintEvent(QPaintEvent *e) override;
 	void mousePressEvent(QMouseEvent *e) override;
@@ -129,6 +136,7 @@ private:
 	void updateControlsGeometry();
 	void slideAnimationCallback();
 	void updateInfoToggleActive();
+	void setupDragOnBackButton();
 
 	void call();
 	void groupCall();
@@ -226,12 +234,14 @@ private:
 	object_ptr<TWidget> _membersShowArea = { nullptr };
 	rpl::event_stream<bool> _membersShowAreaActive;
 
+	float64 _narrowRatio = 0.;
+	int _narrowWidth = 0;
+
 	Ui::Text::String _titlePeerText;
 	bool _titlePeerTextOnline = false;
 	int _leftTaken = 0;
 	int _rightTaken = 0;
 	bool _animatingMode = false;
-	bool _narrowMode = false;
 	std::unique_ptr<Ui::InfiniteRadialAnimation> _connecting;
 
 	SendActionPainter *_sendAction = nullptr;
@@ -244,6 +254,8 @@ private:
 	rpl::event_stream<> _deleteSelection;
 	rpl::event_stream<> _clearSelection;
 	rpl::event_stream<> _cancelChooseForReport;
+
+	rpl::lifetime _backLifetime;
 
 };
 

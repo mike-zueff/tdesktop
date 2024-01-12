@@ -36,6 +36,44 @@ struct Tag {
 
 } // namespace Info::Downloads
 
+namespace Info::Stories {
+
+enum class Tab {
+	Saved,
+	Archive,
+};
+
+struct Tag {
+	explicit Tag(not_null<PeerData*> peer, Tab tab = {})
+	: peer(peer)
+	, tab(tab) {
+	}
+
+	not_null<PeerData*> peer;
+	Tab tab = {};
+};
+
+} // namespace Info::Stories
+
+namespace Info::Statistics {
+
+struct Tag {
+	explicit Tag(
+		not_null<PeerData*> peer,
+		FullMsgId contextId,
+		FullStoryId storyId)
+	: peer(peer)
+	, contextId(contextId)
+	, storyId(storyId) {
+	}
+
+	not_null<PeerData*> peer;
+	FullMsgId contextId;
+	FullStoryId storyId;
+};
+
+} // namespace Info::Statistics
+
 namespace Info {
 
 class Key {
@@ -44,12 +82,19 @@ public:
 	explicit Key(not_null<Data::ForumTopic*> topic);
 	Key(Settings::Tag settings);
 	Key(Downloads::Tag downloads);
+	Key(Stories::Tag stories);
+	Key(Statistics::Tag statistics);
 	Key(not_null<PollData*> poll, FullMsgId contextId);
 
 	PeerData *peer() const;
 	Data::ForumTopic *topic() const;
 	UserData *settingsSelf() const;
 	bool isDownloads() const;
+	PeerData *storiesPeer() const;
+	Stories::Tab storiesTab() const;
+	PeerData *statisticsPeer() const;
+	FullMsgId statisticsContextId() const;
+	FullStoryId statisticsStoryId() const;
 	PollData *poll() const;
 	FullMsgId pollContextId() const;
 
@@ -63,6 +108,8 @@ private:
 		not_null<Data::ForumTopic*>,
 		Settings::Tag,
 		Downloads::Tag,
+		Stories::Tag,
+		Statistics::Tag,
 		PollKey> _value;
 
 };
@@ -78,10 +125,15 @@ public:
 		Profile,
 		Media,
 		CommonGroups,
+		SimilarChannels,
+		SavedSublists,
 		Members,
 		Settings,
 		Downloads,
+		Stories,
 		PollResults,
+		Statistics,
+		Boosts,
 	};
 	using SettingsType = ::Settings::Type;
 	using MediaType = Storage::SharedMediaType;
@@ -123,23 +175,38 @@ class AbstractController : public Window::SessionNavigation {
 public:
 	AbstractController(not_null<Window::SessionController*> parent);
 
-	virtual Key key() const = 0;
-	virtual PeerData *migrated() const = 0;
-	virtual Section section() const = 0;
+	[[nodiscard]] virtual Key key() const = 0;
+	[[nodiscard]] virtual PeerData *migrated() const = 0;
+	[[nodiscard]] virtual Section section() const = 0;
 
-	PeerData *peer() const;
-	PeerId migratedPeerId() const;
-	Data::ForumTopic *topic() const {
+	[[nodiscard]] PeerData *peer() const;
+	[[nodiscard]] PeerId migratedPeerId() const;
+	[[nodiscard]] Data::ForumTopic *topic() const {
 		return key().topic();
 	}
-	UserData *settingsSelf() const {
+	[[nodiscard]] UserData *settingsSelf() const {
 		return key().settingsSelf();
 	}
-	bool isDownloads() const {
+	[[nodiscard]] bool isDownloads() const {
 		return key().isDownloads();
 	}
-	PollData *poll() const;
-	FullMsgId pollContextId() const {
+	[[nodiscard]] PeerData *storiesPeer() const {
+		return key().storiesPeer();
+	}
+	[[nodiscard]] Stories::Tab storiesTab() const {
+		return key().storiesTab();
+	}
+	[[nodiscard]] PeerData *statisticsPeer() const {
+		return key().statisticsPeer();
+	}
+	[[nodiscard]] FullMsgId statisticsContextId() const {
+		return key().statisticsContextId();
+	}
+	[[nodiscard]] FullStoryId statisticsStoryId() const {
+		return key().statisticsStoryId();
+	}
+	[[nodiscard]] PollData *poll() const;
+	[[nodiscard]] FullMsgId pollContextId() const {
 		return key().pollContextId();
 	}
 

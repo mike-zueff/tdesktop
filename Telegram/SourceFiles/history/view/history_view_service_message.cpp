@@ -7,11 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/history_view_service_message.h"
 
-#include "history/history.h"
-#include "history/history_service.h"
 #include "history/view/media/history_view_media.h"
-#include "history/history_item_components.h"
 #include "history/view/history_view_cursor_state.h"
+#include "history/history.h"
+#include "history/history_item.h"
+#include "history/history_item_components.h"
+#include "history/history_item_helpers.h"
 #include "data/data_abstract_structure.h"
 #include "data/data_chat.h"
 #include "data/data_channel.h"
@@ -19,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_style.h"
 #include "ui/text/text_options.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "ui/ui_utility.h"
 #include "mainwidget.h"
 #include "menu/menu_ttl_validator.h"
@@ -356,15 +358,15 @@ void ServiceMessagePainter::PaintComplexBubble(
 	}
 }
 
-QVector<int> ServiceMessagePainter::CountLineWidths(
+std::vector<int> ServiceMessagePainter::CountLineWidths(
 		const Ui::Text::String &text,
 		const QRect &textRect) {
 	const auto linesCount = qMax(
 		textRect.height() / st::msgServiceFont->height,
 		1);
-	auto result = QVector<int>();
-	result.reserve(linesCount);
-	text.countLineWidths(textRect.width(), &result);
+	auto result = text.countLineWidths(textRect.width(), {
+		.reserve = linesCount,
+	});
 
 	const auto minDelta = 2 * (Ui::HistoryServiceMsgRadius()
 		+ Ui::HistoryServiceMsgInvertedRadius()
@@ -400,17 +402,20 @@ QVector<int> ServiceMessagePainter::CountLineWidths(
 
 Service::Service(
 	not_null<ElementDelegate*> delegate,
-	not_null<HistoryService*> data,
+	not_null<HistoryItem*> data,
 	Element *replacing)
 : Element(delegate, data, replacing, Flag::ServiceMessage) {
 }
 
-not_null<HistoryService*> Service::message() const {
-	return static_cast<HistoryService*>(data().get());
-}
-
 QRect Service::innerGeometry() const {
 	return countGeometry();
+}
+
+bool Service::consumeHorizontalScroll(QPoint position, int delta) {
+	if (const auto media = this->media()) {
+		return media->consumeHorizontalScroll(position, delta);
+	}
+	return false;
 }
 
 QRect Service::countGeometry() const {
@@ -430,8 +435,13 @@ QSize Service::performCountCurrentSize(int newWidth) {
 	if (isHidden()) {
 		return { newWidth, newHeight };
 	}
-
-	if (!text().isEmpty()) {
+	const auto media = this->media();
+	const auto mediaDisplayed = media && media->isDisplayed();
+	if (mediaDisplayed && media->hideServiceText()) {
+		newHeight += st::msgServiceMargin.top()
+			+ media->resizeGetHeight(newWidth)
+			+ st::msgServiceMargin.bottom();
+	} else if (!text().isEmpty()) {
 		auto contentWidth = newWidth;
 		if (delegate()->elementIsChatWide()) {
 			accumulate_min(contentWidth, st::msgMaxWidth + 2 * st::msgPhotoSkip + 2 * st::msgMargin.left());
@@ -446,8 +456,10 @@ QSize Service::performCountCurrentSize(int newWidth) {
 			? minHeight()
 			: textHeightFor(nwidth);
 		newHeight += st::msgServicePadding.top() + st::msgServicePadding.bottom() + st::msgServiceMargin.top() + st::msgServiceMargin.bottom();
-		if (const auto media = this->media()) {
-			newHeight += st::msgServiceMargin.top() + media->resizeGetHeight(media->maxWidth());
+		if (mediaDisplayed) {
+			const auto mediaWidth = std::min(media->maxWidth(), nwidth);
+			newHeight += st::msgServiceMargin.top()
+				+ media->resizeGetHeight(mediaWidth);
 		}
 	}
 
@@ -457,11 +469,14 @@ QSize Service::performCountCurrentSize(int newWidth) {
 QSize Service::performCountOptimalSize() {
 	validateText();
 
-	auto maxWidth = text().maxWidth() + st::msgServicePadding.left() + st::msgServicePadding.right();
-	auto minHeight = text().minHeight();
 	if (const auto media = this->media()) {
 		media->initDimensions();
+		if (media->hideServiceText()) {
+			return { media->maxWidth(), media->minHeight() };
+		}
 	}
+	auto maxWidth = text().maxWidth() + st::msgServicePadding.left() + st::msgServicePadding.right();
+	auto minHeight = text().minHeight();
 	return { maxWidth, minHeight };
 }
 
@@ -522,40 +537,44 @@ void Service::draw(Painter &p, const PaintContext &context) const {
 	p.setTextPalette(st->serviceTextPalette());
 
 	const auto media = this->media();
-	if (media) {
-		height -= margin.top() + media->height();
+	const auto mediaDisplayed = media && media->isDisplayed();
+	const auto onlyMedia = (mediaDisplayed && media->hideServiceText());
+
+	if (!onlyMedia) {
+		if (mediaDisplayed) {
+			height -= margin.top() + media->height();
+		}
+		const auto trect = QRect(g.left(), margin.top(), g.width(), height)
+			- st::msgServicePadding;
+
+		ServiceMessagePainter::PaintComplexBubble(
+			p,
+			context.st,
+			g.left(),
+			g.width(),
+			text(),
+			trect);
+
+		p.setBrush(Qt::NoBrush);
+		p.setPen(st->msgServiceFg());
+		p.setFont(st::msgServiceFont);
+		prepareCustomEmojiPaint(p, context, text());
+		text().draw(p, {
+			.position = trect.topLeft(),
+			.availableWidth = trect.width(),
+			.align = style::al_top,
+			.palette = &st->serviceTextPalette(),
+			.spoiler = Ui::Text::DefaultSpoilerCache(),
+			.now = context.now,
+			.pausedEmoji = context.paused || On(PowerSaving::kEmojiChat),
+			.pausedSpoiler = context.paused || On(PowerSaving::kChatSpoiler),
+			.selection = context.selection,
+			.fullWidthSelection = false,
+		});
 	}
-
-	const auto trect = QRect(g.left(), margin.top(), g.width(), height)
-		- st::msgServicePadding;
-
-	ServiceMessagePainter::PaintComplexBubble(
-		p,
-		context.st,
-		g.left(),
-		g.width(),
-		text(),
-		trect);
-
-	p.setBrush(Qt::NoBrush);
-	p.setPen(st->msgServiceFg());
-	p.setFont(st::msgServiceFont);
-	prepareCustomEmojiPaint(p, context, text());
-	text().draw(p, {
-		.position = trect.topLeft(),
-		.availableWidth = trect.width(),
-		.align = style::al_top,
-		.palette = &st->serviceTextPalette(),
-		.spoiler = Ui::Text::DefaultSpoilerCache(),
-		.now = context.now,
-		.paused = context.paused,
-		.selection = context.selection,
-		.fullWidthSelection = false,
-	});
-
-	if (media) {
-		const auto left = margin.left() + (g.width() - media->maxWidth()) / 2;
-		const auto top = margin.top() + height + margin.top();
+	if (mediaDisplayed) {
+		const auto left = margin.left() + (g.width() - media->width()) / 2;
+		const auto top = margin.top() + (onlyMedia ? 0 : (height + margin.top()));
 		p.translate(left, top);
 		media->draw(p, context.translated(-left, -top).withSelection({}));
 		p.translate(-left, -top);
@@ -568,6 +587,7 @@ void Service::draw(Painter &p, const PaintContext &context) const {
 
 PointState Service::pointState(QPoint point) const {
 	const auto media = this->media();
+	const auto mediaDisplayed = media && media->isDisplayed();
 
 	auto g = countGeometry();
 	if (g.width() < 1 || isHidden()) {
@@ -580,7 +600,7 @@ PointState Service::pointState(QPoint point) const {
 	if (const auto bar = Get<UnreadBar>()) {
 		g.setTop(g.top() + bar->height());
 	}
-	if (media) {
+	if (mediaDisplayed) {
 		const auto centerPadding = (g.width() - media->width()) / 2;
 		const auto r = g - QMargins(centerPadding, 0, centerPadding, 0);
 		if (!r.contains(point)) {
@@ -592,8 +612,10 @@ PointState Service::pointState(QPoint point) const {
 }
 
 TextState Service::textState(QPoint point, StateRequest request) const {
-	const auto item = message();
+	const auto item = data();
 	const auto media = this->media();
+	const auto mediaDisplayed = media && media->isDisplayed();
+	const auto onlyMedia = (mediaDisplayed && media->hideServiceText());
 
 	auto result = TextState(item);
 
@@ -612,9 +634,17 @@ TextState Service::textState(QPoint point, StateRequest request) const {
 		g.setHeight(g.height() - unreadbarh);
 	}
 
-	if (media) {
+	if (onlyMedia) {
+		return media->textState(point - QPoint(st::msgServiceMargin.left() + (g.width() - media->width()) / 2, st::msgServiceMargin.top()), request);
+	} else if (mediaDisplayed) {
 		g.setHeight(g.height() - (st::msgServiceMargin.top() + media->height()));
 	}
+	const auto mediaLeft = st::msgServiceMargin.left()
+		+ (media ? ((g.width() - media->width()) / 2) : 0);
+	const auto mediaTop = st::msgServiceMargin.top()
+		+ g.height()
+		+ st::msgServiceMargin.top();
+	const auto mediaPoint = point - QPoint(mediaLeft, mediaTop);
 	auto trect = g.marginsAdded(-st::msgServicePadding);
 	if (trect.contains(point)) {
 		auto textRequest = request.forText();
@@ -641,10 +671,16 @@ TextState Service::textState(QPoint point, StateRequest request) const {
 				if (TTLMenu::TTLValidator(nullptr, history()->peer).can()) {
 					result.link = ttl->link;
 				}
+			} else if (const auto same = item->Get<HistoryServiceSameBackground>()) {
+				result.link = same->lnk;
+			} else if (const auto results = item->Get<HistoryServiceGiveawayResults>()) {
+				result.link = results->lnk;
+			} else if (media && data()->showSimilarChannels()) {
+				result = media->textState(mediaPoint, request);
 			}
 		}
-	} else if (media) {
-		result = media->textState(point - QPoint(st::msgServiceMargin.left() + (g.width() - media->maxWidth()) / 2, st::msgServiceMargin.top() + g.height() + st::msgServiceMargin.top()), request);
+	} else if (mediaDisplayed && point.y() >= mediaTop) {
+		result = media->textState(mediaPoint, request);
 	}
 	return result;
 }
@@ -654,6 +690,15 @@ void Service::updatePressed(QPoint point) {
 
 TextForMimeData Service::selectedText(TextSelection selection) const {
 	return text().toTextForMimeData(selection);
+}
+
+SelectedQuote Service::selectedQuote(TextSelection selection) const {
+	return {};
+}
+
+TextSelection Service::selectionFromQuote(
+		const SelectedQuote &quote) const {
+	return {};
 }
 
 TextSelection Service::adjustSelection(
@@ -678,7 +723,11 @@ EmptyPainter::EmptyPainter(
 : _history(topic->history())
 , _topic(topic)
 , _icon(
-	std::make_unique<Info::Profile::TopicIconView>(topic, paused, update))
+	std::make_unique<Info::Profile::TopicIconView>(
+		topic,
+		paused,
+		update,
+		st::msgServiceFg))
 , _header(st::msgMinWidth)
 , _text(st::msgMinWidth) {
 	fillAboutTopic();

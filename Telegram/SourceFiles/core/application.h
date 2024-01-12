@@ -13,6 +13,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 class History;
 
+namespace base {
+class BatterySaving;
+} // namespace base
+
 namespace Platform {
 class Integration;
 } // namespace Platform
@@ -71,6 +75,7 @@ namespace Player {
 class FloatController;
 class FloatDelegate;
 } // namespace Player
+class SystemMediaControlsManager;
 } // namespace Media
 
 namespace Lang {
@@ -98,7 +103,6 @@ class Instance;
 
 namespace Core {
 
-class Launcher;
 struct LocalUrlHandler;
 class Settings;
 class Tray;
@@ -121,20 +125,16 @@ public:
 		MTP::ProxyData now;
 	};
 
-	Application(not_null<Launcher*> launcher);
+	Application();
 	Application(const Application &other) = delete;
 	Application &operator=(const Application &other) = delete;
 	~Application();
 
-	[[nodiscard]] Launcher &launcher() const {
-		return *_launcher;
-	}
+	void run();
+
 	[[nodiscard]] Platform::Integration &platformIntegration() const {
 		return *_platformIntegration;
 	}
-
-	void run();
-
 	[[nodiscard]] Ui::Animations::Manager &animationManager() const {
 		return *_animationsManager;
 	}
@@ -149,35 +149,58 @@ public:
 	[[nodiscard]] Tray &tray() const {
 		return *_tray;
 	}
+	[[nodiscard]] base::BatterySaving &batterySaving() const {
+		return *_batterySaving;
+	}
 
 	// Windows interface.
 	bool hasActiveWindow(not_null<Main::Session*> session) const;
-	[[nodiscard]] Window::Controller *primaryWindow() const;
+	[[nodiscard]] bool savingPositionFor(
+		not_null<Window::Controller*> window) const;
 	[[nodiscard]] Window::Controller *activeWindow() const;
+	[[nodiscard]] Window::Controller *activePrimaryWindow() const;
+	[[nodiscard]] Window::Controller *separateWindowForAccount(
+		not_null<Main::Account*> account) const;
 	[[nodiscard]] Window::Controller *separateWindowForPeer(
 		not_null<PeerData*> peer) const;
 	Window::Controller *ensureSeparateWindowForPeer(
 		not_null<PeerData*> peer,
 		MsgId showAtMsgId);
+	Window::Controller *ensureSeparateWindowForAccount(
+		not_null<Main::Account*> account);
+	[[nodiscard]] Window::Controller *windowFor( // Doesn't auto-switch.
+		not_null<PeerData*> peer) const;
+	[[nodiscard]] Window::Controller *windowFor( // Doesn't auto-switch.
+		not_null<Main::Account*> account) const;
+	[[nodiscard]] bool closeNonLastAsync(
+		not_null<Window::Controller*> window);
 	void closeWindow(not_null<Window::Controller*> window);
 	void windowActivated(not_null<Window::Controller*> window);
 	bool closeActiveWindow();
 	bool minimizeActiveWindow();
+	bool toggleActiveWindowFullScreen();
 	[[nodiscard]] QWidget *getFileDialogParent();
 	void notifyFileDialogShown(bool shown);
 	void checkSystemDarkMode();
 	[[nodiscard]] bool isActiveForTrayMenu() const;
 	void closeChatFromWindows(not_null<PeerData*> peer);
+	void checkWindowAccount(not_null<Window::Controller*> window);
+	void activate();
 
 	// Media view interface.
 	bool hideMediaView();
 
 	[[nodiscard]] QPoint getPointForCallPanelCenter() const;
+	[[nodiscard]] bool isSharingScreen() const;
 
 	void startSettingsAndBackground();
 	[[nodiscard]] Settings &settings();
+	[[nodiscard]] const Settings &settings() const;
 	void saveSettingsDelayed(crl::time delay = kDefaultSaveDelay);
 	void saveSettings();
+
+	[[nodiscard]] bool canReadDefaultDownloadPath(bool always = false) const;
+	[[nodiscard]] bool canSaveFileWithoutAskingForPath() const;
 
 	// Fallback config and proxy.
 	[[nodiscard]] MTP::Config &fallbackProductionConfig() const;
@@ -235,17 +258,14 @@ public:
 
 	// Internal links.
 	void checkStartUrl();
+	void checkSendPaths();
+	void checkFileOpen();
 	bool openLocalUrl(const QString &url, QVariant context);
 	bool openInternalUrl(const QString &url, QVariant context);
 	[[nodiscard]] QString changelogLink() const;
 
 	// Float player.
-	void setDefaultFloatPlayerDelegate(
-		not_null<Media::Player::FloatDelegate*> delegate);
-	void replaceFloatPlayerDelegate(
-		not_null<Media::Player::FloatDelegate*> replacement);
-	void restoreFloatPlayerDelegate(
-		not_null<Media::Player::FloatDelegate*> replacement);
+	void floatPlayerToggleGifsPaused(bool paused);
 	[[nodiscard]] rpl::producer<FullMsgId> floatPlayerClosed() const;
 
 	// Calls.
@@ -283,6 +303,7 @@ public:
 	// Sandbox interface.
 	void postponeCall(FnMut<void()> &&callable);
 	void refreshGlobalProxy();
+	void refreshApplicationIcon();
 
 	void quitPreventFinished();
 
@@ -290,13 +311,12 @@ public:
 	void handleAppDeactivated();
 	[[nodiscard]] rpl::producer<bool> appDeactivatedValue() const;
 
+	void materializeLocalDrafts();
+	[[nodiscard]] rpl::producer<> materializeLocalDraftsRequests() const;
+
 	void switchDebugMode();
-	void switchFreeType();
-	void writeInstallBetaVersionsSetting();
 
 	void preventOrInvoke(Fn<void()> &&callback);
-
-	void call_handleObservables();
 
 	// Global runtime variables.
 	void setScreenIsLocked(bool locked);
@@ -321,11 +341,17 @@ private:
 	void startDomain();
 	void startEmojiImageLoader();
 	void startSystemDarkModeViewer();
+	void startMediaView();
 	void startTray();
 
+	void createTray();
+	void updateWindowTitles();
+	void setLastActiveWindow(Window::Controller *window);
+	void showAccount(not_null<Main::Account*> account);
 	void enumerateWindows(
 		Fn<void(not_null<Window::Controller*>)> callback) const;
-	void processSecondaryWindow(not_null<Window::Controller*> window);
+	void processCreatedWindow(not_null<Window::Controller*> window);
+	void refreshApplicationIcon(Main::Session *session);
 
 	friend void QuitAttempt();
 	void quitDelayed();
@@ -350,13 +376,13 @@ private:
 	};
 	InstanceSetter _setter = { this };
 
-	const not_null<Launcher*> _launcher;
 	rpl::event_stream<ProxyChange> _proxyChanges;
 
 	// Some fields are just moved from the declaration.
 	struct Private;
 	const std::unique_ptr<Private> _private;
 	const std::unique_ptr<Platform::Integration> _platformIntegration;
+	const std::unique_ptr<base::BatterySaving> _batterySaving;
 
 	const std::unique_ptr<Storage::Databases> _databases;
 	const std::unique_ptr<Ui::Animations::Manager> _animationsManager;
@@ -369,15 +395,23 @@ private:
 	// Mutable because is created in run() after OpenSSL is inited.
 	std::unique_ptr<Window::Notifications::System> _notifications;
 
+	using MediaControlsManager = Media::SystemMediaControlsManager;
+	std::unique_ptr<MediaControlsManager> _mediaControlsManager;
 	const std::unique_ptr<Data::DownloadManager> _downloadManager;
 	const std::unique_ptr<Main::Domain> _domain;
 	const std::unique_ptr<Export::Manager> _exportManager;
 	const std::unique_ptr<Calls::Instance> _calls;
-	std::unique_ptr<Window::Controller> _primaryWindow;
+	base::flat_map<
+		Main::Account*,
+		std::unique_ptr<Window::Controller>> _primaryWindows;
+	base::flat_set<not_null<Window::Controller*>> _closingAsyncWindows;
 	base::flat_map<
 		not_null<History*>,
 		std::unique_ptr<Window::Controller>> _secondaryWindows;
+	std::vector<not_null<Window::Controller*>> _windowStack;
 	Window::Controller *_lastActiveWindow = nullptr;
+	Window::Controller *_lastActivePrimaryWindow = nullptr;
+	Window::Controller *_windowInSettings = nullptr;
 
 	std::unique_ptr<Media::View::OverlayWidget> _mediaView;
 	const std::unique_ptr<Lang::Instance> _langpack;
@@ -389,14 +423,17 @@ private:
 	const std::unique_ptr<Tray> _tray;
 
 	std::unique_ptr<Media::Player::FloatController> _floatPlayers;
-	Media::Player::FloatDelegate *_defaultFloatPlayerDelegate = nullptr;
-	Media::Player::FloatDelegate *_replacementFloatPlayerDelegate = nullptr;
+	rpl::lifetime _floatPlayerDelegateLifetime;
+	bool _floatPlayerGifsPaused = false;
 
 	rpl::variable<bool> _passcodeLock;
 	bool _screenIsLocked = false;
 
 	crl::time _shouldLockAt = 0;
 	base::Timer _autoLockTimer;
+
+	QStringList _filesToOpen;
+	base::Timer _fileOpenTimer;
 
 	std::optional<base::Timer> _saveSettingsTimer;
 
@@ -407,6 +444,8 @@ private:
 	base::flat_map<not_null<QWidget*>, LeaveFilter> _leaveFilters;
 
 	rpl::event_stream<Media::View::OpenRequest> _openInMediaViewRequests;
+
+	rpl::event_stream<> _materializeLocalDraftsRequests;
 
 	rpl::lifetime _lifetime;
 

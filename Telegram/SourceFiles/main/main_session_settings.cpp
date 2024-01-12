@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session_settings.h"
 
 #include "chat_helpers/tabbed_selector.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/chat/attach/attach_send_files_way.h"
 #include "window/section_widget.h"
 #include "support/support_common.h"
@@ -83,7 +83,7 @@ QByteArray SessionSettings::serialize() const {
 			stream << quint64(period);
 		}
 		stream
-			<< qint32(_skipPremiumStickersSet ? 1 : 0)
+			<< qint32(0) // old _skipPremiumStickersSet
 			<< qint32(_hiddenPinnedMessages.size());
 		for (const auto &[key, value] : _hiddenPinnedMessages) {
 			stream
@@ -143,7 +143,7 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 	qint32 appSuggestStickersByEmoji = app.suggestStickersByEmoji() ? 1 : 0;
 	qint32 appSpellcheckerEnabled = app.spellcheckerEnabled() ? 1 : 0;
 	std::vector<std::pair<DocumentId, crl::time>> mediaLastPlaybackPosition;
-	qint32 appVideoPlaybackSpeed = Core::Settings::SerializePlaybackSpeed(app.videoPlaybackSpeed());
+	qint32 appVideoPlaybackSpeed = app.videoPlaybackSpeedSerialized();
 	QByteArray appVideoPipGeometry = app.videoPipGeometry();
 	std::vector<int> appDictionariesEnabled;
 	qint32 appAutoDownloadDictionaries = app.autoDownloadDictionaries() ? 1 : 0;
@@ -152,7 +152,7 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 	qint32 supportAllSilent = _supportAllSilent ? 1 : 0;
 	qint32 photoEditorHintShowsCount = _photoEditorHintShowsCount;
 	std::vector<TimeId> mutePeriods;
-	qint32 skipPremiumStickersSet = _skipPremiumStickersSet ? 1 : 0;
+	qint32 legacySkipPremiumStickersSet = 0;
 
 	stream >> versionTag;
 	if (versionTag == kVersionTag) {
@@ -388,7 +388,7 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 		}
 	}
 	if (!stream.atEnd()) {
-		stream >> skipPremiumStickersSet;
+		stream >> legacySkipPremiumStickersSet;
 	}
 	if (!stream.atEnd()) {
 		auto count = qint32(0);
@@ -454,7 +454,6 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 	_supportAllSilent = (supportAllSilent == 1);
 	_photoEditorHintShowsCount = std::move(photoEditorHintShowsCount);
 	_mutePeriods = std::move(mutePeriods);
-	_skipPremiumStickersSet = (skipPremiumStickersSet == 1);
 
 	if (version < 2) {
 		app.setLastSeenWarningSeen(appLastSeenWarningSeen == 1);
@@ -480,7 +479,7 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 		app.setSuggestEmoji(appSuggestEmoji == 1);
 		app.setSuggestStickersByEmoji(appSuggestStickersByEmoji == 1);
 		app.setSpellcheckerEnabled(appSpellcheckerEnabled == 1);
-		app.setVideoPlaybackSpeed(Core::Settings::DeserializePlaybackSpeed(appVideoPlaybackSpeed));
+		app.setVideoPlaybackSpeedSerialized(appVideoPlaybackSpeed);
 		app.setVideoPipGeometry(appVideoPipGeometry);
 		app.setDictionariesEnabled(std::move(appDictionariesEnabled));
 		app.setAutoDownloadDictionaries(appAutoDownloadDictionaries == 1);

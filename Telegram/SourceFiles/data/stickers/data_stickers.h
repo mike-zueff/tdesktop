@@ -22,6 +22,10 @@ namespace Window {
 class SessionController;
 } // namespace Window
 
+namespace ChatHelpers {
+class Show;
+} // namespace ChatHelpers
+
 namespace Data {
 
 class Session;
@@ -48,7 +52,6 @@ public:
 	static constexpr auto RecentSetId = 0xFFFFFFFFFFFFFFFEULL;
 	static constexpr auto NoneSetId = 0xFFFFFFFFFFFFFFFDULL;
 	static constexpr auto FeaturedSetId = 0xFFFFFFFFFFFFFFFBULL;
-	static constexpr auto PremiumSetId = 0xFFFFFFFFFFFFFFF8ULL;
 
 	// For cloud-stored recent stickers.
 	static constexpr auto CloudRecentSetId = 0xFFFFFFFFFFFFFFFCULL;
@@ -201,7 +204,7 @@ public:
 	void removeFromRecentSet(not_null<DocumentData*> document);
 
 	void addSavedGif(
-		Window::SessionController *controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		not_null<DocumentData*> document);
 	void checkSavedGif(not_null<HistoryItem*> item);
 
@@ -211,7 +214,7 @@ public:
 	void undoInstallLocally(uint64 setId);
 	bool isFaved(not_null<const DocumentData*> document);
 	void setFaved(
-		Window::SessionController *controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		not_null<DocumentData*> document,
 		bool faved);
 
@@ -231,8 +234,9 @@ public:
 	void gifsReceived(const QVector<MTPDocument> &items, uint64 hash);
 
 	std::vector<not_null<DocumentData*>> getListByEmoji(
-		not_null<EmojiPtr> emoji,
-		uint64 seed);
+		std::vector<EmojiPtr> emoji,
+		uint64 seed,
+		bool forceAllResults = false);
 	std::optional<std::vector<not_null<EmojiPtr>>> getEmojiListFromSet(
 		not_null<DocumentData*> document);
 
@@ -260,21 +264,21 @@ private:
 	}
 	void checkFavedLimit(
 		StickersSet &set,
-		Window::SessionController *controller = nullptr);
+		std::shared_ptr<ChatHelpers::Show> show);
 	void setIsFaved(
-		Window::SessionController *controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		not_null<DocumentData*> document,
 		std::optional<std::vector<not_null<EmojiPtr>>> emojiList
 			= std::nullopt);
 	void setIsNotFaved(not_null<DocumentData*> document);
 	void pushFavedToFront(
 		StickersSet &set,
-		Window::SessionController *controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		not_null<DocumentData*> document,
 		const std::vector<not_null<EmojiPtr>> &emojiList);
 	void moveFavedToFront(StickersSet &set, int index);
 	void requestSetToPushFaved(
-		Window::SessionController *controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		not_null<DocumentData*> document);
 	void setPackAndEmoji(
 		StickersSet &set,

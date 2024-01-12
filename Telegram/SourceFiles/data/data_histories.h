@@ -25,6 +25,14 @@ namespace Data {
 
 class Session;
 class Folder;
+struct WebPageDraft;
+
+[[nodiscard]] MTPInputReplyTo ReplyToForMTP(
+	not_null<History*> history,
+	FullReplyTo replyTo);
+[[nodiscard]] MTPInputMedia WebPageForMTP(
+	const Data::WebPageDraft &draft,
+	bool required = false);
 
 class Histories final {
 public:
@@ -102,29 +110,30 @@ public:
 		MTPmessages_SendMultiMedia>;
 	int sendPreparedMessage(
 		not_null<History*> history,
-		MsgId replyTo,
-		MsgId topicRootId,
+		FullReplyTo replyTo,
 		uint64 randomId,
-		Fn<PreparedMessage(MsgId replyTo, MsgId topicRootId)> message,
+		Fn<PreparedMessage(not_null<History*>, FullReplyTo)> message,
 		Fn<void(const MTPUpdates&, const MTP::Response&)> done,
 		Fn<void(const MTP::Error&, const MTP::Response&)> fail);
 
 	struct ReplyToPlaceholder {
 	};
-	struct TopicRootPlaceholder {
-	};
 	template <typename RequestType, typename ...Args>
-	static Fn<Histories::PreparedMessage(MsgId, MsgId)> PrepareMessage(
-			const Args &...args) {
-		return [=](MsgId replyTo, MsgId topicRootId) -> RequestType {
-			return { ReplaceReplyIds(args, replyTo, topicRootId)... };
+	static auto PrepareMessage(const Args &...args)
+	-> Fn<Histories::PreparedMessage(not_null<History*>, FullReplyTo)> {
+		return [=](not_null<History*> history, FullReplyTo replyTo)
+		-> RequestType {
+			return { ReplaceReplyIds(history, args, replyTo)... };
 		};
 	}
 
 	void checkTopicCreated(FullMsgId rootId, MsgId realRoot);
-	[[nodiscard]] MsgId convertTopicReplyTo(
+	[[nodiscard]] FullMsgId convertTopicReplyToId(
 		not_null<History*> history,
-		MsgId replyTo) const;
+		FullMsgId replyToId) const;
+	[[nodiscard]] MsgId convertTopicReplyToId(
+		not_null<History*> history,
+		MsgId replyToId) const;
 
 private:
 	struct PostponedHistoryRequest {
@@ -150,8 +159,8 @@ private:
 	};
 	struct DelayedByTopicMessage {
 		uint64 randomId = 0;
-		MsgId replyTo = 0;
-		Fn<PreparedMessage(MsgId replyTo, MsgId topicRootId)> message;
+		FullMsgId replyTo;
+		Fn<PreparedMessage(not_null<History*>, FullReplyTo)> message;
 		Fn<void(const MTPUpdates&, const MTP::Response&)> done;
 		Fn<void(const MTP::Error&, const MTP::Response&)> fail;
 		int requestId = 0;
@@ -166,11 +175,12 @@ private:
 	};
 
 	template <typename Arg>
-	static auto ReplaceReplyIds(Arg arg, MsgId replyTo, MsgId topicRootId) {
+	static auto ReplaceReplyIds(
+			not_null<History*> history,
+			Arg arg,
+			FullReplyTo replyTo) {
 		if constexpr (std::is_same_v<Arg, ReplyToPlaceholder>) {
-			return MTP_int(replyTo);
-		} else if constexpr (std::is_same_v<Arg, TopicRootPlaceholder>) {
-			return MTP_int(topicRootId);
+			return ReplyToForMTP(history, replyTo);
 		} else {
 			return arg;
 		}

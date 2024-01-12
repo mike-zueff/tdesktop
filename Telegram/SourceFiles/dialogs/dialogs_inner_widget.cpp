@@ -7,9 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_inner_widget.h"
 
-#include "dialogs/dialogs_indexed_list.h"
+#include "dialogs/dialogs_three_state_icon.h"
 #include "dialogs/ui/dialogs_layout.h"
+#include "dialogs/ui/dialogs_stories_content.h"
+#include "dialogs/ui/dialogs_stories_list.h"
 #include "dialogs/ui/dialogs_video_userpic.h"
+#include "dialogs/dialogs_indexed_list.h"
 #include "dialogs/dialogs_widget.h"
 #include "dialogs/dialogs_search_from_controllers.h"
 #include "history/history.h"
@@ -18,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/popup_menu.h"
+#include "ui/widgets/scroll_area.h"
 #include "ui/text/text_utilities.h"
 #include "ui/text/text_options.h"
 #include "ui/painter.h"
@@ -36,6 +40,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_chat_filters.h"
 #include "data/data_cloud_file.h"
 #include "data/data_changes.h"
+#include "data/data_saved_messages.h"
+#include "data/data_stories.h"
 #include "data/stickers/data_stickers.h"
 #include "data/data_send_action.h"
 #include "base/unixtime.h"
@@ -60,6 +66,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_chat_filters.h"
 #include "base/qt/qt_common_adapters.h"
 #include "styles/style_dialogs.h"
+#include "styles/style_chat.h" // popupMenuExpandedSeparator
 #include "styles/style_chat_helpers.h"
 #include "styles/style_window.h"
 #include "styles/style_menu_icons.h"
@@ -69,13 +76,6 @@ namespace {
 
 constexpr auto kHashtagResultsLimit = 5;
 constexpr auto kStartReorderThreshold = 30;
-
-base::options::toggle TabbedPanelShowOnClick({
-	.id = kOptionCtrlClickChatNewWindow,
-	.name = "New chat window by Ctrl+Click",
-	.description = "Open chat in a new window by Ctrl+Click "
-	"(Cmd+Click on macOS).",
-});
 
 int FixedOnTopDialogsCount(not_null<Dialogs::IndexedList*> list) {
 	auto result = 0;
@@ -105,8 +105,6 @@ int PinnedDialogsCount(
 
 } // namespace
 
-const char kOptionCtrlClickChatNewWindow[] = "ctrl-click-chat-new-window";
-
 struct InnerWidget::CollapsedRow {
 	CollapsedRow(Data::Folder *folder) : folder(folder) {
 	}
@@ -131,21 +129,40 @@ struct InnerWidget::PeerSearchResult {
 	BasicRow row;
 };
 
+Key InnerWidget::FilterResult::key() const {
+	return row->key();
+}
+
+int InnerWidget::FilterResult::bottom() const {
+	return top + row->height();
+}
+
 InnerWidget::InnerWidget(
 	QWidget *parent,
-	not_null<Window::SessionController*> controller)
+	not_null<Window::SessionController*> controller,
+	rpl::producer<ChildListShown> childListShown)
 : RpWidget(parent)
 , _controller(controller)
+, _shownList(controller->session().data().chatsList()->indexed())
 , _st(&st::defaultDialogRow)
 , _pinnedShiftAnimation([=](crl::time now) {
 	return pinnedShiftAnimationCallback(now);
 })
+, _narrowWidth(st::defaultDialogRow.padding.left()
+	+ st::defaultDialogRow.photoSize
+	+ st::defaultDialogRow.padding.left())
 , _cancelSearchInChat(this, st::dialogsCancelSearchInPeer)
-, _cancelSearchFromUser(this, st::dialogsCancelSearchInPeer) {
+, _cancelSearchFromUser(this, st::dialogsCancelSearchInPeer)
+, _childListShown(std::move(childListShown)) {
 	setAttribute(Qt::WA_OpaquePaintEvent, true);
 
 	_cancelSearchInChat->hide();
 	_cancelSearchFromUser->hide();
+
+	style::PaletteChanged(
+	) | rpl::start_with_next([=] {
+		_topicJumpCache = nullptr;
+	}, lifetime());
 
 	session().downloaderTaskFinished(
 	) | rpl::start_with_next([=] {
@@ -203,7 +220,9 @@ InnerWidget::InnerWidget(
 		session().data().chatsListChanges(),
 		session().data().chatsListLoadedEvents()
 	) | rpl::filter([=](Data::Folder *folder) {
-		return !_openedForum && (folder == _openedFolder);
+		return !_savedSublists
+			&& !_openedForum
+			&& (folder == _openedFolder);
 	}) | rpl::start_with_next([=] {
 		refresh();
 	}, lifetime());
@@ -271,8 +290,15 @@ InnerWidget::InnerWidget(
 
 	session().changes().entryUpdates(
 		Data::EntryUpdate::Flag::Repaint
+		| Data::EntryUpdate::Flag::Height
 	) | rpl::start_with_next([=](const Data::EntryUpdate &update) {
 		const auto entry = update.entry;
+		if (update.flags & Data::EntryUpdate::Flag::Height) {
+			if (updateEntryHeight(entry)) {
+				refresh();
+			}
+			return;
+		}
 		const auto repaintId = (_state == WidgetState::Default)
 			? _filterId
 			: 0;
@@ -299,11 +325,46 @@ InnerWidget::InnerWidget(
 		switchToFilter(filterId);
 	}, lifetime());
 
+	session().data().stories().incrementPreloadingMainSources();
+
 	handleChatListEntryRefreshes();
 
 	refreshWithCollapsedRows(true);
 
 	setupShortcuts();
+}
+
+bool InnerWidget::updateEntryHeight(not_null<Entry*> entry) {
+	if (!_geometryInited) {
+		return false;
+	}
+	auto changing = false;
+	auto top = 0;
+	for (auto &result : _filterResults) {
+		if (changing) {
+			result.top = top;
+		}
+		if (result.row->key().entry() == entry) {
+			result.row->recountHeight(_narrowRatio);
+			changing = true;
+			top = result.top;
+		}
+		if (changing) {
+			top += result.row->height();
+		}
+	}
+	return _shownList->updateHeight(entry, _narrowRatio) || changing;
+}
+
+void InnerWidget::setNarrowRatio(float64 narrowRatio) {
+	if (_geometryInited && _narrowRatio == narrowRatio) {
+		return;
+	}
+	_geometryInited = true;
+	_narrowRatio = narrowRatio;
+	if (_shownList->updateHeights(_narrowRatio) || !height()) {
+		refresh();
+	}
 }
 
 Main::Session &InnerWidget::session() const {
@@ -318,9 +379,8 @@ void InnerWidget::refreshWithCollapsedRows(bool toTop) {
 	_collapsedSelected = -1;
 
 	_collapsedRows.clear();
-	const auto list = shownDialogs();
-	const auto archive = !list->empty()
-		? (*list->begin())->folder()
+	const auto archive = !_shownList->empty()
+		? _shownList->begin()->get()->folder()
 		: nullptr;
 	const auto inMainMenu = session().settings().archiveInMainMenu();
 	if (archive && (session().settings().archiveCollapsed() || inMainMenu)) {
@@ -328,15 +388,15 @@ void InnerWidget::refreshWithCollapsedRows(bool toTop) {
 			_selected = nullptr;
 		}
 		if (_pressed && _pressed->folder() == archive) {
-			setPressed(nullptr);
+			clearPressed();
 		}
-		_skipTopDialogs = 1;
+		_skipTopDialog = true;
 		if (!inMainMenu && !_filterId) {
 			_collapsedRows.push_back(
 				std::make_unique<CollapsedRow>(archive));
 		}
 	} else {
-		_skipTopDialogs = 0;
+		_skipTopDialog = false;
 	}
 
 	Assert(!needCollapsedRowsRefresh());
@@ -350,14 +410,25 @@ void InnerWidget::refreshWithCollapsedRows(bool toTop) {
 	}
 }
 
+int InnerWidget::skipTopHeight() const {
+	return (_skipTopDialog && !_shownList->empty())
+		? _shownList->begin()->get()->height()
+		: 0;
+}
+
+int InnerWidget::collapsedRowsOffset() const {
+	return 0;
+}
+
 int InnerWidget::dialogsOffset() const {
-	return _collapsedRows.size() * st::dialogsImportantBarHeight
-		- _skipTopDialogs * _st->height;
+	return collapsedRowsOffset()
+		+ (_collapsedRows.size() * st::dialogsImportantBarHeight)
+		- skipTopHeight();
 }
 
 int InnerWidget::fixedOnTopCount() const {
 	auto result = 0;
-	for (const auto &row : *shownDialogs()) {
+	for (const auto &row : *_shownList) {
 		if (row->entry()->fixedOnTopIndex()) {
 			++result;
 		} else {
@@ -367,17 +438,42 @@ int InnerWidget::fixedOnTopCount() const {
 	return result;
 }
 
+int InnerWidget::shownHeight(int till) const {
+	return !till
+		? 0
+		: (till > 0 && till < _shownList->size())
+		? (_shownList->begin() + till)->get()->top()
+		: _shownList->height();
+}
+
 int InnerWidget::pinnedOffset() const {
-	return dialogsOffset() + fixedOnTopCount() * _st->height;
+	return dialogsOffset() + shownHeight(fixedOnTopCount());
 }
 
 int InnerWidget::filteredOffset() const {
 	return _hashtagResults.size() * st::mentionHeight;
 }
 
+int InnerWidget::filteredIndex(int y) const {
+	return ranges::lower_bound(
+		_filterResults,
+		y,
+		ranges::less(),
+		&FilterResult::bottom
+	) - begin(_filterResults);
+}
+
+int InnerWidget::filteredHeight(int till) const {
+	return (!till || _filterResults.empty())
+		? 0
+		: (till > 0 && till < _filterResults.size())
+		? _filterResults[till].top
+		: (_filterResults.back().top + _filterResults.back().row->height());
+}
+
 int InnerWidget::peerSearchOffset() const {
 	return filteredOffset()
-		+ (_filterResults.size() * _st->height)
+		+ filteredHeight()
 		+ st::searchedBarHeight;
 }
 
@@ -406,21 +502,25 @@ int InnerWidget::searchInChatSkip() const {
 }
 
 void InnerWidget::changeOpenedFolder(Data::Folder *folder) {
+	Expects(!folder || !_savedSublists);
+
 	if (_openedFolder == folder) {
 		return;
 	}
 	stopReorderPinned();
 	clearSelection();
 	_openedFolder = folder;
+	refreshShownList();
 	refreshWithCollapsedRows(true);
 	if (_loadMoreCallback) {
 		_loadMoreCallback();
 	}
 }
 
-void InnerWidget::changeOpenedForum(ChannelData *forum) {
-	const auto now = _openedForum ? _openedForum->channel().get() : nullptr;
-	if (now == forum) {
+void InnerWidget::changeOpenedForum(Data::Forum *forum) {
+	Expects(!forum || !_savedSublists);
+
+	if (_openedForum == forum) {
 		return;
 	}
 	stopReorderPinned();
@@ -432,18 +532,19 @@ void InnerWidget::changeOpenedForum(ChannelData *forum) {
 	_filterId = forum
 		? 0
 		: _controller->activeChatsFilterCurrent();
-	if (const auto old = now ? now->forum() : nullptr) {
+	if (_openedForum) {
 		// If we close it inside forum destruction we should not schedule.
-		old->owner().forumIcons().scheduleUserpicsReset(old);
+		session().data().forumIcons().scheduleUserpicsReset(_openedForum);
 	}
-	_openedForum = forum ? forum->forum() : nullptr;
+	_openedForum = forum;
 	_st = forum ? &st::forumTopicRow : &st::defaultDialogRow;
+	refreshShownList();
 
 	_openedForumLifetime.destroy();
 	if (forum) {
 		rpl::merge(
-			forum->forum()->chatsListChanges(),
-			forum->forum()->chatsListLoadedEvents()
+			forum->chatsListChanges(),
+			forum->chatsListLoadedEvents()
 		) | rpl::start_with_next([=] {
 			refresh();
 		}, _openedForumLifetime);
@@ -459,48 +560,124 @@ void InnerWidget::changeOpenedForum(ChannelData *forum) {
 	}
 }
 
+void InnerWidget::showSavedSublists() {
+	Expects(!_geometryInited);
+	Expects(!_savedSublists);
+
+	_savedSublists = true;
+
+	stopReorderPinned();
+	clearSelection();
+
+	_filterId = 0;
+	_openedForum = nullptr;
+	_st = &st::defaultDialogRow;
+	refreshShownList();
+
+	_openedForumLifetime.destroy();
+
+	//session().data().savedMessages().chatsListChanges(
+	//) | rpl::start_with_next([=] {
+	//	refresh();
+	//}, lifetime());
+
+	refreshWithCollapsedRows(true);
+	if (_loadMoreCallback) {
+		_loadMoreCallback();
+	}
+}
+
 void InnerWidget::paintEvent(QPaintEvent *e) {
 	Painter p(this);
 
 	p.setInactive(
 		_controller->isGifPausedAtLeastFor(Window::GifPauseReason::Any));
-	const auto r = e->rect();
-	if (_controller->widget()->contentOverlapped(this, r)) {
+	if (!_savedSublists && _controller->contentOverlapped(this, e)) {
 		return;
 	}
 	const auto activeEntry = _controller->activeChatEntryCurrent();
 	const auto videoPaused = _controller->isGifPausedAtLeastFor(
 		Window::GifPauseReason::Any);
 	auto fullWidth = width();
+	const auto r = e->rect();
 	auto dialogsClip = r;
-	auto ms = crl::now();
+	const auto ms = crl::now();
+	const auto childListShown = _childListShown.current();
+	auto context = Ui::PaintContext{
+		.st = _st,
+		.topicJumpCache = _topicJumpCache.get(),
+		.folder = _openedFolder,
+		.forum = _openedForum,
+		.currentBg = currentBg(),
+		.filter = _filterId,
+		.now = ms,
+		.width = fullWidth,
+		.paused = videoPaused,
+		.narrow = (fullWidth < st::columnMinimalWidthLeft / 2),
+	};
+	const auto fillGuard = gsl::finally([&] {
+		// We translate painter down, but it'll be cropped below rect.
+		p.fillRect(rect(), context.currentBg);
+	});
+	const auto paintRow = [&](
+			not_null<Row*> row,
+			bool selected,
+			bool mayBeActive) {
+		const auto key = row->key();
+		const auto active = mayBeActive && isRowActive(row, activeEntry);
+		const auto forum = key.history() && key.history()->isForum();
+		if (forum && !_topicJumpCache) {
+			_topicJumpCache = std::make_unique<Ui::TopicJumpCache>();
+		}
+		const auto expanding = forum
+			&& (key.history()->peer->id == childListShown.peerId);
+
+		context.st = (forum ? &st::forumDialogRow : _st.get());
+		context.topicsExpanded = (expanding && !active)
+			? childListShown.shown
+			: 0.;
+		context.active = active;
+		context.selected = _menuRow.key
+			? (row->key() == _menuRow.key)
+			: selected;
+		context.topicJumpSelected = selected
+			&& _selectedTopicJump
+			&& (!_pressed || _pressedTopicJump);
+		Ui::RowPainter::Paint(p, row, validateVideoUserpic(row), context);
+	};
 	if (_state == WidgetState::Default) {
-		paintCollapsedRows(p, r);
+		const auto collapsedSkip = collapsedRowsOffset();
+		p.translate(0, collapsedSkip);
+		paintCollapsedRows(p, r.translated(0, -collapsedSkip));
 
-		const auto rows = shownDialogs();
-		const auto &list = rows->all();
-		const auto shownCount = int(rows->size()) - _skipTopDialogs;
-		const auto otherStart = std::max(shownCount, 0) * _st->height;
-		const auto active = activeEntry.key;
-		const auto selected = _menuRow.key
-			? _menuRow.key
-			: (isPressed()
-				? (_pressed
-					? _pressed->key()
-					: Key())
-				: (_selected
-					? _selected->key()
-					: Key()));
-		if (otherStart) {
+		const auto &list = _shownList->all();
+		const auto shownBottom = _shownList->height() - skipTopHeight();
+		const auto selected = isPressed()
+			? (_pressed ? _pressed->key() : Key())
+			: (_selected ? _selected->key() : Key());
+		if (shownBottom) {
 			const auto skip = dialogsOffset();
-			auto reorderingPinned = (_aboveIndex >= 0 && !_pinnedRows.empty());
-			if (reorderingPinned) {
-				dialogsClip = dialogsClip.marginsAdded(QMargins(0, _st->height, 0, _st->height));
-			}
-
 			const auto promoted = fixedOnTopCount();
+			const auto reorderingPinned = (_aboveIndex >= 0)
+				&& !_pinnedRows.empty();
+			const auto reorderingIndex = reorderingPinned
+				? (promoted + _aboveIndex)
+				: -1;
+			const auto reorderingRow = (reorderingIndex >= 0
+				&& reorderingIndex < list.size())
+				? (list.cbegin() + reorderingIndex)->get()
+				: nullptr;
+			if (reorderingRow) {
+				dialogsClip = dialogsClip.marginsAdded({
+					0,
+					reorderingRow->height(),
+					0,
+					reorderingRow->height(),
+				});
+			}
+			const auto skippedTop = skipTopHeight();
 			const auto paintDialog = [&](not_null<Row*> row) {
-				const auto pinned = row->pos() - promoted;
+				const auto pinned = row->index() - promoted;
 				const auto count = _pinnedRows.size();
 				const auto xadd = 0;
 				const auto yadd = base::in_range(pinned, 0, count)
@@ -509,69 +686,51 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 				if (xadd || yadd) {
 					p.translate(xadd, yadd);
 				}
-				const auto key = row->key();
-				const auto isActive = (key == active);
-				const auto isSelected = (key == selected);
-				Ui::RowPainter::Paint(p, row, validateVideoUserpic(row), {
-					.st = _st,
-					.folder = _openedFolder,
-					.forum = _openedForum,
-					.filter = _filterId,
-					.now = ms,
-					.width = fullWidth,
-					.active = isActive,
-					.selected = isSelected,
-					.paused = videoPaused,
-					.narrow = (fullWidth < st::columnMinimalWidthLeft),
-				});
+				paintRow(row, (row->key() == selected), true);
 				if (xadd || yadd) {
 					p.translate(-xadd, -yadd);
 				}
 			};
 
-			auto i = list.cfind(dialogsClip.top() - skip, _st->height);
-			while (i != list.cend() && (*i)->pos() < _skipTopDialogs) {
+			auto i = list.findByY(dialogsClip.top() - skip);
+			if (_skipTopDialog && i != list.cend() && !(*i)->index()) {
 				++i;
 			}
 			if (i != list.cend()) {
-				auto lastPaintedPos = (*i)->pos();
+				auto top = (*i)->top();
 
 				// If we're reordering pinned chats we need to fill this area background first.
 				if (reorderingPinned) {
-					p.fillRect(0, (promoted - _skipTopDialogs) * _st->height, fullWidth, st::dialogsRowHeight * _pinnedRows.size(), st::dialogsBg);
+					const auto pinnedBottom = shownHeight(promoted + _pinnedRows.size());
+					const auto pinnedTop = shownHeight(promoted);
+					p.fillRect(0, pinnedTop - skippedTop, fullWidth, pinnedBottom - pinnedTop, currentBg());
 				}
 
-				p.translate(0, (lastPaintedPos - _skipTopDialogs) * _st->height);
+				p.translate(0, top - skippedTop);
 				for (auto e = list.cend(); i != e; ++i) {
 					auto row = (*i);
-					if ((lastPaintedPos - _skipTopDialogs) * _st->height >= dialogsClip.top() - skip + dialogsClip.height()) {
+					if (top >= dialogsClip.top() - skip + dialogsClip.height()) {
 						break;
 					}
 
 					// Skip currently dragged chat to paint it above others after.
-					if (lastPaintedPos != promoted + _aboveIndex
-						|| _aboveIndex < 0) {
+					if (row->index() != promoted + _aboveIndex || _aboveIndex < 0) {
 						paintDialog(row);
 					}
 
-					p.translate(0, _st->height);
-					++lastPaintedPos;
+					p.translate(0, row->height());
+					top += row->height();
 				}
 
 				// Paint the dragged chat above all others.
-				if (_aboveIndex >= 0) {
-					auto i = list.cfind(promoted + _aboveIndex, 1);
-					auto pos = (i == list.cend()) ? -1 : (*i)->pos();
-					if (pos == promoted + _aboveIndex) {
-						p.translate(0, (pos - lastPaintedPos) * _st->height);
-						paintDialog(*i);
-						p.translate(0, (lastPaintedPos - pos) * _st->height);
-					}
+				if (reorderingRow) {
+					p.translate(0, reorderingRow->top() - top);
+					paintDialog(reorderingRow);
+					p.translate(0, top - reorderingRow->top());
 				}
 			}
-		}
-		if (!otherStart) {
-			p.fillRect(dialogsClip, st::dialogsBg);
+		} else {
+			p.fillRect(dialogsClip, currentBg());
 		}
 	} else if (_state == WidgetState::Filtered) {
 		if (!_hashtagResults.empty()) {
@@ -588,7 +747,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 				for (; from < to; ++from) {
 					auto &result = _hashtagResults[from];
 					bool selected = (from == (isPressed() ? _hashtagPressed : _hashtagSelected));
-					p.fillRect(0, 0, fullWidth, st::mentionHeight, selected ? st::mentionBgOver : st::dialogsBg);
+					p.fillRect(0, 0, fullWidth, st::mentionHeight, selected ? st::mentionBgOver : currentBg());
 					result->row.paintRipple(p, 0, 0, fullWidth);
 					auto &tag = result->tag;
 					if (selected) {
@@ -623,34 +782,18 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 		}
 		if (!_filterResults.empty()) {
 			auto skip = filteredOffset();
-			auto from = floorclamp(r.y() - skip, _st->height, 0, _filterResults.size());
-			auto to = ceilclamp(r.y() + r.height() - skip, _st->height, 0, _filterResults.size());
-			p.translate(0, from * _st->height);
-			if (from < _filterResults.size()) {
-				for (; from < to; ++from) {
-					const auto row = _filterResults[from];
-					const auto key = row->key();
-					const auto active = (activeEntry.key == key)
-						&& !activeEntry.fullId;
-					const auto selected = _menuRow.key
-						? (key == _menuRow.key)
-						: (from == (isPressed()
-							? _filteredPressed
-							: _filteredSelected));
-					Ui::RowPainter::Paint(p, row, validateVideoUserpic(row), {
-						.st = _st,
-						.folder = _openedFolder,
-						.forum = _openedForum,
-						.filter = _filterId,
-						.now = ms,
-						.width = fullWidth,
-						.active = active,
-						.selected = selected,
-						.paused = videoPaused,
-						.narrow = (fullWidth < st::columnMinimalWidthLeft),
-					});
-					p.translate(0, _st->height);
-				}
+			auto from = filteredIndex(r.y() - skip);
+			auto to = std::min(
+				filteredIndex(r.y() + r.height() - skip) + 1,
+				int(_filterResults.size()));
+			p.translate(0, filteredHeight(from));
+			for (; from < to; ++from) {
+				const auto selected = isPressed()
+					? (from == _filteredPressed)
+					: (from == _filteredSelected);
+				const auto row = _filterResults[from].row;
+				paintRow(row, selected, !activeEntry.fullId);
+				p.translate(0, row->height());
 			}
 		}
 
@@ -679,6 +822,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 						: _peerSearchSelected));
 					paintPeerSearchResult(p, result.get(), {
 						.st = &st::defaultDialogRow,
+						.currentBg = currentBg(),
 						.now = ms,
 						.width = fullWidth,
 						.active = active,
@@ -693,6 +837,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 		if (_searchInChat || _searchFromPeer) {
 			paintSearchInChat(p, {
 				.st = &st::forumTopicRow,
+				.currentBg = currentBg(),
 				.now = ms,
 				.width = fullWidth,
 				.paused = videoPaused,
@@ -721,7 +866,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 			const auto text = _searchResults.empty()
 				? tr::lng_search_no_results(tr::now)
 				: showUnreadInSearchResults
-				? qsl("Search results")
+				? u"Search results"_q
 				: tr::lng_search_found_results(
 					tr::now,
 					lt_count,
@@ -749,6 +894,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 						.st = _st,
 						.folder = _openedFolder,
 						.forum = _openedForum,
+						.currentBg = currentBg(),
 						.filter = _filterId,
 						.now = ms,
 						.width = fullWidth,
@@ -756,7 +902,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 						.selected = selected,
 						.paused = videoPaused,
 						.search = true,
-						.narrow = (fullWidth < st::columnMinimalWidthLeft),
+						.narrow = (fullWidth < st::columnMinimalWidthLeft / 2),
 						.displayUnreadInfo = showUnreadInSearchResults,
 					});
 					p.translate(0, _st->height);
@@ -821,11 +967,22 @@ void InnerWidget::paintCollapsedRow(
 
 	const auto text = row->folder->chatListName();
 	const auto unread = row->folder->chatListBadgesState().unreadCounter;
+	const auto fullWidth = width();
 	Ui::PaintCollapsedRow(p, row->row, row->folder, text, unread, {
 		.st = _st,
-		.width = width(),
+		.currentBg = currentBg(),
+		.width = fullWidth,
 		.selected = selected,
+		.narrow = (fullWidth < st::columnMinimalWidthLeft / 2),
 	});
+}
+
+bool InnerWidget::isRowActive(
+		not_null<Row*> row,
+		const RowDescriptor &entry) const {
+	const auto key = row->key();
+	return (entry.key == key)
+		|| (entry.key.sublist() && key.peer() && key.peer()->isSelf());
 }
 
 bool InnerWidget::isSearchResultActive(
@@ -851,7 +1008,7 @@ void InnerWidget::paintPeerSearchResult(
 			? st::dialogsBgActive
 			: context.selected
 			? st::dialogsBgOver
-			: st::dialogsBg));
+			: currentBg()));
 	if (!context.active) {
 		result->row.paintRipple(p, 0, 0, context.width);
 	}
@@ -896,11 +1053,10 @@ void InnerWidget::paintPeerSearchResult(
 				: context.selected
 				? &st::dialogsVerifiedIconOver
 				: &st::dialogsVerifiedIcon),
-			.premium = (context.active
-				? &st::dialogsPremiumIconActive
-				: context.selected
-				? &st::dialogsPremiumIconOver
-				: &st::dialogsPremiumIcon),
+			.premium = &ThreeStateIcon(
+				st::dialogsPremiumIcon,
+				context.active,
+				context.selected),
 			.scam = (context.active
 				? &st::dialogsScamFgActive
 				: context.selected
@@ -911,11 +1067,6 @@ void InnerWidget::paintPeerSearchResult(
 				: context.selected
 				? &st::dialogsVerifiedIconBgOver
 				: &st::dialogsVerifiedIconBg),
-			.preview = (context.active
-				? st::dialogsScamFgActive
-				: context.selected
-				? st::windowBgRipple
-				: st::windowBgOver)->c,
 			.customEmojiRepaint = [=] { updateSearchResult(peer); },
 			.now = context.now,
 			.paused = context.paused,
@@ -947,6 +1098,13 @@ void InnerWidget::paintPeerSearchResult(
 	result->name.drawElided(p, rectForName.left(), rectForName.top(), rectForName.width());
 }
 
+QBrush InnerWidget::currentBg() const {
+	return anim::brush(
+		st::dialogsBg,
+		st::dialogsBgOver,
+		_childListShown.current().shown);
+}
+
 void InnerWidget::paintSearchInChat(
 		Painter &p,
 		const Ui::PaintContext &context) const {
@@ -961,7 +1119,7 @@ void InnerWidget::paintSearchInChat(
 		p.drawTextLeft(st::searchedBarPosition.x(), st::searchedBarPosition.y(), width(), tr::lng_dlg_search_in(tr::now));
 	}
 	auto fullRect = QRect(0, top, width(), height - top);
-	p.fillRect(fullRect, st::dialogsBg);
+	p.fillRect(fullRect, currentBg());
 	if (_searchInChat) {
 		if (_searchFromPeer) {
 			p.fillRect(QRect(0, top + st::dialogsSearchInHeight, width(), st::lineWidth), st::shadowFg);
@@ -1033,7 +1191,7 @@ void InnerWidget::paintSearchInFilter(
 void InnerWidget::paintSearchInPeer(
 		Painter &p,
 		not_null<PeerData*> peer,
-		std::shared_ptr<Data::CloudImageView> &userpic,
+		Ui::PeerUserpicView &userpic,
 		int top,
 		const Ui::Text::String &text) const {
 	const auto paintUserpic = [&](Painter &p, int x, int y, int size) {
@@ -1067,7 +1225,7 @@ void InnerWidget::paintSearchInTopic(
 		Painter &p,
 		const Ui::PaintContext &context,
 		not_null<Data::ForumTopic*> topic,
-		std::shared_ptr<Data::CloudImageView> &userpic,
+		Ui::PeerUserpicView &userpic,
 		int top,
 		const Ui::Text::String &text) const {
 	const auto paintUserpic = [&](Painter &p, int x, int y, int size) {
@@ -1096,7 +1254,7 @@ void InnerWidget::clearIrrelevantState() {
 		setHashtagPressed(-1);
 		_hashtagDeleteSelected = _hashtagDeletePressed = false;
 		_filteredSelected = -1;
-		setFilteredPressed(-1);
+		setFilteredPressed(-1, false);
 		_peerSearchSelected = -1;
 		setPeerSearchPressed(-1);
 		_searchedSelected = -1;
@@ -1105,7 +1263,7 @@ void InnerWidget::clearIrrelevantState() {
 		_collapsedSelected = -1;
 		setCollapsedPressed(-1);
 		_selected = nullptr;
-		setPressed(nullptr);
+		clearPressed();
 	}
 }
 
@@ -1116,6 +1274,7 @@ void InnerWidget::selectByMouse(QPoint globalPosition) {
 	}
 	_mouseSelection = true;
 	_lastMousePosition = globalPosition;
+	_lastRowLocalMouseX = local.x();
 
 	const auto w = width();
 	const auto mouseY = local.y();
@@ -1129,14 +1288,22 @@ void InnerWidget::selectByMouse(QPoint globalPosition) {
 		const auto selected = (collapsedSelected >= 0)
 			? nullptr
 			: (mouseY >= offset)
-			? shownDialogs()->rowAtY(mouseY - offset, _st->height)
+			? _shownList->rowAtY(mouseY - offset)
 			: nullptr;
-		if (_selected != selected || _collapsedSelected != collapsedSelected) {
+		const auto selectedTopicJump = selected
+			&& selected->lookupIsInTopicJump(
+				local.x(),
+				mouseY - offset - selected->top())
+			&& _controller->adaptive().isOneColumn();
+		if (_collapsedSelected != collapsedSelected
+			|| _selected != selected
+			|| _selectedTopicJump != selectedTopicJump) {
 			updateSelectedRow();
 			_selected = selected;
+			_selectedTopicJump = selectedTopicJump;
 			_collapsedSelected = collapsedSelected;
 			updateSelectedRow();
-			setCursor((_selected || _collapsedSelected)
+			setCursor((_selected || _collapsedSelected >= 0)
 				? style::cur_pointer
 				: style::cur_default);
 		}
@@ -1160,13 +1327,22 @@ void InnerWidget::selectByMouse(QPoint globalPosition) {
 		}
 		if (!_filterResults.empty()) {
 			auto skip = filteredOffset();
-			auto filteredSelected = (mouseY >= skip) ? ((mouseY - skip) / _st->height) : -1;
+			auto filteredSelected = (mouseY >= skip)
+				? filteredIndex(mouseY - skip)
+				: -1;
 			if (filteredSelected < 0 || filteredSelected >= _filterResults.size()) {
 				filteredSelected = -1;
 			}
-			if (_filteredSelected != filteredSelected) {
+			const auto selectedTopicJump = (filteredSelected >= 0)
+				&& _filterResults[filteredSelected].row->lookupIsInTopicJump(
+					local.x(),
+					mouseY - skip - _filterResults[filteredSelected].top)
+				&& _controller->adaptive().isOneColumn();
+			if (_filteredSelected != filteredSelected
+				|| _selectedTopicJump != selectedTopicJump) {
 				updateSelectedRow();
 				_filteredSelected = filteredSelected;
+				_selectedTopicJump = selectedTopicJump;
 				updateSelectedRow();
 			}
 		}
@@ -1204,11 +1380,11 @@ void InnerWidget::mousePressEvent(QMouseEvent *e) {
 	selectByMouse(e->globalPos());
 
 	_pressButton = e->button();
-	setPressed(_selected);
+	setPressed(_selected, _selectedTopicJump);
 	setCollapsedPressed(_collapsedSelected);
 	setHashtagPressed(_hashtagSelected);
 	_hashtagDeletePressed = _hashtagDeleteSelected;
-	setFilteredPressed(_filteredSelected);
+	setFilteredPressed(_filteredSelected, _selectedTopicJump);
 	setPeerSearchPressed(_peerSearchSelected);
 	setSearchedPressed(_searchedSelected);
 	if (base::in_range(_collapsedSelected, 0, _collapsedRows.size())) {
@@ -1218,14 +1394,25 @@ void InnerWidget::mousePressEvent(QMouseEvent *e) {
 		});
 	} else if (_pressed) {
 		auto row = _pressed;
-		row->addRipple(
-			e->pos() - QPoint(0, dialogsOffset() + _pressed->pos() * _st->height),
-			QSize(width(), _st->height),
-			[this, row] {
-				if (!_pinnedShiftAnimation.animating()) {
-					row->entry()->updateChatListEntry();
-				}
-			});
+		const auto updateCallback = [this, row] {
+			if (!_pinnedShiftAnimation.animating()) {
+				row->entry()->updateChatListEntry();
+			}
+		};
+		const auto origin = e->pos()
+			- QPoint(0, dialogsOffset() + _pressed->top());
+		if (_pressedTopicJump) {
+			row->addTopicJumpRipple(
+				origin,
+				_topicJumpCache.get(),
+				updateCallback);
+		} else {
+			row->clearTopicJumpRipple();
+			row->addRipple(
+				origin,
+				QSize(width(), _pressed->height()),
+				updateCallback);
+		}
 		_dragStart = e->pos();
 	} else if (base::in_range(_hashtagPressed, 0, _hashtagResults.size()) && !_hashtagDeletePressed) {
 		auto row = &_hashtagResults[_hashtagPressed]->row;
@@ -1233,12 +1420,24 @@ void InnerWidget::mousePressEvent(QMouseEvent *e) {
 			update(0, index * st::mentionHeight, width(), st::mentionHeight);
 		});
 	} else if (base::in_range(_filteredPressed, 0, _filterResults.size())) {
-		const auto row = _filterResults[_filteredPressed];
+		const auto &result = _filterResults[_filteredPressed];
+		const auto row = result.row;
 		const auto filterId = _filterId;
-		row->addRipple(
-			e->pos() - QPoint(0, filteredOffset() + _filteredPressed * _st->height),
-			QSize(width(), _st->height),
-			[=] { repaintDialogRow(filterId, row); });
+		const auto origin = e->pos()
+			- QPoint(0, filteredOffset() + result.top);
+		const auto updateCallback = [=] { repaintDialogRow(filterId, row); };
+		if (_pressedTopicJump) {
+			row->addTopicJumpRipple(
+				origin,
+				_topicJumpCache.get(),
+				updateCallback);
+		} else {
+			row->clearTopicJumpRipple();
+			row->addRipple(
+				origin,
+				QSize(width(), row->height()),
+				updateCallback);
+		}
 	} else if (base::in_range(_peerSearchPressed, 0, _peerSearchResults.size())) {
 		auto &result = _peerSearchResults[_peerSearchPressed];
 		auto row = &result->row;
@@ -1248,12 +1447,25 @@ void InnerWidget::mousePressEvent(QMouseEvent *e) {
 			[this, peer = result->peer] { updateSearchResult(peer); });
 	} else if (base::in_range(_searchedPressed, 0, _searchResults.size())) {
 		auto &row = _searchResults[_searchedPressed];
-		row->addRipple(e->pos() - QPoint(0, searchedOffset() + _searchedPressed * _st->height), QSize(width(), _st->height), row->repaint());
+		row->addRipple(
+			e->pos() - QPoint(0, searchedOffset() + _searchedPressed * _st->height),
+			QSize(width(), _st->height),
+			row->repaint());
 	}
 	if (anim::Disabled()
 		&& (!_pressed || !_pressed->entry()->isPinnedDialog(_filterId))) {
 		mousePressReleased(e->globalPos(), e->button(), e->modifiers());
 	}
+}
+const std::vector<Key> &InnerWidget::pinnedChatsOrder() const {
+	const auto owner = &session().data();
+	return _savedSublists
+		? owner->pinnedChatsOrder(&owner->savedMessages())
+		: _openedForum
+		? owner->pinnedChatsOrder(_openedForum)
+		: _filterId
+		? owner->pinnedChatsOrder(_filterId)
+		: owner->pinnedChatsOrder(_openedFolder);
 }
 
 void InnerWidget::checkReorderPinnedStart(QPoint localPosition) {
@@ -1262,16 +1474,12 @@ void InnerWidget::checkReorderPinnedStart(QPoint localPosition) {
 	} else if (qAbs(localPosition.y() - _dragStart.y())
 		< style::ConvertScale(kStartReorderThreshold)) {
 		return;
-	} else if (_openedForum) {
-		return;
 	}
 	_dragging = _pressed;
 	if (updateReorderIndexGetCount() < 2) {
 		_dragging = nullptr;
 	} else {
-		const auto &order = session().data().pinnedChatsOrder(
-			_openedFolder,
-			_filterId);
+		const auto &order = pinnedChatsOrder();
 		_pinnedOnDragStart = base::flat_set<Key>{
 			order.begin(),
 			order.end()
@@ -1287,7 +1495,7 @@ int InnerWidget::countPinnedIndex(Row *ofRow) {
 		return -1;
 	}
 	auto result = 0;
-	for (const auto &row : *shownDialogs()) {
+	for (const auto &row : *_shownList) {
 		if (row->entry()->fixedOnTopIndex()) {
 			continue;
 		} else if (!row->entry()->isPinnedDialog(_filterId)) {
@@ -1301,12 +1509,7 @@ int InnerWidget::countPinnedIndex(Row *ofRow) {
 }
 
 void InnerWidget::savePinnedOrder() {
-	if (_openedForum) {
-		return;
-	}
-	const auto &newOrder = session().data().pinnedChatsOrder(
-		_openedFolder,
-		_filterId);
+	const auto &newOrder = pinnedChatsOrder();
 	if (newOrder.size() != _pinnedOnDragStart.size()) {
 		return; // Something has changed in the set of pinned chats.
 	}
@@ -1315,7 +1518,11 @@ void InnerWidget::savePinnedOrder() {
 			return; // Something has changed in the set of pinned chats.
 		}
 	}
-	if (_filterId) {
+	if (_savedSublists) {
+		session().api().savePinnedOrder(&session().data().savedMessages());
+	} else if (_openedForum) {
+		session().api().savePinnedOrder(_openedForum);
+	} else if (_filterId) {
 		Api::SaveNewFilterPinned(&session(), _filterId);
 	} else {
 		session().api().savePinnedOrder(_openedFolder);
@@ -1351,7 +1558,7 @@ int InnerWidget::updateReorderIndexGetCount() {
 		return 0;
 	}
 
-	const auto count = Dialogs::PinnedDialogsCount(_filterId, shownDialogs());
+	const auto count = Dialogs::PinnedDialogsCount(_filterId, _shownList);
 	Assert(index < count);
 	if (count < 2) {
 		stopReorderPinned();
@@ -1376,26 +1583,26 @@ bool InnerWidget::updateReorderPinned(QPoint localPosition) {
 		return false;
 	}
 
-	const auto list = shownDialogs();
+	const auto draggingHeight = _dragging->height();
 	auto yaddWas = _pinnedRows[_draggingIndex].yadd.current();
 	auto shift = 0;
 	auto now = crl::now();
 	if (_dragStart.y() > localPosition.y() && _draggingIndex > 0) {
-		shift = -floorclamp(_dragStart.y() - localPosition.y() + (_st->height / 2), _st->height, 0, _draggingIndex);
+		shift = -floorclamp(_dragStart.y() - localPosition.y() + (draggingHeight / 2), draggingHeight, 0, _draggingIndex);
 
 		for (auto from = _draggingIndex, to = _draggingIndex + shift; from > to; --from) {
-			list->movePinned(_dragging, -1);
+			_shownList->movePinned(_dragging, -1);
 			std::swap(_pinnedRows[from], _pinnedRows[from - 1]);
-			_pinnedRows[from].yadd = anim::value(_pinnedRows[from].yadd.current() - _st->height, 0);
+			_pinnedRows[from].yadd = anim::value(_pinnedRows[from].yadd.current() - draggingHeight, 0);
 			_pinnedRows[from].animStartTime = now;
 		}
 	} else if (_dragStart.y() < localPosition.y() && _draggingIndex + 1 < pinnedCount) {
-		shift = floorclamp(localPosition.y() - _dragStart.y() + (_st->height / 2), _st->height, 0, pinnedCount - _draggingIndex - 1);
+		shift = floorclamp(localPosition.y() - _dragStart.y() + (draggingHeight / 2), draggingHeight, 0, pinnedCount - _draggingIndex - 1);
 
 		for (auto from = _draggingIndex, to = _draggingIndex + shift; from < to; ++from) {
-			list->movePinned(_dragging, 1);
+			_shownList->movePinned(_dragging, 1);
 			std::swap(_pinnedRows[from], _pinnedRows[from + 1]);
-			_pinnedRows[from].yadd = anim::value(_pinnedRows[from].yadd.current() + _st->height, 0);
+			_pinnedRows[from].yadd = anim::value(_pinnedRows[from].yadd.current() + draggingHeight, 0);
 			_pinnedRows[from].animStartTime = now;
 		}
 	}
@@ -1417,7 +1624,7 @@ bool InnerWidget::updateReorderPinned(QPoint localPosition) {
 	const auto delta = [&] {
 		if (localPosition.y() < _visibleTop) {
 			return localPosition.y() - _visibleTop;
-		} else if ((_openedFolder || _openedForum || _filterId)
+		} else if ((_savedSublists || _openedFolder || _openedForum || _filterId)
 			&& localPosition.y() > _visibleBottom) {
 			return localPosition.y() - _visibleBottom;
 		}
@@ -1458,12 +1665,14 @@ bool InnerWidget::pinnedShiftAnimationCallback(crl::time now) {
 		if (updateMax < _draggingIndex) updateMax = _draggingIndex;
 	}
 	if (updateMin >= 0) {
+		const auto minHeight = _st->height;
+		const auto maxHeight = st::forumDialogRow.height;
 		auto top = pinnedOffset();
-		auto updateFrom = top + _st->height * (updateMin - 1);
-		auto updateHeight = _st->height * (updateMax - updateMin + 3);
+		auto updateFrom = top + minHeight * (updateMin - 1);
+		auto updateHeight = maxHeight * (updateMax - updateMin + 3);
 		if (base::in_range(_aboveIndex, 0, _pinnedRows.size())) {
 			// Always include currently dragged chat in its current and old positions.
-			auto aboveRowBottom = top + (_aboveIndex + 1) * _st->height;
+			auto aboveRowBottom = top + (_aboveIndex + 1) * maxHeight;
 			auto aboveTopShift = qCeil(_pinnedRows[_aboveIndex].yadd.current());
 			accumulate_max(updateHeight, (aboveRowBottom - updateFrom) + _aboveTopShift);
 			accumulate_max(updateHeight, (aboveRowBottom - updateFrom) + aboveTopShift);
@@ -1500,14 +1709,16 @@ void InnerWidget::mousePressReleased(
 
 	auto collapsedPressed = _collapsedPressed;
 	setCollapsedPressed(-1);
+	const auto pressedTopicRootId = _pressedTopicJumpRootId;
+	const auto pressedTopicJump = _pressedTopicJump;
 	auto pressed = _pressed;
-	setPressed(nullptr);
+	clearPressed();
 	auto hashtagPressed = _hashtagPressed;
 	setHashtagPressed(-1);
 	auto hashtagDeletePressed = _hashtagDeletePressed;
 	_hashtagDeletePressed = false;
 	auto filteredPressed = _filteredPressed;
-	setFilteredPressed(-1);
+	setFilteredPressed(-1, false);
 	auto peerSearchPressed = _peerSearchPressed;
 	setPeerSearchPressed(-1);
 	auto searchedPressed = _searchedPressed;
@@ -1518,7 +1729,9 @@ void InnerWidget::mousePressReleased(
 	updateSelectedRow();
 	if (!wasDragging && button == Qt::LeftButton) {
 		if ((collapsedPressed >= 0 && collapsedPressed == _collapsedSelected)
-			|| (pressed && pressed == _selected)
+			|| (pressed
+				&& pressed == _selected
+				&& pressedTopicJump == _selectedTopicJump)
 			|| (hashtagPressed >= 0
 				&& hashtagPressed == _hashtagSelected
 				&& hashtagDeletePressed == _hashtagDeleteSelected)
@@ -1527,7 +1740,7 @@ void InnerWidget::mousePressReleased(
 				&& peerSearchPressed == _peerSearchSelected)
 			|| (searchedPressed >= 0
 				&& searchedPressed == _searchedSelected)) {
-			chooseRow(modifiers);
+			chooseRow(modifiers, pressedTopicRootId);
 		}
 	}
 }
@@ -1541,13 +1754,25 @@ void InnerWidget::setCollapsedPressed(int pressed) {
 	}
 }
 
-void InnerWidget::setPressed(Row *pressed) {
-	if (_pressed != pressed) {
+void InnerWidget::setPressed(Row *pressed, bool pressedTopicJump) {
+	if (_pressed != pressed || (pressed && _pressedTopicJump != pressedTopicJump)) {
 		if (_pressed) {
 			_pressed->stopLastRipple();
 		}
 		_pressed = pressed;
+		if (pressed || !pressedTopicJump) {
+			_pressedTopicJump = pressedTopicJump;
+			const auto history = pressedTopicJump
+				? pressed->history()
+				: nullptr;
+			const auto item = history ? history->chatListMessage() : nullptr;
+			_pressedTopicJumpRootId = item ? item->topicRootId() : MsgId();
+		}
 	}
+}
+
+void InnerWidget::clearPressed() {
+	setPressed(nullptr, false);
 }
 
 void InnerWidget::setHashtagPressed(int pressed) {
@@ -1557,11 +1782,22 @@ void InnerWidget::setHashtagPressed(int pressed) {
 	_hashtagPressed = pressed;
 }
 
-void InnerWidget::setFilteredPressed(int pressed) {
-	if (base::in_range(_filteredPressed, 0, _filterResults.size())) {
-		_filterResults[_filteredPressed]->stopLastRipple();
+void InnerWidget::setFilteredPressed(int pressed, bool pressedTopicJump) {
+	if (_filteredPressed != pressed
+		|| (pressed >= 0 && _pressedTopicJump != pressedTopicJump)) {
+		if (base::in_range(_filteredPressed, 0, _filterResults.size())) {
+			_filterResults[_filteredPressed].row->stopLastRipple();
+		}
+		_filteredPressed = pressed;
+		if (pressed >= 0 || !pressedTopicJump) {
+			_pressedTopicJump = pressedTopicJump;
+			const auto history = pressedTopicJump
+				? _filterResults[pressed].row->history()
+				: nullptr;
+			const auto item = history ? history->chatListMessage() : nullptr;
+			_pressedTopicJumpRootId = item ? item->topicRootId() : MsgId();
+		}
 	}
-	_filteredPressed = pressed;
 }
 
 void InnerWidget::setPeerSearchPressed(int pressed) {
@@ -1584,7 +1820,9 @@ void InnerWidget::resizeEvent(QResizeEvent *e) {
 }
 
 void InnerWidget::moveCancelSearchButtons() {
-	const auto widthForCancelButton = qMax(width(), st::columnMinimalWidthLeft);
+	const auto widthForCancelButton = qMax(
+		width(),
+		st::columnMinimalWidthLeft - _narrowWidth);
 	const auto left = widthForCancelButton - st::dialogsSearchInSkip - _cancelSearchInChat->width();
 	const auto top = (st::dialogsSearchInHeight - st::dialogsCancelSearchInPeer.height) / 2;
 	_cancelSearchInChat->moveToLeft(left, st::searchedBarHeight + top);
@@ -1595,25 +1833,31 @@ void InnerWidget::moveCancelSearchButtons() {
 void InnerWidget::dialogRowReplaced(
 		Row *oldRow,
 		Row *newRow) {
+	auto found = false;
 	if (_state == WidgetState::Filtered) {
+		auto top = 0;
 		for (auto i = _filterResults.begin(); i != _filterResults.end();) {
-			if (*i == oldRow) { // this row is shown in filtered and maybe is in contacts!
-				if (newRow) {
-					*i = newRow;
-					++i;
-				} else {
+			if (i->row == oldRow) { // this row is shown in filtered and maybe is in contacts!
+				found = true;
+				top = i->top;
+				if (!newRow) {
 					i = _filterResults.erase(i);
+					continue;
 				}
-			} else {
-				++i;
+				i->row = newRow;
 			}
+			if (found) {
+				i->top = top;
+				top += i->row->height();
+			}
+			++i;
 		}
 	}
 	if (_selected == oldRow) {
 		_selected = newRow;
 	}
 	if (_pressed == oldRow) {
-		setPressed(newRow);
+		setPressed(newRow, _pressedTopicJump);
 	}
 	if (_dragging == oldRow) {
 		if (newRow) {
@@ -1621,6 +1865,9 @@ void InnerWidget::dialogRowReplaced(
 		} else {
 			stopReorderPinned();
 		}
+	}
+	if (found) {
+		refresh();
 	}
 }
 
@@ -1632,13 +1879,15 @@ void InnerWidget::handleChatListEntryRefreshes() {
 			return false;
 		} else if (const auto topic = event.key.topic()) {
 			return (topic->forum() == _openedForum);
+		} else if (event.key.sublist()) {
+			return _savedSublists;
 		} else {
 			return !_openedForum;
 		}
 	}) | rpl::start_with_next([=](const Event &event) {
 		const auto offset = dialogsOffset();
-		const auto from = offset + event.moved.from * _st->height;
-		const auto to = offset + event.moved.to * _st->height;
+		const auto from = offset + event.moved.from;
+		const auto to = offset + event.moved.to;
 		const auto &key = event.key;
 		const auto entry = key.entry();
 
@@ -1648,6 +1897,8 @@ void InnerWidget::handleChatListEntryRefreshes() {
 			&& (_state == WidgetState::Default)
 			&& (key.topic()
 				? (key.topic()->forum() == _openedForum)
+				: key.sublist()
+				? _savedSublists
 				: (entry->folder() == _openedFolder))) {
 			_dialogMoved.fire({ from, to });
 		}
@@ -1661,9 +1912,12 @@ void InnerWidget::handleChatListEntryRefreshes() {
 					_selected = nullptr;
 				}
 				if (_pressed && _pressed->key() == key) {
-					setPressed(nullptr);
+					clearPressed();
 				}
-				const auto i = ranges::find(_filterResults, key, &Row::key);
+				const auto i = ranges::find(
+					_filterResults,
+					key,
+					&FilterResult::key);
 				if (i != _filterResults.end()) {
 					if (_filteredSelected == (i - _filterResults.begin())
 						&& (i + 1) == _filterResults.end()) {
@@ -1679,7 +1933,7 @@ void InnerWidget::handleChatListEntryRefreshes() {
 				0,
 				std::min(from, to),
 				width(),
-				std::abs(from - to) + _st->height);
+				std::abs(from - to) + event.moved.height);
 		}
 	}, lifetime());
 }
@@ -1694,12 +1948,12 @@ void InnerWidget::repaintCollapsedFolderRow(not_null<Data::Folder*> folder) {
 }
 
 int InnerWidget::defaultRowTop(not_null<Row*> row) const {
-	const auto position = row->pos();
+	const auto index = row->index();
 	auto top = dialogsOffset();
-	if (base::in_range(position, 0, _pinnedRows.size())) {
-		top += qRound(_pinnedRows[position].yadd.current());
+	if (base::in_range(index, 0, _pinnedRows.size())) {
+		top += qRound(_pinnedRows[index].yadd.current());
 	}
-	return top + position * _st->height;
+	return top + row->top();
 }
 
 void InnerWidget::repaintDialogRow(
@@ -1710,17 +1964,18 @@ void InnerWidget::repaintDialogRow(
 			if (const auto folder = row->folder()) {
 				repaintCollapsedFolderRow(folder);
 			}
-			update(0, defaultRowTop(row), width(), _st->height);
+			update(0, defaultRowTop(row), width(), row->height());
 		}
 	} else if (_state == WidgetState::Filtered) {
 		if (!filterId) {
 			for (auto i = 0, l = int(_filterResults.size()); i != l; ++i) {
-				if (_filterResults[i]->key() == row->key()) {
+				const auto &result = _filterResults[i];
+				if (result.key() == row->key()) {
 					update(
 						0,
-						filteredOffset() + i * _st->height,
+						filteredOffset() + result.top,
 						width(),
-						_st->height);
+						result.row->height());
 					break;
 				}
 			}
@@ -1765,9 +2020,6 @@ void InnerWidget::updateDialogRow(
 		RowDescriptor row,
 		QRect updateRect,
 		UpdateRowSections sections) {
-	if (updateRect.isEmpty()) {
-		updateRect = QRect(0, 0, width(), _st->height);
-	}
 	if (IsServerMsgId(-row.fullId.msg)) {
 		if (const auto peer = row.key.peer()) {
 			if (const auto from = peer->migrateFrom()) {
@@ -1780,50 +2032,49 @@ void InnerWidget::updateDialogRow(
 		}
 	}
 
-	const auto updateRow = [&](int rowTop, int rowHeight = 0) {
-		rtlupdate(
-			updateRect.x(),
-			rowTop + updateRect.y(),
-			updateRect.width(),
-			rowHeight ? rowHeight : updateRect.height());
+	const auto updateRow = [&](int rowTop, int rowHeight) {
+		if (!updateRect.isEmpty()) {
+			rtlupdate(updateRect.translated(0, rowTop));
+		} else {
+			rtlupdate(0, rowTop, width(), rowHeight);
+		}
 	};
 	if (_state == WidgetState::Default) {
 		if (sections & UpdateRowSection::Default) {
 			if (const auto folder = row.key.folder()) {
 				repaintCollapsedFolderRow(folder);
 			}
-			if (const auto dialog = shownDialogs()->getRow(row.key)) {
-				const auto position = dialog->pos();
+			if (const auto dialog = _shownList->getRow(row.key)) {
+				const auto position = dialog->index();
 				auto top = dialogsOffset();
 				if (base::in_range(position, 0, _pinnedRows.size())) {
 					top += qRound(_pinnedRows[position].yadd.current());
 				}
-				updateRow(top + position * _st->height);
+				updateRow(top + dialog->top(), dialog->height());
 			}
 		}
 	} else if (_state == WidgetState::Filtered) {
 		if ((sections & UpdateRowSection::Filtered)
 			&& !_filterResults.empty()) {
-			const auto add = filteredOffset();
-			auto index = 0;
-			for (const auto result : _filterResults) {
-				if (result->key() == row.key) {
-					updateRow(add + index * _st->height);
+			for (const auto &result : _filterResults) {
+				if (result.key() == row.key) {
+					updateRow(
+						filteredOffset() + result.top,
+						result.row->height());
 					break;
 				}
-				++index;
 			}
 		}
 		if ((sections & UpdateRowSection::PeerSearch)
 			&& !_peerSearchResults.empty()) {
 			if (const auto peer = row.key.peer()) {
-				const auto add = peerSearchOffset();
+				const auto rowHeight = st::dialogsRowHeight;
 				auto index = 0;
 				for (const auto &result : _peerSearchResults) {
 					if (result->peer == peer) {
 						updateRow(
-							add + index * st::dialogsRowHeight,
-							st::dialogsRowHeight);
+							peerSearchOffset() + index * rowHeight,
+							rowHeight);
 						break;
 					}
 					++index;
@@ -1836,9 +2087,7 @@ void InnerWidget::updateDialogRow(
 			auto index = 0;
 			for (const auto &result : _searchResults) {
 				if (isSearchResultActive(result.get(), row)) {
-					updateRow(
-						add + index * _st->height,
-						_st->height);
+					updateRow(add + index * _st->height, _st->height);
 					break;
 				}
 				++index;
@@ -1851,36 +2100,66 @@ void InnerWidget::enterEventHook(QEnterEvent *e) {
 	setMouseTracking(true);
 }
 
+Row *InnerWidget::shownRowByKey(Key key) {
+	const auto entry = key.entry();
+	if (_savedSublists) {
+		if (!entry->asSublist()) {
+			return nullptr;
+		}
+	} else if (_openedForum) {
+		const auto topic = entry->asTopic();
+		if (!topic || topic->forum() != _openedForum) {
+			return nullptr;
+		}
+	} else if (_openedFolder) {
+		const auto history = entry->asHistory();
+		if (!history || history->folder() != _openedFolder) {
+			return nullptr;
+		}
+	} else {
+		const auto history = entry->asHistory();
+		if (!entry->asFolder() && (!history || history->folder())) {
+			return nullptr;
+		}
+	}
+	const auto links = entry->chatListLinks(FilterId());
+	return links ? links->main.get() : nullptr;
+}
+
 void InnerWidget::updateSelectedRow(Key key) {
 	if (_state == WidgetState::Default) {
 		if (key) {
-			const auto entry = key.entry();
-			if (!entry->inChatList(_filterId)) {
+			const auto row = shownRowByKey(key);
+			if (!row) {
 				return;
 			}
-			auto position = entry->posInChatList(_filterId);
+			auto position = row->index();
 			auto top = dialogsOffset();
 			if (base::in_range(position, 0, _pinnedRows.size())) {
 				top += qRound(_pinnedRows[position].yadd.current());
 			}
-			update(0, top + position * _st->height, width(), _st->height);
+			update(0, top + row->top(), width(), row->height());
 		} else if (_selected) {
-			update(0, dialogsOffset() + _selected->pos() * _st->height, width(), _st->height);
+			update(0, dialogsOffset() + _selected->top(), width(), _selected->height());
 		} else if (_collapsedSelected >= 0) {
 			update(0, _collapsedSelected * st::dialogsImportantBarHeight, width(), st::dialogsImportantBarHeight);
 		}
 	} else if (_state == WidgetState::Filtered) {
 		if (key) {
 			for (auto i = 0, l = int(_filterResults.size()); i != l; ++i) {
-				if (_filterResults[i]->key() == key) {
-					update(0, filteredOffset() + i * _st->height, width(), _st->height);
+				const auto &result = _filterResults[i];
+				if (result.key() == key) {
+					update(0, filteredOffset() + result.top, width(), result.row->height());
 					break;
 				}
 			}
 		} else if (_hashtagSelected >= 0) {
 			update(0, _hashtagSelected * st::mentionHeight, width(), st::mentionHeight);
 		} else if (_filteredSelected >= 0) {
-			update(0, filteredOffset() + _filteredSelected * _st->height, width(), _st->height);
+			if (_filteredSelected < _filterResults.size()) {
+				const auto &result = _filterResults[_filteredSelected];
+				update(0, filteredOffset() + result.top, width(), result.row->height());
+			}
 		} else if (_peerSearchSelected >= 0) {
 			update(0, peerSearchOffset() + _peerSearchSelected * st::dialogsRowHeight, width(), st::dialogsRowHeight);
 		} else if (_searchedSelected >= 0) {
@@ -1889,12 +2168,18 @@ void InnerWidget::updateSelectedRow(Key key) {
 	}
 }
 
-not_null<IndexedList*> InnerWidget::shownDialogs() const {
-	return _openedForum
+void InnerWidget::refreshShownList() {
+	const auto list = _savedSublists
+		? session().data().savedMessages().chatsList()->indexed()
+		: _openedForum
 		? _openedForum->topicsList()->indexed()
 		: _filterId
 		? session().data().chatsFilters().chatsList(_filterId)->indexed()
 		: session().data().chatsList(_openedFolder)->indexed();
+	if (_shownList != list) {
+		_shownList = list;
+		_shownList->updateHeights(_narrowRatio);
+	}
 }
 
 void InnerWidget::leaveEventHook(QEvent *e) {
@@ -1914,6 +2199,7 @@ FilterId InnerWidget::filterId() const {
 void InnerWidget::clearSelection() {
 	_mouseSelection = false;
 	_lastMousePosition = std::nullopt;
+	_lastRowLocalMouseX = -1;
 	if (isSelected()) {
 		updateSelectedRow();
 		_collapsedSelected = -1;
@@ -1971,7 +2257,7 @@ void InnerWidget::contextMenuEvent(QContextMenuEvent *e) {
 			}
 		} else if (_state == WidgetState::Filtered) {
 			if (base::in_range(_filteredSelected, 0, _filterResults.size())) {
-				return { _filterResults[_filteredSelected]->key(), FullMsgId() };
+				return { _filterResults[_filteredSelected].key(), FullMsgId() };
 			} else if (base::in_range(_searchedSelected, 0, _searchResults.size())) {
 				return {
 					_searchResults[_searchedSelected]->item()->history(),
@@ -1990,7 +2276,7 @@ void InnerWidget::contextMenuEvent(QContextMenuEvent *e) {
 
 	_menu = base::make_unique_q<Ui::PopupMenu>(
 		this,
-		row.fullId ? st::defaultPopupMenu : st::popupMenuWithIcons);
+		row.fullId ? st::defaultPopupMenu : st::popupMenuExpandedSeparator);
 	if (row.fullId) {
 		if (session().supportMode()) {
 			fillSupportSearchMenu(_menu.get());
@@ -2037,7 +2323,7 @@ void InnerWidget::parentGeometryChanged() {
 }
 
 void InnerWidget::applyFilterUpdate(QString newFilter, bool force) {
-	const auto mentionsSearch = (newFilter == qstr("@"));
+	const auto mentionsSearch = (newFilter == u"@"_q);
 	const auto words = mentionsSearch
 		? QStringList(newFilter)
 		: TextUtilities::PrepareSearchWords(newFilter);
@@ -2047,27 +2333,37 @@ void InnerWidget::applyFilterUpdate(QString newFilter, bool force) {
 		if (_filter.isEmpty() && !_searchFromPeer) {
 			clearFilter();
 		} else {
-			_state = WidgetState::Filtered;
+			setState(WidgetState::Filtered);
 			_waitingForSearch = true;
 			_filterResults.clear();
 			_filterResultsGlobal.clear();
 			const auto append = [&](not_null<IndexedList*> list) {
 				const auto results = list->filtered(words);
-				_filterResults.insert(
+				auto top = filteredHeight();
+				auto i = _filterResults.insert(
 					end(_filterResults),
 					begin(results),
 					end(results));
+				for (const auto e = end(_filterResults); i != e; ++i) {
+					i->top = top;
+					i->row->recountHeight(_narrowRatio);
+					top += i->row->height();
+				}
 			};
 			if (!_searchInChat && !_searchFromPeer && !words.isEmpty()) {
-				if (_openedForum) {
+				if (_savedSublists) {
+					const auto owner = &session().data();
+					append(owner->savedMessages().chatsList()->indexed());
+				} else if (_openedForum) {
 					append(_openedForum->topicsList()->indexed());
 				} else {
-					append(session().data().chatsList()->indexed());
+					const auto owner = &session().data();
+					append(owner->chatsList()->indexed());
 					const auto id = Data::Folder::kId;
-					if (const auto add = session().data().folderLoaded(id)) {
+					if (const auto add = owner->folderLoaded(id)) {
 						append(add->chatsList()->indexed());
 					}
-					append(session().data().contactsNoChatsList());
+					append(owner->contactsNoChatsList());
 				}
 			}
 			refresh(true);
@@ -2111,17 +2407,21 @@ void InnerWidget::onHashtagFilterUpdate(QStringView newFilter) {
 
 void InnerWidget::appendToFiltered(Key key) {
 	for (const auto &row : _filterResults) {
-		if (row->key() == key) {
+		if (row.key() == key) {
 			return;
 		}
 	}
-	auto row = std::make_unique<Row>(key, _filterResults.size());
+	auto row = std::make_unique<Row>(key, 0, 0);
+	row->recountHeight(_narrowRatio);
 	const auto [i, ok] = _filterResultsGlobal.emplace(key, std::move(row));
+	const auto height = filteredHeight();
 	_filterResults.emplace_back(i->second.get());
+	_filterResults.back().top = height;
 	trackSearchResultsHistory(key.owningHistory());
 }
 
 InnerWidget::~InnerWidget() {
+	session().data().stories().decrementPreloadingMainSources();
 	clearSearchResults();
 }
 
@@ -2159,7 +2459,10 @@ void InnerWidget::trackSearchResultsHistory(not_null<History*> history) {
 				if (topic->channel() == channel) {
 					removed = true;
 					_filterResults.erase(
-						ranges::remove(_filterResults, i->first, &Row::key),
+						ranges::remove(
+							_filterResults,
+							i->first,
+							&FilterResult::key),
 						end(_filterResults));
 					i = _filterResultsGlobal.erase(i);
 					continue;
@@ -2188,8 +2491,8 @@ void InnerWidget::trackSearchResultsHistory(not_null<History*> history) {
 			}
 			const auto ffrom = ranges::remove(
 				_filterResults,
-				topic.get(),
-				&Row::topic);
+				Key(topic),
+				&FilterResult::key);
 			if (ffrom != end(_filterResults)) {
 				_filterResults.erase(ffrom, end(_filterResults));
 				removed = true;
@@ -2213,7 +2516,7 @@ Data::Thread *InnerWidget::updateFromParentDrag(QPoint globalPosition) {
 		return fromRow(_selected);
 	} else if (_state == WidgetState::Filtered) {
 		if (base::in_range(_filteredSelected, 0, _filterResults.size())) {
-			return fromRow(_filterResults[_filteredSelected]);
+			return fromRow(_filterResults[_filteredSelected].row);
 		} else if (base::in_range(_peerSearchSelected, 0, _peerSearchResults.size())) {
 			return session().data().history(
 				_peerSearchResults[_peerSearchSelected]->peer);
@@ -2286,7 +2589,7 @@ void InnerWidget::visibleTopBottomUpdated(
 		int visibleBottom) {
 	_visibleTop = visibleTop;
 	_visibleBottom = visibleBottom;
-	loadPeerPhotos();
+	preloadRowsData();
 	const auto loadTill = _visibleTop
 		+ PreloadHeightsCount * (_visibleBottom - _visibleTop);
 	if (_state == WidgetState::Filtered && loadTill >= peerSearchOffset()) {
@@ -2336,8 +2639,8 @@ bool InnerWidget::hasHistoryInResults(not_null<History*> history) const {
 	}
 	const auto inFilteredResults = ranges::find(
 		_filterResults,
-		history.get(),
-		[](Row *row) { return row->history(); }
+		Key(history),
+		&FilterResult::key
 	) != end(_filterResults);
 	if (inFilteredResults) {
 		return true;
@@ -2459,9 +2762,8 @@ Data::Forum *InnerWidget::shownForum() const {
 }
 
 bool InnerWidget::needCollapsedRowsRefresh() const {
-	const auto list = shownDialogs();
-	const auto archive = !list->empty()
-		? (*list->begin())->folder()
+	const auto archive = !_shownList->empty()
+		? _shownList->begin()->get()->folder()
 		: nullptr;
 	const auto collapsedHasArchive = !_collapsedRows.empty()
 		&& (_collapsedRows.back()->folder != nullptr);
@@ -2470,10 +2772,10 @@ bool InnerWidget::needCollapsedRowsRefresh() const {
 	const auto archiveIsInMainMenu = (archive != nullptr)
 		&& session().settings().archiveInMainMenu();
 	return archiveIsInMainMenu
-		? (collapsedHasArchive || _skipTopDialogs != 1)
+		? (collapsedHasArchive || !_skipTopDialog)
 		: archiveIsCollapsed
-			? (!collapsedHasArchive || _skipTopDialogs != 1)
-			: (collapsedHasArchive || _skipTopDialogs != 0);
+			? (!collapsedHasArchive || !_skipTopDialog)
+			: (collapsedHasArchive || _skipTopDialog);
 }
 
 void InnerWidget::editOpenedFilter() {
@@ -2483,17 +2785,18 @@ void InnerWidget::editOpenedFilter() {
 }
 
 void InnerWidget::refresh(bool toTop) {
-	if (needCollapsedRowsRefresh()) {
+	if (!_geometryInited) {
+		return;
+	} else if (needCollapsedRowsRefresh()) {
 		return refreshWithCollapsedRows(toTop);
 	}
 	refreshEmptyLabel();
-	const auto list = shownDialogs();
 	auto h = 0;
 	if (_state == WidgetState::Default) {
-		if (list->empty()) {
+		if (_shownList->empty()) {
 			h = st::dialogsEmptyHeight;
 		} else {
-			h = dialogsOffset() + list->size() * _st->height;
+			h = dialogsOffset() + _shownList->height();
 		}
 	} else if (_state == WidgetState::Filtered) {
 		if (_waitingForSearch) {
@@ -2505,19 +2808,22 @@ void InnerWidget::refresh(bool toTop) {
 	resize(width(), h);
 	if (toTop) {
 		stopReorderPinned();
-		_mustScrollTo.fire({ 0, 0 });
-		loadPeerPhotos();
+		jumpToTop();
+		preloadRowsData();
 	}
-	_controller->dialogsListDisplayForced().set(
-		_searchInChat || !_filter.isEmpty(),
-		true);
+	_controller->setDialogsListDisplayForced(
+		_searchInChat || !_filter.isEmpty());
 	update();
 }
 
 void InnerWidget::refreshEmptyLabel() {
 	const auto data = &session().data();
-	const auto state = !shownDialogs()->empty()
+	const auto state = !_shownList->empty()
 		? EmptyState::None
+		: _savedSublists
+		? (data->savedMessages().chatsList()->loaded()
+			? EmptyState::EmptySavedSublists
+			: EmptyState::Loading)
 		: _openedForum
 		? (_openedForum->topicsList()->loaded()
 			? EmptyState::EmptyForum
@@ -2542,6 +2848,8 @@ void InnerWidget::refreshEmptyLabel() {
 		? tr::lng_no_chats_filter()
 		: (state == EmptyState::EmptyForum)
 		? tr::lng_forum_no_topics()
+		: (state == EmptyState::EmptySavedSublists)
+		? tr::lng_no_saved_sublists()
 		: tr::lng_contacts_loading();
 	auto link = (state == EmptyState::NoContacts)
 		? tr::lng_add_contact_button()
@@ -2579,17 +2887,15 @@ void InnerWidget::resizeEmptyLabel() {
 	if (!_empty) {
 		return;
 	}
-	const auto useWidth = std::min(
-		_empty->naturalWidth(),
-		width() - 2 * st::dialogsEmptySkip);
-	const auto left = (width() - useWidth) / 2;
-	_empty->resizeToWidth(useWidth);
-	_empty->move(left, (st::dialogsEmptyHeight - _empty->height()) / 2);
+	const auto skip = st::dialogsEmptySkip;
+	_empty->resizeToWidth(width() - 2 * skip);
+	_empty->move(skip, (st::dialogsEmptyHeight - _empty->height()) / 2);
 }
 
 void InnerWidget::clearMouseSelection(bool clearSelection) {
 	_mouseSelection = false;
 	_lastMousePosition = std::nullopt;
+	_lastRowLocalMouseX = -1;
 	if (clearSelection) {
 		if (_state == WidgetState::Default) {
 			_collapsedSelected = -1;
@@ -2624,7 +2930,6 @@ void InnerWidget::searchInChat(Key key, PeerData *from) {
 	_searchInChat = key;
 	_searchFromPeer = from;
 	if (_searchInChat) {
-		_controller->closeFolder();
 		onHashtagFilterUpdate(QStringView());
 		_cancelSearchInChat->show();
 	} else {
@@ -2635,7 +2940,7 @@ void InnerWidget::searchInChat(Key key, PeerData *from) {
 		_searchFromUserUserpic = _searchFromPeer->createUserpicView();
 	} else {
 		_cancelSearchFromUser->hide();
-		_searchFromUserUserpic = nullptr;
+		_searchFromUserUserpic = {};
 	}
 	if (_searchInChat || _searchFromPeer) {
 		refreshSearchInChatLabel();
@@ -2644,13 +2949,12 @@ void InnerWidget::searchInChat(Key key, PeerData *from) {
 	if (const auto peer = _searchInChat.peer()) {
 		_searchInChatUserpic = peer->createUserpicView();
 	} else {
-		_searchInChatUserpic = nullptr;
+		_searchInChatUserpic = {};
 	}
 	moveCancelSearchButtons();
 
-	_controller->dialogsListDisplayForced().set(
-		_searchInChat || !_filter.isEmpty(),
-		true);
+	_controller->setDialogsListDisplayForced(
+		_searchInChat || !_filter.isEmpty());
 }
 
 void InnerWidget::refreshSearchInChatLabel() {
@@ -2678,7 +2982,7 @@ void InnerWidget::refreshSearchInChatLabel() {
 		const auto fromUserText = tr::lng_dlg_search_from(
 			tr::now,
 			lt_user,
-			Ui::Text::Link(from),
+			Ui::Text::Semibold(from),
 			Ui::Text::WithEntities);
 		_searchFromUserText.setMarkedText(
 			st::dialogsSearchFromStyle,
@@ -2698,10 +3002,10 @@ void InnerWidget::repaintSearchResult(int index) {
 void InnerWidget::clearFilter() {
 	if (_state == WidgetState::Filtered || _searchInChat) {
 		if (_searchInChat) {
-			_state = WidgetState::Filtered;
+			setState(WidgetState::Filtered);
 			_waitingForSearch = true;
 		} else {
-			_state = WidgetState::Default;
+			setState(WidgetState::Default);
 		}
 		_hashtagResults.clear();
 		_filterResults.clear();
@@ -2713,45 +3017,46 @@ void InnerWidget::clearFilter() {
 	}
 }
 
+void InnerWidget::setState(WidgetState state) {
+	_state = state;
+}
+
 void InnerWidget::selectSkip(int32 direction) {
 	clearMouseSelection();
 	if (_state == WidgetState::Default) {
-		const auto list = shownDialogs();
-		if (_collapsedRows.empty() && list->size() <= _skipTopDialogs) {
+		const auto skip = _skipTopDialog ? 1 : 0;
+		if (_collapsedRows.empty() && _shownList->size() <= skip) {
 			return;
 		}
 		if (_collapsedSelected < 0 && !_selected) {
 			if (!_collapsedRows.empty()) {
 				_collapsedSelected = 0;
 			} else {
-				_selected = *(list->cbegin() + _skipTopDialogs);
+				_selected = (_shownList->cbegin() + skip)->get();
 			}
 		} else {
 			auto cur = (_collapsedSelected >= 0)
 				? _collapsedSelected
 				: int(_collapsedRows.size()
-					+ (list->cfind(_selected) - list->cbegin() - _skipTopDialogs));
+					+ (_shownList->cfind(_selected)
+						- _shownList->cbegin()
+						- skip));
 			cur = std::clamp(
 				cur + direction,
 				0,
 				static_cast<int>(_collapsedRows.size()
-					+ list->size()
-					- _skipTopDialogs
+					+ _shownList->size()
+					- skip
 					- 1));
 			if (cur < _collapsedRows.size()) {
 				_collapsedSelected = cur;
 				_selected = nullptr;
 			} else {
 				_collapsedSelected = -1;
-				_selected = *(list->cbegin() + _skipTopDialogs + cur - _collapsedRows.size());
+				_selected = *(_shownList->cbegin() + skip + cur - _collapsedRows.size());
 			}
 		}
-		if (_collapsedSelected >= 0 || _selected) {
-			const auto fromY = (_collapsedSelected >= 0)
-				? (_collapsedSelected * st::dialogsImportantBarHeight)
-				: (dialogsOffset() + _selected->pos() * _st->height);
-			_mustScrollTo.fire({ fromY, fromY + _st->height });
-		}
+		scrollToDefaultSelected();
 	} else if (_state == WidgetState::Filtered) {
 		if (_hashtagResults.empty() && _filterResults.empty() && _peerSearchResults.empty() && _searchResults.empty()) {
 			return;
@@ -2799,118 +3104,125 @@ void InnerWidget::selectSkip(int32 direction) {
 			}
 		}
 		if (base::in_range(_hashtagSelected, 0, _hashtagResults.size())) {
-			_mustScrollTo.fire({
-				_hashtagSelected * st::mentionHeight,
-				(_hashtagSelected + 1) * st::mentionHeight,
-			});
+			const auto from = _hashtagSelected * st::mentionHeight;
+			scrollToItem(from, st::mentionHeight);
 		} else if (base::in_range(_filteredSelected, 0, _filterResults.size())) {
-			_mustScrollTo.fire({
-				filteredOffset() + _filteredSelected * _st->height,
-				filteredOffset()
-					+ (_filteredSelected + 1) * _st->height,
-			});
+			const auto &result = _filterResults[_filteredSelected];
+			const auto from = filteredOffset() + result.top;
+			scrollToItem(from, result.row->height());
 		} else if (base::in_range(_peerSearchSelected, 0, _peerSearchResults.size())) {
-			_mustScrollTo.fire({
-				peerSearchOffset()
-					+ _peerSearchSelected * st::dialogsRowHeight
-					+ (_peerSearchSelected ? 0 : -st::searchedBarHeight),
-				peerSearchOffset()
-					+ (_peerSearchSelected + 1) * st::dialogsRowHeight,
-			});
+			const auto from = peerSearchOffset()
+				+ _peerSearchSelected * st::dialogsRowHeight
+				+ (_peerSearchSelected ? 0 : -st::searchedBarHeight);
+			const auto height = st::dialogsRowHeight
+				+ (_peerSearchSelected ? 0 : st::searchedBarHeight);
+			scrollToItem(from, height);
 		} else {
-			_mustScrollTo.fire({
-				searchedOffset()
-					+ _searchedSelected * _st->height
-					+ (_searchedSelected ? 0 : -st::searchedBarHeight),
-				searchedOffset()
-					+ (_searchedSelected + 1) * _st->height,
-			});
+			const auto from = searchedOffset()
+				+ _searchedSelected * _st->height
+				+ (_searchedSelected ? 0 : -st::searchedBarHeight);
+			const auto height = _st->height
+				+ (_searchedSelected ? 0 : st::searchedBarHeight);
+			scrollToItem(from, height);
 		}
 	}
 	update();
 }
 
 void InnerWidget::scrollToEntry(const RowDescriptor &entry) {
-	auto fromY = -1;
-	auto rowHeight = _st->height;
 	if (_state == WidgetState::Default) {
-		if (auto row = shownDialogs()->getRow(entry.key)) {
-			fromY = dialogsOffset() + row->pos() * _st->height;
+		if (auto row = _shownList->getRow(entry.key)) {
+			scrollToItem(dialogsOffset() + row->top(), row->height());
 		}
 	} else if (_state == WidgetState::Filtered) {
 		for (int32 i = 0, c = _searchResults.size(); i < c; ++i) {
 			if (isSearchResultActive(_searchResults[i].get(), entry)) {
-				fromY = searchedOffset() + i * _st->height;
-				rowHeight = _st->height;
-				break;
+				const auto from = searchedOffset() + i * _st->height;
+				scrollToItem(from, _st->height);
+				return;
 			}
 		}
-		if (fromY < 0) {
-			for (auto i = 0, c = int(_filterResults.size()); i != c; ++i) {
-				if (_filterResults[i]->key() == entry.key) {
-					fromY = filteredOffset() + (i * _st->height);
-					break;
-				}
+		for (auto i = 0, c = int(_filterResults.size()); i != c; ++i) {
+			auto &result = _filterResults[i];
+			if (result.key() == entry.key) {
+				const auto from = filteredOffset() + result.top;
+				scrollToItem(from, result.row->height());
+				return;
 			}
 		}
-	}
-	if (fromY >= 0) {
-		_mustScrollTo.fire({ fromY, fromY + rowHeight });
 	}
 }
 
 void InnerWidget::selectSkipPage(int32 pixels, int32 direction) {
 	clearMouseSelection();
-	const auto list = shownDialogs();
 	int toSkip = pixels / _st->height;
-	if (_state == WidgetState::Default) {
-		if (!_selected) {
-			if (direction > 0 && list->size() > _skipTopDialogs) {
-				_selected = *(list->cbegin() + _skipTopDialogs);
-				_collapsedSelected = -1;
-			} else {
-				return;
-			}
-		}
-		if (direction > 0) {
-			for (auto i = list->cfind(_selected), end = list->cend(); i != end && (toSkip--); ++i) {
-				_selected = *i;
-			}
+	if (_state != WidgetState::Default) {
+		selectSkip(direction * toSkip);
+		return;
+	}
+	const auto skip = _skipTopDialog ? 1 : 0;
+	if (!_selected) {
+		if (direction > 0 && _shownList->size() > skip) {
+			_selected = (_shownList->cbegin() + skip)->get();
+			_collapsedSelected = -1;
 		} else {
-			for (auto i = list->cfind(_selected), b = list->cbegin(); i != b && (*i)->pos() > _skipTopDialogs && (toSkip--);) {
-				_selected = *(--i);
-			}
-			if (toSkip && !_collapsedRows.empty()) {
-				_collapsedSelected = std::max(int(_collapsedRows.size()) - toSkip, 0);
-				_selected = nullptr;
-			}
+			return;
 		}
-		if (_collapsedSelected >= 0 || _selected) {
-			const auto fromY = (_collapsedSelected >= 0)
-				? (_collapsedSelected * st::dialogsImportantBarHeight)
-				: (dialogsOffset() + _selected->pos() * _st->height);
-			_mustScrollTo.fire({ fromY, fromY + _st->height });
+	}
+	if (direction > 0) {
+		for (auto i = _shownList->cfind(_selected), end = _shownList->cend()
+			; i != end && (toSkip--)
+			; ++i) {
+			_selected = *i;
 		}
 	} else {
-		return selectSkip(direction * toSkip);
+		for (auto i = _shownList->cfind(_selected), b = _shownList->cbegin()
+			; i != b && (*i)->index() > skip && (toSkip--)
+			;) {
+			_selected = *(--i);
+		}
+		if (toSkip && !_collapsedRows.empty()) {
+			_collapsedSelected = std::max(int(_collapsedRows.size()) - toSkip, 0);
+			_selected = nullptr;
+		}
 	}
+	scrollToDefaultSelected();
 	update();
 }
 
-void InnerWidget::loadPeerPhotos() {
-	if (!parentWidget()) return;
+void InnerWidget::scrollToItem(int top, int height) {
+	_mustScrollTo.fire({ top, top + height });
+}
 
-	const auto list = shownDialogs();
+void InnerWidget::scrollToDefaultSelected() {
+	Expects(_state == WidgetState::Default);
+
+	if (_collapsedSelected >= 0) {
+		const auto from = _collapsedSelected * st::dialogsImportantBarHeight;
+		scrollToItem(from, st::dialogsImportantBarHeight);
+	} else if (_selected) {
+		const auto from = dialogsOffset() + _selected->top();
+		scrollToItem(from, _selected->height());
+	}
+}
+
+void InnerWidget::preloadRowsData() {
+	if (!parentWidget()) {
+		return;
+	}
+
 	auto yFrom = _visibleTop;
 	auto yTo = _visibleTop + (_visibleBottom - _visibleTop) * (PreloadHeightsCount + 1);
 	if (_state == WidgetState::Default) {
-		auto otherStart = list->size() * _st->height;
+		auto otherStart = _shownList->size() * _st->height;
 		if (yFrom < otherStart) {
-			for (auto i = list->cfind(yFrom, _st->height), end = list->cend(); i != end; ++i) {
-				if (((*i)->pos() * _st->height) >= yTo) {
+			for (auto i = _shownList->findByY(yFrom), end = _shownList->cend()
+				; i != end
+				; ++i) {
+				if (((*i)->index() * _st->height) >= yTo) {
 					break;
 				}
-				(*i)->entry()->loadUserpic();
+				(*i)->entry()->chatListPreloadData();
 			}
 			yFrom = 0;
 		} else {
@@ -2925,7 +3237,7 @@ void InnerWidget::loadPeerPhotos() {
 			if (to > _filterResults.size()) to = _filterResults.size();
 
 			for (; from < to; ++from) {
-				_filterResults[from]->entry()->loadUserpic();
+				_filterResults[from].key().entry()->chatListPreloadData();
 			}
 		}
 
@@ -2975,16 +3287,18 @@ void InnerWidget::switchToFilter(FilterId filterId) {
 		filterId = 0;
 	}
 	if (_filterId == filterId) {
-		_mustScrollTo.fire({ 0, 0 });
+		jumpToTop();
 		return;
 	}
 	saveChatsFilterScrollState(_filterId);
 	if (_openedFolder) {
 		_filterId = filterId;
+		refreshShownList();
 	} else {
 		clearSelection();
 		stopReorderPinned();
 		_filterId = filterId;
+		refreshShownList();
 		refreshWithCollapsedRows(true);
 	}
 	refreshEmptyLabel();
@@ -2998,14 +3312,18 @@ void InnerWidget::switchToFilter(FilterId filterId) {
 	}
 }
 
+void InnerWidget::jumpToTop() {
+	_mustScrollTo.fire({ 0, -1 });
+}
+
 void InnerWidget::saveChatsFilterScrollState(FilterId filterId) {
-	_chatsFilterScrollStates[filterId] = -pos().y();
+	_chatsFilterScrollStates[filterId] = -y();
 }
 
 void InnerWidget::restoreChatsFilterScrollState(FilterId filterId) {
 	const auto it = _chatsFilterScrollStates.find(filterId);
 	if (it != end(_chatsFilterScrollStates)) {
-		_mustScrollTo.fire({ it->second, -1 });
+		_mustScrollTo.fire({ std::max(it->second, 0), -1 });
 	}
 }
 
@@ -3041,53 +3359,69 @@ ChosenRow InnerWidget::computeChosenRow() const {
 	if (_state == WidgetState::Default) {
 		if (_selected) {
 			return {
-				_selected->key(),
-				Data::UnreadMessagePosition
+				.key = _selected->key(),
+				.message = Data::UnreadMessagePosition,
 			};
 		}
 	} else if (_state == WidgetState::Filtered) {
 		if (base::in_range(_filteredSelected, 0, _filterResults.size())) {
 			return {
-				_filterResults[_filteredSelected]->key(),
-				Data::UnreadMessagePosition,
-				true
+				.key = _filterResults[_filteredSelected].key(),
+				.message = Data::UnreadMessagePosition,
+				.filteredRow = true,
 			};
 		} else if (base::in_range(_peerSearchSelected, 0, _peerSearchResults.size())) {
+			const auto peer = _peerSearchResults[_peerSearchSelected]->peer;
 			return {
-				session().data().history(_peerSearchResults[_peerSearchSelected]->peer),
-				Data::UnreadMessagePosition
+				.key = session().data().history(peer),
+				.message = Data::UnreadMessagePosition
 			};
 		} else if (base::in_range(_searchedSelected, 0, _searchResults.size())) {
 			const auto result = _searchResults[_searchedSelected].get();
 			const auto topic = result->topic();
 			const auto item = result->item();
 			return {
-				(topic ? (Entry*)topic : (Entry*)item->history()),
-				item->position()
+				.key = (topic ? (Entry*)topic : (Entry*)item->history()),
+				.message = item->position()
 			};
 		}
 	}
 	return ChosenRow();
 }
 
-bool InnerWidget::chooseRow(Qt::KeyboardModifiers modifiers) {
+bool InnerWidget::chooseRow(
+		Qt::KeyboardModifiers modifiers,
+		MsgId pressedTopicRootId) {
 	if (chooseCollapsedRow()) {
 		return true;
 	} else if (chooseHashtag()) {
 		return true;
 	}
-	const auto modifyChosenRow = [](
+	const auto modifyChosenRow = [&](
 			ChosenRow row,
 			Qt::KeyboardModifiers modifiers) {
-		if (TabbedPanelShowOnClick.value()) {
-			row.newWindow = (modifiers & Qt::ControlModifier);
-		}
+		row.newWindow = (modifiers & Qt::ControlModifier);
+		row.userpicClick = (_lastRowLocalMouseX >= 0)
+			&& (_lastRowLocalMouseX < _st->nameLeft)
+			&& (width() > _narrowWidth);
 		return row;
 	};
-	const auto chosen = modifyChosenRow(computeChosenRow(), modifiers);
+	auto chosen = modifyChosenRow(computeChosenRow(), modifiers);
 	if (chosen.key) {
 		if (IsServerMsgId(chosen.message.fullId.msg)) {
 			session().local().saveRecentSearchHashtags(_filter);
+		}
+		if (!chosen.message.fullId) {
+			if (const auto history = chosen.key.history()) {
+				if (const auto forum = history->peer->forum()) {
+					if (pressedTopicRootId) {
+						chosen.message.fullId = {
+							history->peer->id,
+							pressedTopicRootId,
+						};
+					}
+				}
+			}
 		}
 		_chosenRow.fire_copy(chosen);
 		return true;
@@ -3101,10 +3435,9 @@ RowDescriptor InnerWidget::chatListEntryBefore(
 		return RowDescriptor();
 	}
 	if (_state == WidgetState::Default) {
-		const auto list = shownDialogs();
-		if (const auto row = list->getRow(which.key)) {
-			const auto i = list->cfind(row);
-			if (i != list->cbegin()) {
+		if (const auto row = _shownList->getRow(which.key)) {
+			const auto i = _shownList->cfind(row);
+			if (i != _shownList->cbegin()) {
 				return RowDescriptor(
 					(*(i - 1))->key(),
 					FullMsgId(PeerId(), ShowAtUnreadMsgId));
@@ -3113,8 +3446,8 @@ RowDescriptor InnerWidget::chatListEntryBefore(
 		return RowDescriptor();
 	}
 
-	const auto whichHistory = which.key.history();
-	if (!whichHistory) {
+	const auto whichThread = which.key.thread();
+	if (!whichThread) {
 		return RowDescriptor();
 	}
 	if (!_searchResults.empty()) {
@@ -3132,7 +3465,7 @@ RowDescriptor InnerWidget::chatListEntryBefore(
 					return RowDescriptor();
 				}
 				return RowDescriptor(
-					_filterResults.back()->key(),
+					_filterResults.back().key(),
 					FullMsgId(PeerId(), ShowAtUnreadMsgId));
 			}
 			return RowDescriptor(
@@ -3140,32 +3473,34 @@ RowDescriptor InnerWidget::chatListEntryBefore(
 				FullMsgId(PeerId(), ShowAtUnreadMsgId));
 		}
 	}
-	if (!_peerSearchResults.empty()
-		&& _peerSearchResults[0]->peer == whichHistory->peer) {
-		if (_filterResults.empty()) {
-			return RowDescriptor();
+	if (const auto history = whichThread->asHistory()) {
+		if (!_peerSearchResults.empty()
+			&& _peerSearchResults[0]->peer == history->peer) {
+			if (_filterResults.empty()) {
+				return RowDescriptor();
+			}
+			return RowDescriptor(
+				_filterResults.back().key(),
+				FullMsgId(PeerId(), ShowAtUnreadMsgId));
 		}
-		return RowDescriptor(
-			_filterResults.back()->key(),
-			FullMsgId(PeerId(), ShowAtUnreadMsgId));
-	}
-	if (!_peerSearchResults.empty()) {
-		for (auto b = _peerSearchResults.cbegin(), i = b + 1, e = _peerSearchResults.cend(); i != e; ++i) {
-			if ((*i)->peer == whichHistory->peer) {
-				return RowDescriptor(
-					session().data().history((*(i - 1))->peer),
-					FullMsgId(PeerId(), ShowAtUnreadMsgId));
+		if (!_peerSearchResults.empty()) {
+			for (auto b = _peerSearchResults.cbegin(), i = b + 1, e = _peerSearchResults.cend(); i != e; ++i) {
+				if ((*i)->peer == history->peer) {
+					return RowDescriptor(
+						session().data().history((*(i - 1))->peer),
+						FullMsgId(PeerId(), ShowAtUnreadMsgId));
+				}
 			}
 		}
 	}
-	if (_filterResults.empty() || _filterResults[0]->key() == which.key) {
+	if (_filterResults.empty() || _filterResults[0].key() == which.key) {
 		return RowDescriptor();
 	}
 
 	for (auto b = _filterResults.cbegin(), i = b + 1, e = _filterResults.cend(); i != e; ++i) {
-		if ((*i)->key() == which.key) {
+		if (i->key() == which.key) {
 			return RowDescriptor(
-				(*(i - 1))->key(),
+				(i - 1)->key(),
 				FullMsgId(PeerId(), ShowAtUnreadMsgId));
 		}
 	}
@@ -3178,10 +3513,9 @@ RowDescriptor InnerWidget::chatListEntryAfter(
 		return RowDescriptor();
 	}
 	if (_state == WidgetState::Default) {
-		const auto list = shownDialogs();
-		if (const auto row = list->getRow(which.key)) {
-			const auto i = list->cfind(row) + 1;
-			if (i != list->cend()) {
+		if (const auto row = _shownList->getRow(which.key)) {
+			const auto i = _shownList->cfind(row) + 1;
+			if (i != _shownList->cend()) {
 				return RowDescriptor(
 					(*i)->key(),
 					FullMsgId(PeerId(), ShowAtUnreadMsgId));
@@ -3190,8 +3524,8 @@ RowDescriptor InnerWidget::chatListEntryAfter(
 		return RowDescriptor();
 	}
 
-	const auto whichHistory = which.key.history();
-	if (!whichHistory) {
+	const auto whichThread = which.key.thread();
+	if (!whichThread) {
 		return RowDescriptor();
 	}
 	for (auto i = _searchResults.cbegin(), e = _searchResults.cend(); i != e; ++i) {
@@ -3204,27 +3538,29 @@ RowDescriptor InnerWidget::chatListEntryAfter(
 			return RowDescriptor();
 		}
 	}
-	for (auto i = _peerSearchResults.cbegin(), e = _peerSearchResults.cend(); i != e; ++i) {
-		if ((*i)->peer == whichHistory->peer) {
-			++i;
-			if (i != e) {
-				return RowDescriptor(
-					session().data().history((*i)->peer),
-					FullMsgId(PeerId(), ShowAtUnreadMsgId));
-			} else if (!_searchResults.empty()) {
-				return RowDescriptor(
-					_searchResults.front()->item()->history(),
-					_searchResults.front()->item()->fullId());
+	if (const auto history = whichThread->asHistory()) {
+		for (auto i = _peerSearchResults.cbegin(), e = _peerSearchResults.cend(); i != e; ++i) {
+			if ((*i)->peer == history->peer) {
+				++i;
+				if (i != e) {
+					return RowDescriptor(
+						session().data().history((*i)->peer),
+						FullMsgId(PeerId(), ShowAtUnreadMsgId));
+				} else if (!_searchResults.empty()) {
+					return RowDescriptor(
+						_searchResults.front()->item()->history(),
+						_searchResults.front()->item()->fullId());
+				}
+				return RowDescriptor();
 			}
-			return RowDescriptor();
 		}
 	}
 	for (auto i = _filterResults.cbegin(), e = _filterResults.cend(); i != e; ++i) {
-		if ((*i)->key() == which.key) {
+		if ((*i).key() == which.key) {
 			++i;
 			if (i != e) {
 				return RowDescriptor(
-					(*i)->key(),
+					(*i).key(),
 					FullMsgId(PeerId(), ShowAtUnreadMsgId));
 			} else if (!_peerSearchResults.empty()) {
 				return RowDescriptor(
@@ -3243,9 +3579,8 @@ RowDescriptor InnerWidget::chatListEntryAfter(
 
 RowDescriptor InnerWidget::chatListEntryFirst() const {
 	if (_state == WidgetState::Default) {
-		const auto list = shownDialogs();
-		const auto i = list->cbegin();
-		if (i != list->cend()) {
+		const auto i = _shownList->cbegin();
+		if (i != _shownList->cend()) {
 			return RowDescriptor(
 				(*i)->key(),
 				FullMsgId(PeerId(), ShowAtUnreadMsgId));
@@ -3253,7 +3588,7 @@ RowDescriptor InnerWidget::chatListEntryFirst() const {
 		return RowDescriptor();
 	} else if (!_filterResults.empty()) {
 		return RowDescriptor(
-			_filterResults.front()->key(),
+			_filterResults.front().key(),
 			FullMsgId(PeerId(), ShowAtUnreadMsgId));
 	} else if (!_peerSearchResults.empty()) {
 		return RowDescriptor(
@@ -3269,9 +3604,8 @@ RowDescriptor InnerWidget::chatListEntryFirst() const {
 
 RowDescriptor InnerWidget::chatListEntryLast() const {
 	if (_state == WidgetState::Default) {
-		const auto list = shownDialogs();
-		const auto i = list->cend();
-		if (i != list->cbegin()) {
+		const auto i = _shownList->cend();
+		if (i != _shownList->cbegin()) {
 			return RowDescriptor(
 				(*(i - 1))->key(),
 				FullMsgId(PeerId(), ShowAtUnreadMsgId));
@@ -3287,7 +3621,7 @@ RowDescriptor InnerWidget::chatListEntryLast() const {
 			FullMsgId(PeerId(), ShowAtUnreadMsgId));
 	} else if (!_filterResults.empty()) {
 		return RowDescriptor(
-			_filterResults.back()->key(),
+			_filterResults.back().key(),
 			FullMsgId(PeerId(), ShowAtUnreadMsgId));
 	}
 	return RowDescriptor();
@@ -3297,11 +3631,24 @@ void InnerWidget::setupOnlineStatusCheck() {
 	session().changes().peerUpdates(
 		Data::PeerUpdate::Flag::OnlineStatus
 		| Data::PeerUpdate::Flag::GroupCall
+		| Data::PeerUpdate::Flag::MessagesTTL
 	) | rpl::start_with_next([=](const Data::PeerUpdate &update) {
-		if (const auto user = update.peer->asUser()) {
-			userOnlineUpdated(user);
-		} else {
-			groupHasCallUpdated(update.peer);
+		const auto &peer = update.peer;
+		if (const auto user = peer->asUser()) {
+			if (user->isSelf()) {
+				return;
+			}
+			if (const auto history = session().data().historyLoaded(user)) {
+				updateRowCornerStatusShown(history);
+			}
+		} else if (const auto group = peer->asMegagroup()) {
+			if (const auto history = session().data().historyLoaded(group)) {
+				updateRowCornerStatusShown(history);
+			}
+		} else if (peer->messagesTTL()) {
+			if (const auto history = session().data().historyLoaded(peer)) {
+				updateRowCornerStatusShown(history);
+			}
 		}
 	}, lifetime());
 }
@@ -3326,35 +3673,20 @@ void InnerWidget::repaintDialogRowCornerStatus(not_null<History*> history) {
 		st::defaultDialogRow.padding.left(),
 		st::defaultDialogRow.padding.top()
 	);
+	const auto ttlUpdateRect = !history->peer->messagesTTL()
+		? QRect()
+		: Dialogs::CornerBadgeTTLRect(
+			_st->photoSize
+		).translated(
+			st::defaultDialogRow.padding.left(),
+			st::defaultDialogRow.padding.top()
+		);
 	updateDialogRow(
 		RowDescriptor(
 			history,
 			FullMsgId()),
-		updateRect,
+		updateRect.united(ttlUpdateRect),
 		UpdateRowSection::Default | UpdateRowSection::Filtered);
-}
-
-void InnerWidget::userOnlineUpdated(not_null<UserData*> user) {
-	if (user->isSelf()) {
-		return;
-	}
-	const auto history = session().data().historyLoaded(user);
-	if (!history) {
-		return;
-	}
-	updateRowCornerStatusShown(history);
-}
-
-void InnerWidget::groupHasCallUpdated(not_null<PeerData*> peer) {
-	const auto group = peer->asMegagroup();
-	if (!group) {
-		return;
-	}
-	const auto history = session().data().historyLoaded(group);
-	if (!history) {
-		return;
-	}
-	updateRowCornerStatusShown(history);
 }
 
 void InnerWidget::updateRowCornerStatusShown(not_null<History*> history) {
@@ -3366,15 +3698,15 @@ void InnerWidget::updateRowCornerStatusShown(not_null<History*> history) {
 	const auto findRow = [&](not_null<History*> history)
 		-> std::pair<Row*, int> {
 		if (state() == WidgetState::Default) {
-			const auto row = shownDialogs()->getRow({ history });
+			const auto row = _shownList->getRow({ history });
 			return { row, row ? defaultRowTop(row) : 0 };
 		}
 		const auto i = ranges::find(
 			_filterResults,
-			history.get(),
-			[](not_null<Row*> row) { return row->history(); });
+			Key(history),
+			&FilterResult::key);
 		const auto index = (i - begin(_filterResults));
-		const auto row = (i == end(_filterResults)) ? nullptr : i->get();
+		const auto row = (i == end(_filterResults)) ? nullptr : i->row.get();
 		return { row, filteredOffset() + index * _st->height };
 	};
 	if (const auto &[row, top] = findRow(history); row != nullptr) {
@@ -3408,14 +3740,12 @@ void InnerWidget::setupShortcuts() {
 	Shortcuts::Requests(
 	) | rpl::filter([=] {
 		return isActiveWindow()
-			&& !Ui::isLayerShown()
-			&& !_controller->window().locked();
+			&& !_controller->isLayerShown()
+			&& !_controller->window().locked()
+			&& !_childListShown.current().shown;
 	}) | rpl::start_with_next([=](not_null<Shortcuts::Request*> request) {
 		using Command = Shortcuts::Command;
 
-		if (_controller->selectingPeer()) {
-			return;
-		}
 		const auto row = _controller->activeChatEntryCurrent();
 		// Those should be computed before the call to request->handle.
 		const auto previous = row.key
@@ -3453,17 +3783,21 @@ void InnerWidget::setupShortcuts() {
 			return jumpToDialogRow(last);
 		});
 		request->check(Command::ChatSelf) && request->handle([=] {
-			_controller->content()->chooseThread(
-				session().user(),
-				ShowAtUnreadMsgId);
+			_controller->showThread(
+				session().data().history(session().user()),
+				ShowAtUnreadMsgId,
+				Window::SectionShow::Way::ClearStack);
 			return true;
 		});
 		request->check(Command::ShowArchive) && request->handle([=] {
 			const auto folder = session().data().folderLoaded(
 				Data::Folder::kId);
 			if (folder && !folder->chatsList()->empty()) {
-				_controller->openFolder(folder);
-				_controller->window().hideSettingsAndLayer();
+				const auto controller = _controller;
+				controller->openFolder(folder);
+
+				// Calling openFolder() could've destroyed this widget.
+				controller->window().hideSettingsAndLayer();
 				return true;
 			}
 			return false;
@@ -3495,6 +3829,9 @@ void InnerWidget::setupShortcuts() {
 			Command::ChatPinned3,
 			Command::ChatPinned4,
 			Command::ChatPinned5,
+			Command::ChatPinned6,
+			Command::ChatPinned7,
+			Command::ChatPinned8,
 		};
 		auto &&pinned = ranges::views::zip(
 			kPinned,
@@ -3547,14 +3884,14 @@ void InnerWidget::setupShortcuts() {
 		});
 
 		request->check(Command::ReadChat) && request->handle([=] {
-			const auto history = _selected ? _selected->history() : nullptr;
-			if (history) {
-				if (history->chatListBadgesState().unread) {
-					session().data().histories().readInbox(history);
-				}
-				return true;
+			const auto thread = _selected ? _selected->thread() : nullptr;
+			if (!thread) {
+				return false;
 			}
-			return (history != nullptr);
+			if (Window::IsUnreadThread(thread)) {
+				Window::MarkAsReadThread(thread);
+			}
+			return true;
 		});
 
 		request->check(Command::ShowContacts) && request->handle([=] {

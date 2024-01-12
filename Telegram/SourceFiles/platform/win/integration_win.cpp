@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "core/sandbox.h"
+#include "tray.h"
 #include "base/platform/win/base_windows_winrt.h"
 
 #include <QtCore/QCoreApplication>
@@ -79,7 +80,10 @@ bool WindowsIntegration::processEvent(
 		break;
 
 	case WM_SETTINGCHANGE:
+#if QT_VERSION < QT_VERSION_CHECK(6, 5, 0)
 		Core::App().settings().setSystemDarkMode(Platform::IsDarkMode());
+#endif // Qt < 6.5.0
+		Core::App().tray().updateIconCounters();
 		break;
 	}
 	return false;

@@ -7,20 +7,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/timer.h"
 #include "ui/effects/animations.h"
 #include "ui/widgets/side_bar_button.h"
 #include "ui/widgets/scroll_area.h"
-#include "ui/wrap/vertical_layout.h"
 
 namespace Ui {
+class VerticalLayout;
 class VerticalLayoutReorder;
 enum class FilterIcon : uchar;
 class PopupMenu;
 } // namespace Ui
-
-namespace Data {
-class ChatFilter;
-} // namespace Data
 
 namespace Window {
 
@@ -53,8 +50,9 @@ private:
 	void showMenu(QPoint position, FilterId id);
 	void showEditBox(FilterId id);
 	void showRemoveBox(FilterId id);
-	void remove(FilterId id);
+	void remove(FilterId id, std::vector<not_null<PeerData*>> leave = {});
 	void scrollToButton(not_null<Ui::RpWidget*> widget);
+	void openFiltersSettings();
 
 	const not_null<SessionController*> _session;
 	const not_null<Ui::RpWidget*> _parent;
@@ -71,7 +69,14 @@ private:
 	bool _ignoreRefresh = false;
 	bool _waitingSuggested = false;
 
+	FilterId _removingId = 0;
+	mtpRequestId _removingRequestId = 0;
+
 	base::unique_qptr<Ui::PopupMenu> _popupMenu;
+	struct {
+		base::Timer timer;
+		FilterId filterId = FilterId(-1);
+	} _drag;
 
 	Ui::Animations::Simple _scrollToAnimation;
 

@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "payments/payments_form.h"
 
 #include "main/main_session.h"
+#include "data/data_channel.h"
 #include "data/data_session.h"
 #include "data/data_media_types.h"
 #include "data/data_user.h"
@@ -16,7 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_file_origin.h"
 #include "countries/countries_instance.h"
 #include "history/history_item.h"
-#include "history/history_service.h" // HistoryServicePayment.
+#include "history/history_item_components.h"
 #include "stripe/stripe_api_client.h"
 #include "stripe/stripe_error.h"
 #include "stripe/stripe_token.h"
@@ -112,10 +113,61 @@ constexpr auto kPasswordPeriod = 15 * TimeId(60);
 } // namespace
 
 not_null<Main::Session*> SessionFromId(const InvoiceId &id) {
-	if (const auto slug = std::get_if<InvoiceSlug>(&id.value)) {
+	if (const auto message = std::get_if<InvoiceMessage>(&id.value)) {
+		return &message->peer->session();
+	} else if (const auto slug = std::get_if<InvoiceSlug>(&id.value)) {
 		return slug->session;
 	}
-	return &v::get<InvoiceMessage>(id.value).peer->session();
+	const auto &giftCode = v::get<InvoicePremiumGiftCode>(id.value);
+	const auto users = std::get_if<InvoicePremiumGiftCodeUsers>(
+		&giftCode.purpose);
+	if (users) {
+		Assert(!users->users.empty());
+		return &users->users.front()->session();
+	}
+	const auto &giveaway = v::get<InvoicePremiumGiftCodeGiveaway>(
+		giftCode.purpose);
+	return &giveaway.boostPeer->session();
+}
+
+MTPinputStorePaymentPurpose InvoicePremiumGiftCodeGiveawayToTL(
+		const InvoicePremiumGiftCode &invoice) {
+	const auto &giveaway = v::get<InvoicePremiumGiftCodeGiveaway>(
+		invoice.purpose);
+	using Flag = MTPDinputStorePaymentPremiumGiveaway::Flag;
+	return MTP_inputStorePaymentPremiumGiveaway(
+		MTP_flags(Flag()
+			| (giveaway.onlyNewSubscribers
+				? Flag::f_only_new_subscribers
+				: Flag())
+			| (giveaway.additionalChannels.empty()
+				? Flag()
+				: Flag::f_additional_peers)
+			| (giveaway.countries.empty()
+				? Flag()
+				: Flag::f_countries_iso2)
+			| (giveaway.showWinners
+				? Flag::f_winners_are_visible
+				: Flag())
+			| (giveaway.additionalPrize.isEmpty()
+				? Flag()
+				: Flag::f_prize_description)),
+		giveaway.boostPeer->input,
+		MTP_vector_from_range(ranges::views::all(
+			giveaway.additionalChannels
+		) | ranges::views::transform([](not_null<ChannelData*> c) {
+			return MTPInputPeer(c->input);
+		})),
+		MTP_vector_from_range(ranges::views::all(
+			giveaway.countries
+		) | ranges::views::transform([](QString value) {
+			return MTP_string(value);
+		})),
+		MTP_string(giveaway.additionalPrize),
+		MTP_long(invoice.randomId),
+		MTP_int(giveaway.untilDate),
+		MTP_string(invoice.currency),
+		MTP_long(invoice.amount));
 }
 
 Form::Form(InvoiceId id, bool receipt)
@@ -207,11 +259,10 @@ void Form::loadThumbnail(not_null<PhotoData*> photo) {
 }
 
 Data::FileOrigin Form::thumbnailFileOrigin() const {
-	if (const auto slug = std::get_if<InvoiceSlug>(&_id.value)) {
-		return Data::FileOrigin();
+	if (const auto message = std::get_if<InvoiceMessage>(&_id.value)) {
+		return FullMsgId(message->peer->id, message->itemId);
 	}
-	const auto message = v::get<InvoiceMessage>(_id.value);
-	return FullMsgId(message.peer->id, message.itemId);
+	return Data::FileOrigin();
 }
 
 QImage Form::prepareGoodThumbnail(
@@ -257,13 +308,47 @@ QImage Form::prepareEmptyThumbnail() const {
 }
 
 MTPInputInvoice Form::inputInvoice() const {
-	if (const auto slug = std::get_if<InvoiceSlug>(&_id.value)) {
+	if (const auto message = std::get_if<InvoiceMessage>(&_id.value)) {
+		return MTP_inputInvoiceMessage(
+			message->peer->input,
+			MTP_int(message->itemId.bare));
+	} else if (const auto slug = std::get_if<InvoiceSlug>(&_id.value)) {
 		return MTP_inputInvoiceSlug(MTP_string(slug->slug));
 	}
-	const auto message = v::get<InvoiceMessage>(_id.value);
-	return MTP_inputInvoiceMessage(
-		message.peer->input,
-		MTP_int(message.itemId.bare));
+	const auto &giftCode = v::get<InvoicePremiumGiftCode>(_id.value);
+	using Flag = MTPDpremiumGiftCodeOption::Flag;
+	const auto option = MTP_premiumGiftCodeOption(
+		MTP_flags((giftCode.storeQuantity ? Flag::f_store_quantity : Flag())
+			| (giftCode.storeProduct.isEmpty()
+				? Flag()
+				: Flag::f_store_product)),
+		MTP_int(giftCode.users),
+		MTP_int(giftCode.months),
+		MTP_string(giftCode.storeProduct),
+		MTP_int(giftCode.storeQuantity),
+		MTP_string(giftCode.currency),
+		MTP_long(giftCode.amount));
+	const auto users = std::get_if<InvoicePremiumGiftCodeUsers>(
+		&giftCode.purpose);
+	if (users) {
+		using Flag = MTPDinputStorePaymentPremiumGiftCode::Flag;
+		return MTP_inputInvoicePremiumGiftCode(
+			MTP_inputStorePaymentPremiumGiftCode(
+				MTP_flags(users->boostPeer ? Flag::f_boost_peer : Flag()),
+				MTP_vector_from_range(ranges::views::all(
+					users->users
+				) | ranges::views::transform([](not_null<UserData*> user) {
+					return MTPInputUser(user->inputUser);
+				})),
+				users->boostPeer ? users->boostPeer->input : MTPInputPeer(),
+				MTP_string(giftCode.currency),
+				MTP_long(giftCode.amount)),
+			option);
+	} else {
+		return MTP_inputInvoicePremiumGiftCode(
+			InvoicePremiumGiftCodeGiveawayToTL(giftCode),
+			option);
+	}
 }
 
 void Form::requestForm() {
@@ -384,8 +469,7 @@ void Form::processInvoice(const MTPDinvoice &data) {
 		.isFlexible = data.is_flexible(),
 		.isTest = data.is_test(),
 
-		.recurringTermsUrl = qs(
-			data.vrecurring_terms_url().value_or_empty()),
+		.termsUrl = qs(data.vterms_url().value_or_empty()),
 
 		.phoneSentToProvider = data.is_phone_to_provider(),
 		.emailSentToProvider = data.is_email_to_provider(),
@@ -591,6 +675,7 @@ void Form::fillSmartGlocalNativeMethod(QJsonObject object) {
 	_paymentMethod.native = NativePaymentMethod{
 		.data = SmartGlocalPaymentMethod{
 			.publicToken = key,
+			.tokenizeUrl = value(u"tokenize_url").toString(),
 		},
 	};
 	_paymentMethod.ui.native = Ui::NativeMethodDetails{
@@ -680,6 +765,13 @@ void Form::submit(const Core::CloudPasswordResult &result) {
 		_passwordRequestId = 0;
 		_updates.fire(Error{ Error::Type::TmpPassword, error.type() });
 	}).send();
+}
+
+std::optional<QDate> Form::overrideExpireDateThreshold() const {
+	const auto phone = _session->user()->phone();
+	return phone.startsWith('7')
+		? QDate(2022, 2, 1)
+		: std::optional<QDate>();
 }
 
 void Form::validateInformation(const Ui::RequestedInformation &information) {
@@ -795,7 +887,7 @@ void Form::validateCard(
 		bool saveInformation) {
 	Expects(!v::is_null(_paymentMethod.native.data));
 
-	if (!validateCardLocal(details)) {
+	if (!validateCardLocal(details, overrideExpireDateThreshold())) {
 		return;
 	}
 	const auto &native = _paymentMethod.native.data;
@@ -809,15 +901,19 @@ void Form::validateCard(
 	}
 }
 
-bool Form::validateCardLocal(const Ui::UncheckedCardDetails &details) const {
-	if (auto error = cardErrorLocal(details)) {
+bool Form::validateCardLocal(
+		const Ui::UncheckedCardDetails &details,
+		const std::optional<QDate> &overrideExpireDateThreshold) const {
+	if (auto error = cardErrorLocal(details, overrideExpireDateThreshold)) {
 		_updates.fire(std::move(error));
 		return false;
 	}
 	return true;
 }
 
-Error Form::cardErrorLocal(const Ui::UncheckedCardDetails &details) const {
+Error Form::cardErrorLocal(
+		const Ui::UncheckedCardDetails &details,
+		const std::optional<QDate> &overrideExpireDateThreshold) const {
 	using namespace Stripe;
 
 	auto errors = QStringList();
@@ -830,7 +926,8 @@ Error Form::cardErrorLocal(const Ui::UncheckedCardDetails &details) const {
 	}
 	if (ValidateParsedExpireDate(
 		details.expireMonth,
-		details.expireYear
+		details.expireYear,
+		overrideExpireDateThreshold
 	) != kValid) {
 		push(u"LOCAL_CARD_EXPIRE_DATE_INVALID"_q);
 	}
@@ -888,8 +985,7 @@ void Form::validateCard(
 		if (error) {
 			LOG(("Stripe Error %1: %2 (%3)"
 				).arg(int(error.code())
-				).arg(error.description()
-				).arg(error.message()));
+				).arg(error.description(), error.message()));
 			_updates.fire(Error{ Error::Type::Stripe, error.description() });
 		} else {
 			setPaymentCredentials({
@@ -915,6 +1011,7 @@ void Form::validateCard(
 	}
 	auto configuration = SmartGlocal::PaymentConfiguration{
 		.publicToken = method.publicToken,
+		.tokenizeUrl = method.tokenizeUrl,
 		.isTest = _invoice.isTest,
 	};
 	_smartglocal = std::make_unique<SmartGlocal::APIClient>(
@@ -938,8 +1035,7 @@ void Form::validateCard(
 		if (error) {
 			LOG(("SmartGlocal Error %1: %2 (%3)"
 				).arg(int(error.code())
-				).arg(error.description()
-				).arg(error.message()));
+				).arg(error.description(), error.message()));
 			_updates.fire(Error{
 				Error::Type::SmartGlocal,
 				error.description(),

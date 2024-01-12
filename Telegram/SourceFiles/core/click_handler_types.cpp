@@ -11,10 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/local_url_handlers.h"
 #include "mainwidget.h"
-#include "mainwindow.h"
 #include "main/main_session.h"
 #include "ui/boxes/confirm_box.h"
-#include "ui/text/text_entity.h"
 #include "ui/toast/toast.h"
 #include "base/qthelp_regex.h"
 #include "base/qt/qt_key_modifiers.h"
@@ -26,6 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
+#include "window/window_session_controller_link_info.h"
 #include "styles/style_layers.h"
 
 namespace {
@@ -77,23 +76,24 @@ bool UrlRequiresConfirmation(const QUrl &url) {
 }
 
 QString HiddenUrlClickHandler::copyToClipboardText() const {
-	return url().startsWith(qstr("internal:url:"))
-		? url().mid(qstr("internal:url:").size())
+	return url().startsWith(u"internal:url:"_q)
+		? url().mid(u"internal:url:"_q.size())
 		: url();
 }
 
 QString HiddenUrlClickHandler::copyToClipboardContextItemText() const {
 	return url().isEmpty()
 		? QString()
-		: !url().startsWith(qstr("internal:"))
+		: !url().startsWith(u"internal:"_q)
 		? UrlClickHandler::copyToClipboardContextItemText()
-		: url().startsWith(qstr("internal:url:"))
+		: url().startsWith(u"internal:url:"_q)
 		? UrlClickHandler::copyToClipboardContextItemText()
 		: QString();
 }
 
 QString HiddenUrlClickHandler::dragText() const {
-	return HiddenUrlClickHandler::copyToClipboardText();
+	const auto result = HiddenUrlClickHandler::copyToClipboardText();
+	return result.startsWith(u"internal:"_q) ? QString() : result;
 }
 
 void HiddenUrlClickHandler::Open(QString url, QVariant context) {
@@ -105,9 +105,13 @@ void HiddenUrlClickHandler::Open(QString url, QVariant context) {
 	const auto open = [=] {
 		UrlClickHandler::Open(url, context);
 	};
-	if (url.startsWith(qstr("tg://"), Qt::CaseInsensitive)
-		|| url.startsWith(qstr("internal:"), Qt::CaseInsensitive)) {
-		open();
+	if (url.startsWith(u"tg://"_q, Qt::CaseInsensitive)
+		|| url.startsWith(u"internal:"_q, Qt::CaseInsensitive)) {
+		UrlClickHandler::Open(url, QVariant::fromValue([&] {
+			auto result = context.value<ClickHandlerContext>();
+			result.mayShowConfirmation = !base::IsCtrlPressed();
+			return result;
+		}()));
 	} else {
 		const auto parsedUrl = QUrl::fromUserInput(url);
 		if (UrlRequiresConfirmation(parsedUrl) && !base::IsCtrlPressed()) {
@@ -141,7 +145,8 @@ void HiddenUrlClickHandler::Open(QString url, QVariant context) {
 			if (my.show) {
 				my.show->showBox(std::move(box));
 			} else if (use) {
-				use->show(std::move(box), Ui::LayerOption::KeepOther);
+				use->show(std::move(box));
+				use->activate();
 			}
 		} else {
 			open();
@@ -158,7 +163,7 @@ void BotGameUrlClickHandler::onClick(ClickContext context) const {
 	const auto open = [=] {
 		UrlClickHandler::Open(url, context.other);
 	};
-	if (url.startsWith(qstr("tg://"), Qt::CaseInsensitive)) {
+	if (url.startsWith(u"tg://"_q, Qt::CaseInsensitive)) {
 		open();
 	} else if (!_bot
 		|| _bot->isVerified()
@@ -203,8 +208,7 @@ void MentionClickHandler::onClick(ClickContext context) const {
 			? Core::App().activeWindow()->sessionController()
 			: nullptr;
 		if (use) {
-			using Info = Window::SessionNavigation::PeerByLinkInfo;
-			use->showPeerByLink(Info{
+			use->showPeerByLink(Window::PeerByLinkInfo{
 				.usernameOrId = _tag.mid(1),
 				.resolveType = Window::ResolveType::Mention,
 			});
@@ -302,7 +306,6 @@ void BotCommandClickHandler::onClick(ClickContext context) const {
 			.peer = peer,
 			.command = _cmd,
 			.context = my.itemId,
-			.replyTo = 0,
 		});
 	}
 }
@@ -330,16 +333,13 @@ void MonospaceClickHandler::onClick(ClickContext context) const {
 		const auto hasCopyRestriction = item
 			&& (!item->history()->peer->allowsForwarding()
 				|| item->forbidsForward());
-		const auto toastParent = Window::Show(controller).toastParent();
 		if (hasCopyRestriction) {
-			Ui::Toast::Show(
-				toastParent,
-				item->history()->peer->isBroadcast()
-					? tr::lng_error_nocopy_channel(tr::now)
-					: tr::lng_error_nocopy_group(tr::now));
+			controller->showToast(item->history()->peer->isBroadcast()
+				? tr::lng_error_nocopy_channel(tr::now)
+				: tr::lng_error_nocopy_group(tr::now));
 			return;
 		}
-		Ui::Toast::Show(toastParent, tr::lng_text_copied(tr::now));
+		controller->showToast(tr::lng_text_copied(tr::now));
 	}
 	TextUtilities::SetClipboardText(TextForMimeData::Simple(_text.trimmed()));
 }

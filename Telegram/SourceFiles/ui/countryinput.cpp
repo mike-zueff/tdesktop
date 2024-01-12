@@ -18,10 +18,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
 #include "styles/style_intro.h"
+#include "styles/style_widgets.h"
 
 CountryInput::CountryInput(
 	QWidget *parent,
-	std::shared_ptr<Window::Show> show,
+	std::shared_ptr<Ui::Show> show,
 	const style::InputField &st)
 : RpWidget(parent)
 , _show(show)

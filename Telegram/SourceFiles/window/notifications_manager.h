@@ -15,12 +15,15 @@ class History;
 
 namespace Data {
 class Session;
-class CloudImageView;
 class ForumTopic;
 class Thread;
 struct ItemNotification;
 enum class ItemNotificationType;
 } // namespace Data
+
+namespace Ui {
+struct PeerUserpicView;
+} // namespace Ui
 
 namespace Main {
 class Session;
@@ -71,7 +74,19 @@ struct custom_is_fast_copy_type<Window::Notifications::ChangeType> : std::true_t
 
 } // namespace base
 
+namespace base::options {
+
+template <typename Type>
+class option;
+
+using toggle = option<bool>;
+
+} // namespace base::options
+
 namespace Window::Notifications {
+
+extern const char kOptionGNotification[];
+extern base::options::toggle OptionGNotification;
 
 class Manager;
 
@@ -84,7 +99,7 @@ public:
 
 	void createManager();
 	void setManager(std::unique_ptr<Manager> manager);
-	[[nodiscard]] ManagerType managerType() const;
+	[[nodiscard]] Manager &manager() const;
 
 	void checkDelayed();
 	void schedule(Data::ItemNotification notification);
@@ -217,6 +232,22 @@ public:
 		friend inline auto operator<=>(
 			const ContextId&,
 			const ContextId&) = default;
+
+		[[nodiscard]] auto toTuple() const {
+			return std::make_tuple(
+				sessionId,
+				peerId.value,
+				topicRootId.bare);
+		}
+
+		template<typename T>
+		[[nodiscard]] static auto FromTuple(const T &tuple) {
+			return ContextId{
+				std::get<0>(tuple),
+				PeerIdHelper(std::get<1>(tuple)),
+				std::get<2>(tuple),
+			};
+		}
 	};
 	struct NotificationId {
 		ContextId contextId;
@@ -225,6 +256,20 @@ public:
 		friend inline auto operator<=>(
 			const NotificationId&,
 			const NotificationId&) = default;
+
+		[[nodiscard]] auto toTuple() const {
+			return std::make_tuple(
+				contextId.toTuple(),
+				msgId.bare);
+		}
+
+		template<typename T>
+		[[nodiscard]] static auto FromTuple(const T &tuple) {
+			return NotificationId{
+				ContextId::FromTuple(std::get<0>(tuple)),
+				std::get<1>(tuple),
+			};
+		}
 	};
 	struct NotificationFields {
 		not_null<HistoryItem*> item;
@@ -271,6 +316,7 @@ public:
 		bool hideMessageText = false;
 		bool hideMarkAsRead = false;
 		bool hideReplyButton = false;
+		bool spoilerLoginCode = false;
 	};
 	[[nodiscard]] DisplayOptions getNotificationOptions(
 		HistoryItem *item,
@@ -292,14 +338,14 @@ public:
 
 	[[nodiscard]] virtual ManagerType type() const = 0;
 
-	[[nodiscard]] bool skipAudio() const {
-		return doSkipAudio();
-	}
 	[[nodiscard]] bool skipToast() const {
 		return doSkipToast();
 	}
-	[[nodiscard]] bool skipFlashBounce() const {
-		return doSkipFlashBounce();
+	void maybePlaySound(Fn<void()> playSound) {
+		doMaybePlaySound(std::move(playSound));
+	}
+	void maybeFlashBounce(Fn<void()> flashBounce) {
+		doMaybeFlashBounce(std::move(flashBounce));
 	}
 
 	virtual ~Manager() = default;
@@ -317,9 +363,9 @@ protected:
 	virtual void doClearFromTopic(not_null<Data::ForumTopic*> topic) = 0;
 	virtual void doClearFromHistory(not_null<History*> history) = 0;
 	virtual void doClearFromSession(not_null<Main::Session*> session) = 0;
-	virtual bool doSkipAudio() const = 0;
-	virtual bool doSkipToast() const = 0;
-	virtual bool doSkipFlashBounce() const = 0;
+	[[nodiscard]] virtual bool doSkipToast() const = 0;
+	virtual void doMaybePlaySound(Fn<void()> playSound) = 0;
+	virtual void doMaybeFlashBounce(Fn<void()> flashBounce) = 0;
 	[[nodiscard]] virtual bool forceHideDetails() const {
 		return false;
 	}
@@ -362,7 +408,7 @@ protected:
 	virtual void doShowNativeNotification(
 		not_null<PeerData*> peer,
 		MsgId topicRootId,
-		std::shared_ptr<Data::CloudImageView> &userpicView,
+		Ui::PeerUserpicView &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
@@ -383,7 +429,7 @@ protected:
 	void doShowNativeNotification(
 		not_null<PeerData*> peer,
 		MsgId topicRootId,
-		std::shared_ptr<Data::CloudImageView> &userpicView,
+		Ui::PeerUserpicView &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
@@ -400,14 +446,14 @@ protected:
 	}
 	void doClearFromSession(not_null<Main::Session*> session) override {
 	}
-	bool doSkipAudio() const override {
-		return false;
-	}
 	bool doSkipToast() const override {
 		return false;
 	}
-	bool doSkipFlashBounce() const override {
-		return false;
+	void doMaybePlaySound(Fn<void()> playSound) override {
+		playSound();
+	}
+	void doMaybeFlashBounce(Fn<void()> flashBounce) override {
+		flashBounce();
 	}
 
 };

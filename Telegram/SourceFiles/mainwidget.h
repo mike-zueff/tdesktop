@@ -8,13 +8,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/weak_ptr.h"
-#include "base/unique_qptr.h"
 #include "chat_helpers/bot_command.h"
-#include "ui/rp_widget.h"
-#include "ui/effects/animations.h"
 #include "media/player/media_player_float.h"
 #include "mtproto/sender.h"
-#include "data/data_pts_waiter.h"
 
 struct HistoryMessageMarkupButton;
 class MainWindow;
@@ -45,6 +41,7 @@ namespace Data {
 class Thread;
 class WallPaper;
 struct ForwardDraft;
+class Forum;
 } // namespace Data
 
 namespace Dialogs {
@@ -88,6 +85,7 @@ class TopBarWrapWidget;
 class SectionMemento;
 class SectionWidget;
 class AbstractSectionWidget;
+class SlideAnimation;
 class ConnectionState;
 struct SectionSlideParams;
 struct SectionShow;
@@ -113,8 +111,7 @@ class ItemBase;
 
 class MainWidget
 	: public Ui::RpWidget
-	, private Media::Player::FloatDelegate
-	, private base::Subscriber {
+	, private Media::Player::FloatDelegate {
 public:
 	using SectionShow = Window::SectionShow;
 
@@ -137,7 +134,7 @@ public:
 
 	void returnTabbedSelector();
 
-	void showAnimated(const QPixmap &bgAnimCache, bool back = false);
+	void showAnimated(QPixmap oldContentCache, bool back = false);
 
 	void activate();
 
@@ -169,23 +166,25 @@ public:
 
 	[[nodiscard]] bool animatingShow() const;
 
-	void showForwardLayer(Data::ForwardDraft &&draft);
-	void showSendPathsLayer();
-	void shareUrlLayer(const QString &url, const QString &text);
-	void inlineSwitchLayer(const QString &botAndQuery);
-	void hiderLayer(base::unique_qptr<Window::HistoryHider> h);
+	void showDragForwardInfo();
+	void hideDragForwardInfo();
+
 	bool setForwardDraft(
 		not_null<Data::Thread*> thread,
 		Data::ForwardDraft &&draft);
-	bool sendPaths(not_null<Data::Thread*> thread);
-	bool onFilesOrForwardDrop(
+	bool sendPaths(
+		not_null<Data::Thread*> thread,
+		const QStringList &paths);
+	bool shareUrl(
+		not_null<Data::Thread*> thread,
+		const QString &url,
+		const QString &text) const;
+	bool filesOrForwardDrop(
 		not_null<Data::Thread*> thread,
 		not_null<const QMimeData*> data);
-	bool selectingPeer() const;
-	void clearSelectingPeer();
 
 	void sendBotCommand(Bot::SendCommandRequest request);
-	void hideSingleUseKeyboard(PeerData *peer, MsgId replyTo);
+	void hideSingleUseKeyboard(FullMsgId replyToId);
 
 	void searchMessages(const QString &query, Dialogs::Key inChat);
 
@@ -197,9 +196,6 @@ public:
 	void checkChatBackground();
 	Image *newBackgroundThumb();
 
-	// Does offerThread or showThread.
-	void chooseThread(not_null<Data::Thread*> thread, MsgId showAtMsgId);
-	void chooseThread(not_null<PeerData*> peer, MsgId showAtMsgId);
 	void clearBotStartToken(PeerData *peer);
 
 	void ctrlEnterSubmitUpdated();
@@ -215,21 +211,23 @@ public:
 		Fn<void(MessageIdsList)> done);
 	void clearChooseReportMessages();
 
-	void toggleChooseChatTheme(not_null<PeerData*> peer);
+	void toggleChooseChatTheme(
+		not_null<PeerData*> peer,
+		std::optional<bool> show);
 
-	void ui_showPeerHistory(
+	void showHistory(
 		PeerId peer,
 		const SectionShow &params,
 		MsgId msgId);
 	void showMessage(
 		not_null<const HistoryItem*> item,
 		const SectionShow &params);
+	void showForum(not_null<Data::Forum*> forum, const SectionShow &params);
 
 	bool notify_switchInlineBotButtonReceived(const QString &query, UserData *samePeerBot, MsgId samePeerReplyTo);
 
 	using FloatDelegate::floatPlayerAreaUpdated;
 
-	void closeBothPlayers();
 	void stopAndClosePlayer();
 
 	bool preventsCloseSection(Fn<void()> callback) const;
@@ -245,7 +243,7 @@ protected:
 	bool eventFilter(QObject *o, QEvent *e) override;
 
 private:
-	void animationCallback();
+	void showFinished();
 	void handleAdaptiveLayoutUpdate();
 	void updateWindowAdaptiveLayout();
 	void handleAudioUpdate(const Media::Player::TrackState &state);
@@ -258,14 +256,6 @@ private:
 	[[nodiscard]] bool saveThirdSectionToStackBack() const;
 	[[nodiscard]] auto thirdSectionForCurrentMainSection(Dialogs::Key key)
 		-> std::shared_ptr<Window::SectionMemento>;
-
-	bool shareUrl(
-		not_null<Data::Thread*> thread,
-		const QString &url,
-		const QString &text) const;
-	bool inlineSwitchChosen(
-		not_null<Data::Thread*> thread,
-		const QString &botAndQuery) const;
 
 	void setupConnectingWidget();
 	void createPlayer();
@@ -296,18 +286,24 @@ private:
 	Window::SectionSlideParams prepareHistoryAnimation(PeerId historyPeerId);
 	Window::SectionSlideParams prepareDialogsAnimation();
 
-	void saveSectionInStack();
+	bool saveSectionInStack(
+		const SectionShow &params,
+		Window::SectionWidget *newMainSection = nullptr);
 
 	int getMainSectionTop() const;
 	int getThirdSectionTop() const;
 
 	void hideAll();
 	void showAll();
+	void hiderLayer(base::unique_qptr<Window::HistoryHider> h);
 	void clearHider(not_null<Window::HistoryHider*> instance);
+
+	void closeBothPlayers();
 
 	[[nodiscard]] auto floatPlayerDelegate()
 		-> not_null<Media::Player::FloatDelegate*>;
 	not_null<Ui::RpWidget*> floatPlayerWidget() override;
+	void floatPlayerToggleGifsPaused(bool paused) override;
 	not_null<Media::Player::FloatSectionDelegate*> floatPlayerGetSection(
 		Window::Column column) override;
 	void floatPlayerEnumerateSections(Fn<void(
@@ -346,9 +342,7 @@ private:
 
 	const not_null<Window::SessionController*> _controller;
 
-	Ui::Animations::Simple _a_show;
-	bool _showBack = false;
-	QPixmap _cacheUnder, _cacheOver;
+	std::unique_ptr<Window::SlideAnimation> _showAnimation;
 
 	int _dialogsWidth = 0;
 	int _thirdColumnWidth = 0;
@@ -394,7 +388,3 @@ private:
 	const std::unique_ptr<Core::Changelogs> _changelogs;
 
 };
-
-namespace App {
-MainWidget *main();
-} // namespace App

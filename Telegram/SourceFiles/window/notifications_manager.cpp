@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/notifications_manager.h"
 
+#include "base/options.h"
 #include "platform/platform_notifications_manager.h"
 #include "window/notifications_manager_default.h"
 #include "media/audio/media_audio_track.h"
@@ -36,9 +37,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "main/main_domain.h"
 #include "ui/text/text_utilities.h"
-#include "facades.h"
 
 #include <QtGui/QWindow>
+
+#if __has_include(<gio/gio.hpp>)
+#include <gio/gio.hpp>
+#endif // __has_include(<gio/gio.hpp>)
 
 namespace Window {
 namespace Notifications {
@@ -62,7 +66,15 @@ constexpr auto kSystemAlertDuration = crl::time(0);
 	return result;
 }
 
-QString TextWithPermanentSpoiler(const TextWithEntities &textWithEntities) {
+[[nodiscard]] QString TextWithForwardedChar(
+		const QString &text,
+		bool forwarded) {
+	static const auto result = QString::fromUtf8("\xE2\x9E\xA1\xEF\xB8\x8F");
+	return forwarded ? result + text : text;
+}
+
+[[nodiscard]] QString TextWithPermanentSpoiler(
+		const TextWithEntities &textWithEntities) {
 	auto text = textWithEntities.text;
 	for (const auto &e : textWithEntities.entities) {
 		if (e.type() == EntityType::Spoiler) {
@@ -76,7 +88,44 @@ QString TextWithPermanentSpoiler(const TextWithEntities &textWithEntities) {
 	return text;
 }
 
+[[nodiscard]] QByteArray ReadRingtoneBytes(
+		const std::shared_ptr<Data::DocumentMedia> &media) {
+	const auto result = media->bytes();
+	if (!result.isEmpty()) {
+		return result;
+	}
+	const auto &location = media->owner()->location();
+	if (!location.isEmpty() && location.accessEnable()) {
+		const auto guard = gsl::finally([&] {
+			location.accessDisable();
+		});
+		auto f = QFile(location.name());
+		if (f.open(QIODevice::ReadOnly)) {
+			return f.readAll();
+		}
+	}
+	return {};
+}
+
 } // namespace
+
+const char kOptionGNotification[] = "gnotification";
+
+base::options::toggle OptionGNotification({
+	.id = kOptionGNotification,
+	.name = "GNotification",
+	.description = "Force enable GLib's GNotification."
+		" When disabled, autodetect is used.",
+	.scope = [] {
+#if __has_include(<gio/gio.hpp>)
+		using namespace gi::repository;
+		return bool(Gio::Application::get_default());
+#else // __has_include(<gio/gio.hpp>)
+		return false;
+#endif // __has_include(<gio/gio.hpp>)
+	},
+	.restartRequired = true,
+});
 
 struct System::Waiter {
 	NotificationInHistoryKey key;
@@ -125,9 +174,9 @@ void System::setManager(std::unique_ptr<Manager> manager) {
 	}
 }
 
-ManagerType System::managerType() const {
+Manager &System::manager() const {
 	Expects(_manager != nullptr);
-	return _manager->type();
+	return *_manager;
 }
 
 Main::Session *System::findSession(uint64 sessionId) const {
@@ -553,21 +602,28 @@ void System::showNext() {
 	}
 	const auto &settings = Core::App().settings();
 	if (alertThread) {
-		if (settings.flashBounceNotify() && !_manager->skipFlashBounce()) {
-			if (const auto window = Core::App().primaryWindow()) {
-				if (const auto handle = window->widget()->windowHandle()) {
-					handle->alert(kSystemAlertDuration);
-					// (handle, SLOT(_q_clearAlert())); in the future.
+		if (settings.flashBounceNotify()) {
+			const auto peer = alertThread->peer();
+			if (const auto window = Core::App().windowFor(peer)) {
+				if (const auto controller = window->sessionController()) {
+					_manager->maybeFlashBounce(crl::guard(controller, [=] {
+						if (const auto handle = window->widget()->windowHandle()) {
+							handle->alert(kSystemAlertDuration);
+							// (handle, SLOT(_q_clearAlert())); in the future.
+						}
+					}));
 				}
 			}
 		}
-		if (settings.soundNotify() && !_manager->skipAudio()) {
-			const auto track = lookupSound(
-				&alertThread->owner(),
-				alertThread->owner().notifySettings().sound(alertThread).id);
-			track->playOnce();
-			Media::Player::mixer()->suppressAll(track->getLengthMs());
-			Media::Player::mixer()->faderOnTimer();
+		if (settings.soundNotify()) {
+			const auto owner = &alertThread->owner();
+			const auto id = owner->notifySettings().sound(alertThread).id;
+			_manager->maybePlaySound(crl::guard(&owner->session(), [=] {
+				const auto track = lookupSound(owner, id);
+				track->playOnce();
+				Media::Player::mixer()->suppressAll(track->getLengthMs());
+				Media::Player::mixer()->scheduleFaderCallback();
+			}));
 		}
 	}
 
@@ -764,14 +820,16 @@ not_null<Media::Audio::Track*> System::lookupSound(
 		return i->second.get();
 	}
 	const auto &notifySettings = owner->notifySettings();
-	const auto custom = notifySettings.lookupRingtone(id);
-	if (custom && !custom->bytes().isEmpty()) {
-		const auto j = _customSoundTracks.emplace(
-			id,
-			Media::Audio::Current().createTrack()
-		).first;
-		j->second->fillFromData(bytes::make_vector(custom->bytes()));
-		return j->second.get();
+	if (const auto custom = notifySettings.lookupRingtone(id)) {
+		const auto bytes = ReadRingtoneBytes(custom);
+		if (!bytes.isEmpty()) {
+			const auto j = _customSoundTracks.emplace(
+				id,
+				Media::Audio::Current().createTrack()
+			).first;
+			j->second->fillFromData(bytes::make_vector(bytes));
+			return j->second.get();
+		}
 	}
 	ensureSoundCreated();
 	return _soundTrack.get();
@@ -784,7 +842,7 @@ void System::ensureSoundCreated() {
 
 	_soundTrack = Media::Audio::Current().createTrack();
 	_soundTrack->fillFromFile(
-		Core::App().settings().getSoundPath(qsl("msg_incoming")));
+		Core::App().settings().getSoundPath(u"msg_incoming"_q));
 }
 
 void System::updateAll() {
@@ -824,9 +882,14 @@ Manager::DisplayOptions Manager::getNotificationOptions(
 		|| !item
 		|| ((item->out() || peer->isSelf()) && item->isFromScheduled());
 	result.hideReplyButton = result.hideMarkAsRead
-		|| (!peer->canWrite() && (!topic || !topic->canWrite()))
+		|| (!Data::CanSendTexts(peer)
+			&& (!topic || !Data::CanSendTexts(topic)))
 		|| peer->isBroadcast()
 		|| (peer->slowmodeSecondsLeft() > 0);
+	result.spoilerLoginCode = item
+		&& !item->out()
+		&& peer->isNotificationsUser()
+		&& Core::App().isSharingScreen();
 	return result;
 }
 
@@ -837,7 +900,6 @@ TextWithEntities Manager::ComposeReactionEmoji(
 		return TextWithEntities{ *emoji };
 	}
 	const auto id = v::get<DocumentId>(reaction.data);
-	auto entities = EntitiesInText();
 	const auto document = session->data().document(id);
 	const auto sticker = document->sticker();
 	const auto text = sticker ? sticker->alt : PlaceholderReactionText();
@@ -997,18 +1059,20 @@ void Manager::notificationActivated(
 				const auto replyToId = (id.msgId > 0
 					&& !history->peer->isUser()
 					&& id.msgId != topicRootId)
-					? id.msgId
-					: 0;
+					? FullMsgId(history->peer->id, id.msgId)
+					: FullMsgId();
 				auto draft = std::make_unique<Data::Draft>(
 					reply,
-					replyToId,
-					topicRootId,
+					FullReplyTo{
+						.messageId = replyToId,
+						.topicRootId = topicRootId,
+					},
 					MessageCursor{
 						int(reply.text.size()),
 						int(reply.text.size()),
-						QFIXED_MAX,
+						Ui::kQFixedMax,
 					},
-					Data::PreviewState::Allowed);
+					Data::WebPageDraft());
 				history->setLocalDraft(std::move(draft));
 			}
 			window->widget()->showFromTray();
@@ -1074,13 +1138,22 @@ void Manager::notificationReplied(
 	const auto history = session->data().history(id.contextId.peerId);
 	const auto item = history->owner().message(history->peer, id.msgId);
 	const auto topic = item ? item->topic() : nullptr;
+	const auto topicRootId = topic
+		? topic->rootId()
+		: id.contextId.topicRootId;
 
 	auto message = Api::MessageToSend(Api::SendAction(history));
 	message.textWithTags = reply;
-	message.action.replyTo = (id.msgId > 0 && !history->peer->isUser())
+	const auto replyToId = (id.msgId > 0 && !history->peer->isUser()
+		&& id.msgId != topicRootId)
 		? id.msgId
-		: id.contextId.topicRootId;
-	message.action.topicRootId = topic ? topic->rootId() : 0;
+		: history->peer->isForum()
+		? topicRootId
+		: MsgId(0);
+	message.action.replyTo = {
+		.messageId = { replyToId ? history->peer->id : 0, replyToId },
+		.topicRootId = topic ? topic->rootId() : 0,
+	};
 	message.action.clearDraft = false;
 	history->session().api().sendMessage(std::move(message));
 
@@ -1132,7 +1205,11 @@ void NativeManager::doShowNotification(NotificationFields &&fields) {
 		? tr::lng_forward_messages(tr::now, lt_count, fields.forwardedCount)
 		: item->groupId()
 		? tr::lng_in_dlg_album(tr::now)
-		: TextWithPermanentSpoiler(item->notificationText());
+		: TextWithForwardedChar(
+			TextWithPermanentSpoiler(item->notificationText({
+				.spoilerLoginCode = options.spoilerLoginCode,
+			})),
+			(fields.forwardedCount == 1));
 
 	// #TODO optimize
 	auto userpicView = item->history()->peer->createUserpicView();

@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/reactions/history_view_reactions.h"
 
-#include "history/history_message.h"
+#include "history/history_item.h"
 #include "history/history.h"
 #include "history/view/history_view_message.h"
 #include "history/view/history_view_cursor_state.h"
@@ -24,7 +24,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_style.h"
 #include "ui/effects/reaction_fly_animation.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 
 namespace HistoryView::Reactions {
 namespace {
@@ -111,9 +113,9 @@ void InlineList::layoutButtons() {
 		_buttons.clear();
 		return;
 	}
-	auto sorted = ranges::view::all(
+	auto sorted = ranges::views::all(
 		_data.reactions
-	) | ranges::view::transform([](const MessageReaction &reaction) {
+	) | ranges::views::transform([](const MessageReaction &reaction) {
 		return not_null{ &reaction };
 	}) | ranges::to_vector;
 	const auto &list = _owner->list(::Data::Reactions::Type::All);
@@ -323,6 +325,7 @@ void InlineList::paint(
 		const QRect &clip) const {
 	struct SingleAnimation {
 		not_null<Ui::ReactionFlyAnimation*> animation;
+		QColor textColor;
 		QRect target;
 	};
 	std::vector<SingleAnimation> animations;
@@ -395,6 +398,7 @@ void InlineList::paint(
 				button.id,
 				::Data::Reactions::ImageSize::InlineList);
 		}
+
 		const auto textFg = !inbubble
 			? (chosen
 				? QPen(AdaptChosenServiceFg(st->msgServiceBg()->c))
@@ -417,7 +421,7 @@ void InlineList::paint(
 					p,
 					custom,
 					inner.topLeft(),
-					context.now,
+					context,
 					textFg.color());
 			} else if (!button.image.isNull()) {
 				p.drawImage(image.topLeft(), button.image);
@@ -426,6 +430,7 @@ void InlineList::paint(
 		if (animating) {
 			animations.push_back({
 				.animation = button.animation.get(),
+				.textColor = textFg.color(),
 				.target = image,
 			});
 		}
@@ -464,7 +469,7 @@ void InlineList::paint(
 					p,
 					QPoint(),
 					single.target,
-					QColor(255, 255, 255, 0), // Colored, for emoji status.
+					single.textColor,
 					QRect(), // Clip, for emoji status.
 					now);
 				result = result.isEmpty() ? area : result.united(area);
@@ -524,9 +529,9 @@ void InlineList::resolveUserpicsImage(const Button &button) const {
 		for (auto &entry : userpics->list) {
 			const auto peer = entry.peer;
 			auto &view = entry.view;
-			const auto wasView = view.get();
+			const auto wasView = view.cloud.get();
 			if (peer->userpicUniqueKey(view) != entry.uniqueKey
-				|| view.get() != wasView) {
+				|| view.cloud.get() != wasView) {
 				return true;
 			}
 		}
@@ -546,8 +551,8 @@ void InlineList::paintCustomFrame(
 		Painter &p,
 		not_null<Ui::Text::CustomEmoji*> emoji,
 		QPoint innerTopLeft,
-		crl::time now,
-		const QColor &preview) const {
+		const PaintContext &context,
+		const QColor &textColor) const {
 	if (_customCache.isNull()) {
 		using namespace Ui::Text;
 		const auto size = st::emojiSize;
@@ -562,9 +567,9 @@ void InlineList::paintCustomFrame(
 	_customCache.fill(Qt::transparent);
 	auto q = QPainter(&_customCache);
 	emoji->paint(q, {
-		.preview = preview,
-		.now = now,
-		.paused = p.inactive(),
+		.textColor = textColor,
+		.now = context.now,
+		.paused = context.paused || On(PowerSaving::kEmojiChat),
 	});
 	q.end();
 	_customCache = Images::Round(
@@ -604,7 +609,7 @@ void InlineList::continueAnimations(base::flat_map<
 
 InlineListData InlineListDataFromMessage(not_null<Message*> message) {
 	using Flag = InlineListData::Flag;
-	const auto item = message->message();
+	const auto item = message->data();
 	auto result = InlineListData();
 	result.reactions = item->reactions();
 	if (const auto user = item->history()->peer->asUser()) {
@@ -643,7 +648,7 @@ InlineListData InlineListDataFromMessage(not_null<Message*> message) {
 			result.recent.reserve(recent.size());
 			for (const auto &[id, list] : recent) {
 				result.recent.emplace(id).first->second = list
-					| ranges::view::transform(&Data::RecentReaction::peer)
+					| ranges::views::transform(&Data::RecentReaction::peer)
 					| ranges::to_vector;
 			}
 		}

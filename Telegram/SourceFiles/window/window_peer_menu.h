@@ -32,7 +32,17 @@ class Thread;
 namespace Dialogs {
 class MainList;
 struct EntryState;
+struct UnreadState;
 } // namespace Dialogs
+
+namespace ChatHelpers {
+class Show;
+} // namespace ChatHelpers
+
+namespace InlineBots {
+enum class PeerType : uint8;
+using PeerTypes = base::flags<PeerType>;
+} // namespace InlineBots
 
 namespace Window {
 
@@ -60,7 +70,8 @@ void MenuAddMarkAsReadAllChatsAction(
 void MenuAddMarkAsReadChatListAction(
 	not_null<Window::SessionController*> controller,
 	Fn<not_null<Dialogs::MainList*>()> &&list,
-	const PeerMenuCallback &addAction);
+	const PeerMenuCallback &addAction,
+	Fn<Dialogs::UnreadState()> customUnreadState = nullptr);
 
 void PeerMenuExportChat(not_null<PeerData*> peer);
 void PeerMenuDeleteContact(
@@ -75,8 +86,7 @@ void PeerMenuAddChannelMembers(
 void PeerMenuCreatePoll(
 	not_null<Window::SessionController*> controller,
 	not_null<PeerData*> peer,
-	MsgId replyToId = 0,
-	MsgId topicRootId = 0,
+	FullReplyTo replyTo = FullReplyTo(),
 	PollData::Flags chosen = PollData::Flags(),
 	PollData::Flags disabled = PollData::Flags(),
 	Api::SendType sendType = Api::SendType::Normal,
@@ -106,7 +116,10 @@ void BlockSenderFromRepliesBox(
 	not_null<Window::SessionController*> controller,
 	FullMsgId id);
 
-void ToggleHistoryArchived(not_null<History*> history, bool archived);
+void ToggleHistoryArchived(
+	std::shared_ptr<ChatHelpers::Show> show,
+	not_null<History*> history,
+	bool archived);
 Fn<void()> ClearHistoryHandler(
 	not_null<Window::SessionController*> controller,
 	not_null<PeerData*> peer);
@@ -114,13 +127,28 @@ Fn<void()> DeleteAndLeaveHandler(
 	not_null<Window::SessionController*> controller,
 	not_null<PeerData*> peer);
 
+QPointer<Ui::BoxContent> ShowChooseRecipientBox(
+	not_null<Window::SessionNavigation*> navigation,
+	FnMut<bool(not_null<Data::Thread*>)> &&chosen,
+	rpl::producer<QString> titleOverride = nullptr,
+	FnMut<void()> &&successCallback = nullptr,
+	InlineBots::PeerTypes typesRestriction = 0);
+QPointer<Ui::BoxContent> ShowForwardMessagesBox(
+	std::shared_ptr<ChatHelpers::Show> show,
+	Data::ForwardDraft &&draft,
+	Fn<void()> &&successCallback = nullptr);
 QPointer<Ui::BoxContent> ShowForwardMessagesBox(
 	not_null<Window::SessionNavigation*> navigation,
 	Data::ForwardDraft &&draft,
-	FnMut<void()> &&successCallback = nullptr);
+	Fn<void()> &&successCallback = nullptr);
 QPointer<Ui::BoxContent> ShowForwardMessagesBox(
 	not_null<Window::SessionNavigation*> navigation,
 	MessageIdsList &&items,
+	Fn<void()> &&successCallback = nullptr);
+QPointer<Ui::BoxContent> ShowShareUrlBox(
+	not_null<Window::SessionNavigation*> navigation,
+	const QString &url,
+	const QString &text,
 	FnMut<void()> &&successCallback = nullptr);
 QPointer<Ui::BoxContent> ShowShareGameBox(
 	not_null<Window::SessionNavigation*> navigation,
@@ -150,5 +178,10 @@ void HidePinnedBar(
 void UnpinAllMessages(
 	not_null<Window::SessionNavigation*> navigation,
 	not_null<Data::Thread*> thread);
+
+[[nodiscard]] bool IsUnreadThread(not_null<Data::Thread*> thread);
+void MarkAsReadThread(not_null<Data::Thread*> thread);
+
+void AddSeparatorAndShiftUp(const PeerMenuCallback &addAction);
 
 } // namespace Window

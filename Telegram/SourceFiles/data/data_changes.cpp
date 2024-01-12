@@ -77,6 +77,11 @@ rpl::producer<UpdateType> Changes::Manager<DataType, UpdateType>::flagsValue(
 }
 
 template <typename DataType, typename UpdateType>
+void Changes::Manager<DataType, UpdateType>::drop(not_null<DataType*> data) {
+	_updates.remove(data);
+}
+
+template <typename DataType, typename UpdateType>
 void Changes::Manager<DataType, UpdateType>::sendNotifications() {
 	for (const auto &[data, flags] : base::take(_updates)) {
 		_stream.fire({ data, flags });
@@ -166,8 +171,11 @@ rpl::producer<HistoryUpdate> Changes::realtimeHistoryUpdates(
 void Changes::topicUpdated(
 		not_null<ForumTopic*> topic,
 		TopicUpdate::Flags flags) {
-	_topicChanges.updated(topic, flags);
-	scheduleNotifications();
+	const auto drop = (flags & TopicUpdate::Flag::Destroyed);
+	_topicChanges.updated(topic, flags, drop);
+	if (!drop) {
+		scheduleNotifications();
+	}
 }
 
 rpl::producer<TopicUpdate> Changes::topicUpdates(
@@ -190,6 +198,10 @@ rpl::producer<TopicUpdate> Changes::topicFlagsValue(
 rpl::producer<TopicUpdate> Changes::realtimeTopicUpdates(
 		TopicUpdate::Flag flag) const {
 	return _topicChanges.realtimeUpdates(flag);
+}
+
+void Changes::topicRemoved(not_null<ForumTopic*> topic) {
+	_topicChanges.drop(topic);
 }
 
 void Changes::messageUpdated(
@@ -227,8 +239,11 @@ rpl::producer<MessageUpdate> Changes::realtimeMessageUpdates(
 void Changes::entryUpdated(
 		not_null<Dialogs::Entry*> entry,
 		EntryUpdate::Flags flags) {
-	_entryChanges.updated(entry, flags);
-	scheduleNotifications();
+	const auto drop = (flags & EntryUpdate::Flag::Destroyed);
+	_entryChanges.updated(entry, flags, drop);
+	if (!drop) {
+		scheduleNotifications();
+	}
 }
 
 rpl::producer<EntryUpdate> Changes::entryUpdates(
@@ -253,6 +268,42 @@ rpl::producer<EntryUpdate> Changes::realtimeEntryUpdates(
 	return _entryChanges.realtimeUpdates(flag);
 }
 
+void Changes::entryRemoved(not_null<Dialogs::Entry*> entry) {
+	_entryChanges.drop(entry);
+}
+
+void Changes::storyUpdated(
+		not_null<Story*> story,
+		StoryUpdate::Flags flags) {
+	const auto drop = (flags & StoryUpdate::Flag::Destroyed);
+	_storyChanges.updated(story, flags, drop);
+	if (!drop) {
+		scheduleNotifications();
+	}
+}
+
+rpl::producer<StoryUpdate> Changes::storyUpdates(
+		StoryUpdate::Flags flags) const {
+	return _storyChanges.updates(flags);
+}
+
+rpl::producer<StoryUpdate> Changes::storyUpdates(
+		not_null<Story*> story,
+		StoryUpdate::Flags flags) const {
+	return _storyChanges.updates(story, flags);
+}
+
+rpl::producer<StoryUpdate> Changes::storyFlagsValue(
+		not_null<Story*> story,
+		StoryUpdate::Flags flags) const {
+	return _storyChanges.flagsValue(story, flags);
+}
+
+rpl::producer<StoryUpdate> Changes::realtimeStoryUpdates(
+		StoryUpdate::Flag flag) const {
+	return _storyChanges.realtimeUpdates(flag);
+}
+
 void Changes::scheduleNotifications() {
 	if (!_notify) {
 		_notify = true;
@@ -272,6 +323,7 @@ void Changes::sendNotifications() {
 	_messageChanges.sendNotifications();
 	_entryChanges.sendNotifications();
 	_topicChanges.sendNotifications();
+	_storyChanges.sendNotifications();
 }
 
 } // namespace Data

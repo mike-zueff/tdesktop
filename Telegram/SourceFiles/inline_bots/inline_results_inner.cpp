@@ -17,12 +17,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_changes.h"
 #include "data/data_chat_participant_status.h"
 #include "data/data_session.h"
+#include "inline_bots/bot_attach_web_view.h"
 #include "inline_bots/inline_bot_result.h"
 #include "inline_bots/inline_bot_layout_item.h"
 #include "lang/lang_keys.h"
 #include "layout/layout_position.h"
 #include "mainwindow.h"
-#include "facades.h"
 #include "main/main_session.h"
 #include "window/window_session_controller.h"
 #include "ui/widgets/popup_menu.h"
@@ -344,7 +344,8 @@ void Inner::contextMenuEvent(QContextMenuEvent *e) {
 		_menu,
 		type,
 		SendMenu::DefaultSilentCallback(send),
-		SendMenu::DefaultScheduleCallback(this, type, send));
+		SendMenu::DefaultScheduleCallback(this, type, send),
+		SendMenu::DefaultWhenOnlineCallback(send));
 
 	const auto item = _mosaic.itemAt(_selected);
 	if (const auto previewDocument = item->getPreviewDocument()) {
@@ -356,7 +357,7 @@ void Inner::contextMenuEvent(QContextMenuEvent *e) {
 		};
 		ChatHelpers::AddGifAction(
 			std::move(callback),
-			_controller,
+			_controller->uiShow(),
 			previewDocument);
 	}
 
@@ -444,19 +445,17 @@ void Inner::clearInlineRowsPanel() {
 }
 
 void Inner::refreshMosaicOffset() {
-	const auto top = st::stickerPanPadding
-		+ (_switchPmButton
-			? _switchPmButton->height() + st::inlineResultsSkip
-			: 0);
-	_mosaic.setOffset(
-		st::inlineResultsLeft - st::roundRadiusSmall,
-		top);
+	const auto top = _switchPmButton
+		? (_switchPmButton->height() + st::inlineResultsSkip)
+		: 0;
+	_mosaic.setPadding(st::emojiPanMargins + QMargins(0, top, 0, 0));
 }
 
 void Inner::refreshSwitchPmButton(const CacheEntry *entry) {
 	if (!entry || entry->switchPmText.isEmpty()) {
 		_switchPmButton.destroy();
 		_switchPmStartToken.clear();
+		_switchPmUrl = QByteArray();
 	} else {
 		if (!_switchPmButton) {
 			_switchPmButton.create(this, nullptr, st::switchPmButton);
@@ -466,6 +465,7 @@ void Inner::refreshSwitchPmButton(const CacheEntry *entry) {
 		}
 		_switchPmButton->setText(rpl::single(entry->switchPmText));
 		_switchPmStartToken = entry->switchPmStartToken;
+		_switchPmUrl = entry->switchPmUrl;
 		const auto buttonTop = st::stickerPanPadding;
 		_switchPmButton->move(st::inlineResultsLeft - st::roundRadiusSmall, buttonTop);
 		if (isRestrictedView()) {
@@ -671,10 +671,21 @@ void Inner::repaintItems(crl::time now) {
 }
 
 void Inner::switchPm() {
-	if (_inlineBot && _inlineBot->isBot()) {
+	if (!_inlineBot || !_inlineBot->isBot()) {
+		return;
+	} else if (!_switchPmUrl.isEmpty()) {
+		_inlineBot->session().attachWebView().requestSimple(
+			_controller,
+			_inlineBot,
+			{ .url = _switchPmUrl, .fromSwitch = true });
+	} else {
 		_inlineBot->botInfo->startToken = _switchPmStartToken;
-		_inlineBot->botInfo->inlineReturnTo = _currentDialogsEntryState;
-		Ui::showPeerHistory(_inlineBot, ShowAndStartBotMsgId);
+		_inlineBot->botInfo->inlineReturnTo
+			= _controller->currentDialogsEntryState();
+		_controller->showPeerHistory(
+			_inlineBot,
+			Window::SectionShow::Way::ClearStack,
+			ShowAndStartBotMsgId);
 	}
 }
 

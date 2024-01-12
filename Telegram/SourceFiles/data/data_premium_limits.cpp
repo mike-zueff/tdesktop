@@ -29,6 +29,18 @@ int PremiumLimits::channelsCurrent() const {
 		: channelsDefault();
 }
 
+int PremiumLimits::similarChannelsDefault() const {
+	return appConfigLimit("recommended_channels_limit_default", 10);
+}
+int PremiumLimits::similarChannelsPremium() const {
+	return appConfigLimit("recommended_channels_limit_premium", 100);
+}
+int PremiumLimits::similarChannelsCurrent() const {
+	return isPremium()
+		? channelsPremium()
+		: channelsDefault();
+}
+
 int PremiumLimits::gifsDefault() const {
 	return appConfigLimit("saved_gifs_limit_default", 200);
 }
@@ -65,6 +77,18 @@ int PremiumLimits::dialogFiltersCurrent() const {
 		: dialogFiltersDefault();
 }
 
+int PremiumLimits::dialogShareableFiltersDefault() const {
+	return appConfigLimit("chatlists_joined_limit_default", 2);
+}
+int PremiumLimits::dialogShareableFiltersPremium() const {
+	return appConfigLimit("chatlists_joined_limit_premium", 20);
+}
+int PremiumLimits::dialogShareableFiltersCurrent() const {
+	return isPremium()
+		? dialogShareableFiltersPremium()
+		: dialogShareableFiltersDefault();
+}
+
 int PremiumLimits::dialogFiltersChatsDefault() const {
 	return appConfigLimit("dialog_filters_chats_limit_default", 100);
 }
@@ -75,6 +99,18 @@ int PremiumLimits::dialogFiltersChatsCurrent() const {
 	return isPremium()
 		? dialogFiltersChatsPremium()
 		: dialogFiltersChatsDefault();
+}
+
+int PremiumLimits::dialogFiltersLinksDefault() const {
+	return appConfigLimit("chatlist_invites_limit_default", 3);
+}
+int PremiumLimits::dialogFiltersLinksPremium() const {
+	return appConfigLimit("chatlist_invites_limit_premium", 20);
+}
+int PremiumLimits::dialogFiltersLinksCurrent() const {
+	return isPremium()
+		? dialogFiltersLinksPremium()
+		: dialogFiltersLinksDefault();
 }
 
 int PremiumLimits::dialogsPinnedDefault() const {
@@ -99,6 +135,22 @@ int PremiumLimits::dialogsFolderPinnedCurrent() const {
 	return isPremium()
 		? dialogsFolderPinnedPremium()
 		: dialogsFolderPinnedDefault();
+}
+
+int PremiumLimits::topicsPinnedCurrent() const {
+	return appConfigLimit("topics_pinned_limit", 5);
+}
+
+int PremiumLimits::savedSublistsPinnedDefault() const {
+	return appConfigLimit("saved_dialogs_pinned_limit_default", 5);
+}
+int PremiumLimits::savedSublistsPinnedPremium() const {
+	return appConfigLimit("saved_dialogs_pinned_limit_premium", 100);
+}
+int PremiumLimits::savedSublistsPinnedCurrent() const {
+	return isPremium()
+		? savedSublistsPinnedPremium()
+		: savedSublistsPinnedDefault();
 }
 
 int PremiumLimits::channelsPublicDefault() const {
@@ -147,6 +199,12 @@ int PremiumLimits::aboutLengthCurrent() const {
 	return isPremium()
 		? aboutLengthPremium()
 		: aboutLengthDefault();
+}
+
+int PremiumLimits::maxBoostLevel() const {
+	return appConfigLimit(
+		u"boosts_channel_level_max"_q,
+		_session->isTestMode() ? 9 : 99);
 }
 
 int PremiumLimits::appConfigLimit(

@@ -13,9 +13,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/text_utilities.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/vertical_layout.h"
+#include "ui/vertical_list.h"
 #include "history/history.h"
 #include "boxes/peer_list_controllers.h"
-#include "settings/settings_common.h"
 #include "settings/settings_privacy_security.h"
 #include "calls/calls_instance.h"
 #include "base/binary_guard.h"
@@ -112,10 +112,16 @@ std::unique_ptr<PrivacyExceptionsBoxController::Row> PrivacyExceptionsBoxControl
 
 } // namespace
 
+bool EditPrivacyController::hasOption(Option option) const {
+	return (option != Option::CloseFriends);
+}
+
 QString EditPrivacyController::optionLabel(Option option) const {
 	switch (option) {
 	case Option::Everyone: return tr::lng_edit_privacy_everyone(tr::now);
 	case Option::Contacts: return tr::lng_edit_privacy_contacts(tr::now);
+	case Option::CloseFriends:
+		return tr::lng_edit_privacy_close_friends(tr::now);
 	case Option::Nobody: return tr::lng_edit_privacy_nobody(tr::now);
 	}
 	Unexpected("Option value in optionsLabelKey.");
@@ -167,8 +173,7 @@ void EditPrivacyBox::editExceptions(
 		box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
 	};
 	_window->show(
-		Box<PeerListBox>(std::move(controller), std::move(initBox)),
-		Ui::LayerOption::KeepOther);
+		Box<PeerListBox>(std::move(controller), std::move(initBox)));
 }
 
 std::vector<not_null<PeerData*>> &EditPrivacyBox::exceptions(Exception exception) {
@@ -183,10 +188,12 @@ bool EditPrivacyBox::showExceptionLink(Exception exception) const {
 	switch (exception) {
 	case Exception::Always:
 		return (_value.option == Option::Contacts)
+			|| (_value.option == Option::CloseFriends)
 			|| (_value.option == Option::Nobody);
 	case Exception::Never:
 		return (_value.option == Option::Everyone)
-			|| (_value.option == Option::Contacts);
+			|| (_value.option == Option::Contacts)
+			|| (_value.option == Option::CloseFriends);
 	}
 	Unexpected("Invalid exception value.");
 }
@@ -217,16 +224,18 @@ Ui::FlatLabel *EditPrivacyBox::addLabel(
 	if (!text) {
 		return nullptr;
 	}
-	return container->add(
+	auto label = object_ptr<Ui::FlatLabel>(
+		container,
+		rpl::duplicate(text),
+		st::boxDividerLabel);
+	const auto result = label.data();
+	container->add(
 		object_ptr<Ui::DividerLabel>(
 			container,
-			object_ptr<Ui::FlatLabel>(
-				container,
-				rpl::duplicate(text),
-				st::boxDividerLabel),
-			st::settingsDividerLabelPadding),
-		{ 0, topSkip, 0, 0 }
-	)->entity();
+			std::move(label),
+			st::defaultBoxDividerLabelPadding),
+		{ 0, topSkip, 0, 0 });
+	return result;
 }
 
 Ui::FlatLabel *EditPrivacyBox::addLabelOrDivider(
@@ -276,25 +285,23 @@ void EditPrivacyBox::setupContent() {
 				? tr::lng_edit_privacy_exceptions_count(tr::now, lt_count, count)
 				: tr::lng_edit_privacy_exceptions_add(tr::now);
 		});
+		_controller->handleExceptionsChange(
+			exception,
+			update->events_starting_with({}) | rpl::map([=] {
+				return Settings::ExceptionUsersCount(exceptions(exception));
+			}));
 		auto text = _controller->exceptionButtonTextKey(exception);
-		const auto always = (exception == Exception::Always);
 		const auto button = content->add(
 			object_ptr<Ui::SlideWrap<Button>>(
 				content,
-				CreateButton(
+				object_ptr<Button>(
 					content,
 					rpl::duplicate(text),
-					st::settingsButton,
-					{
-						(always
-							? &st::settingsIconPlus
-							: &st::settingsIconMinus),
-						always ? kIconGreen : kIconRed,
-					})));
+					st::settingsButtonNoIcon)));
 		CreateRightLabel(
 			button->entity(),
 			std::move(label),
-			st::settingsButton,
+			st::settingsButtonNoIcon,
 			std::move(text));
 		button->toggleOn(rpl::duplicate(
 			optionValue
@@ -314,17 +321,18 @@ void EditPrivacyBox::setupContent() {
 		content->add(std::move(above));
 	}
 
-	AddSubsectionTitle(
+	Ui::AddSubsectionTitle(
 		content,
 		_controller->optionsTitleKey(),
 		{ 0, st::settingsPrivacySkipTop, 0, 0 });
 	addOptionRow(Option::Everyone);
 	addOptionRow(Option::Contacts);
+	addOptionRow(Option::CloseFriends);
 	addOptionRow(Option::Nobody);
 	const auto warning = addLabelOrDivider(
 		content,
 		_controller->warning(),
-		st::settingsSectionSkip + st::settingsPrivacySkipTop);
+		st::defaultVerticalListSkip + st::settingsPrivacySkipTop);
 	if (warning) {
 		_controller->prepareWarningLabel(warning);
 	}
@@ -337,8 +345,8 @@ void EditPrivacyBox::setupContent() {
 		content->add(std::move(middle));
 	}
 
-	AddSkip(content);
-	AddSubsectionTitle(
+	Ui::AddSkip(content);
+	Ui::AddSubsectionTitle(
 		content,
 		tr::lng_edit_privacy_exceptions(),
 		{ 0, st::settingsPrivacySkipTop, 0, 0 });
@@ -347,7 +355,7 @@ void EditPrivacyBox::setupContent() {
 	addLabel(
 		content,
 		_controller->exceptionsDescription() | Ui::Text::ToWithEntities(),
-		st::settingsSectionSkip);
+		st::defaultVerticalListSkip);
 
 	if (auto below = _controller->setupBelowWidget(_window, content)) {
 		content->add(std::move(below));
@@ -369,9 +377,9 @@ void EditPrivacyBox::setupContent() {
 	});
 	addButton(tr::lng_cancel(), [this] { closeBox(); });
 
-	const auto linkHeight = st::settingsButton.padding.top()
-		+ st::settingsButton.height
-		+ st::settingsButton.padding.bottom();
+	const auto linkHeight = st::settingsButtonNoIcon.padding.top()
+		+ st::settingsButtonNoIcon.height
+		+ st::settingsButtonNoIcon.padding.bottom();
 
 	widthValue(
 	) | rpl::start_with_next([=](int width) {

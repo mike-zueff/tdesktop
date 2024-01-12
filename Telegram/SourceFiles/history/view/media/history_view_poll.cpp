@@ -181,6 +181,11 @@ struct Poll::CloseInformation {
 	Ui::Animations::Basic radial;
 };
 
+struct Poll::RecentVoter {
+	not_null<PeerData*> peer;
+	mutable Ui::PeerUserpicView userpic;
+};
+
 template <typename Callback>
 Poll::SendingAnimation::SendingAnimation(
 	const QByteArray &option,
@@ -482,20 +487,20 @@ void Poll::updateRecentVoters() {
 		_recentVoters,
 		sliced,
 		ranges::equal_to(),
-		&RecentVoter::user);
+		&RecentVoter::peer);
 	if (changed) {
 		auto updated = ranges::views::all(
 			sliced
-		) | ranges::views::transform([](not_null<UserData*> user) {
-			return RecentVoter{ user };
+		) | ranges::views::transform([](not_null<PeerData*> peer) {
+			return RecentVoter{ peer };
 		}) | ranges::to_vector;
 		const auto has = hasHeavyPart();
 		if (has) {
 			for (auto &voter : updated) {
 				const auto i = ranges::find(
 					_recentVoters,
-					voter.user,
-					&RecentVoter::user);
+					voter.peer,
+					&RecentVoter::peer);
 				if (i != end(_recentVoters)) {
 					voter.userpic = std::move(i->userpic);
 				}
@@ -886,9 +891,9 @@ void Poll::paintRecentVoters(
 
 	auto created = false;
 	for (auto &recent : _recentVoters) {
-		const auto was = (recent.userpic != nullptr);
-		recent.user->paintUserpic(p, recent.userpic, x, y, size);
-		if (!was && recent.userpic) {
+		const auto was = !recent.userpic.null();
+		recent.peer->paintUserpic(p, recent.userpic, x, y, size);
+		if (!was && !recent.userpic.null()) {
 			created = true;
 		}
 		const auto paintContent = [&](QPainter &p) {
@@ -966,8 +971,8 @@ void Poll::paintCloseByTimer(
 		auto hq = PainterHighQualityEnabler(p);
 		const auto part = std::max(
 			left / float64(radial),
-			1. / FullArcLength);
-		const auto length = int(base::SafeRound(FullArcLength * part));
+			1. / arc::kFullLength);
+		const auto length = int(base::SafeRound(arc::kFullLength * part));
 		auto pen = regular->p;
 		pen.setWidth(st::historyPollRadio.thickness);
 		pen.setCapStyle(Qt::RoundCap);
@@ -975,7 +980,7 @@ void Poll::paintCloseByTimer(
 		const auto size = icon.width() / 2;
 		const auto left = (x + (icon.width() - size) / 2);
 		const auto top = (y + (icon.height() - size) / 2) + st::lineWidth;
-		p.drawArc(left, top, size, size, (FullArcLength / 4), length);
+		p.drawArc(left, top, size, size, (arc::kFullLength / 4), length);
 	} else {
 		icon.paint(p, x, y, width());
 	}
@@ -1499,13 +1504,13 @@ void Poll::clickHandlerPressedChanged(
 
 void Poll::unloadHeavyPart() {
 	for (auto &recent : _recentVoters) {
-		recent.userpic = nullptr;
+		recent.userpic = {};
 	}
 }
 
 bool Poll::hasHeavyPart() const {
 	for (auto &recent : _recentVoters) {
-		if (recent.userpic) {
+		if (!recent.userpic.null()) {
 			return true;
 		}
 	}

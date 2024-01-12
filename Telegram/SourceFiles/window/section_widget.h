@@ -16,9 +16,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 class PeerData;
 
+namespace ChatHelpers {
+class Show;
+} // namespace ChatHelpers
+
 namespace Data {
 struct ReactionId;
 class ForumTopic;
+class WallPaper;
+class Session;
 } // namespace Data
 
 namespace Main {
@@ -132,6 +138,9 @@ public:
 	virtual bool showInternal(
 		not_null<SectionMemento*> memento,
 		const SectionShow &params) = 0;
+	virtual bool sameTypeAs(not_null<SectionMemento*> memento) {
+		return false;
+	}
 
 	virtual bool showMessage(
 			PeerId peerId,
@@ -184,6 +193,17 @@ public:
 		not_null<Ui::ChatTheme*> theme,
 		not_null<QWidget*> widget,
 		QRect clip);
+	static void PaintBackground(
+		not_null<Ui::ChatTheme*> theme,
+		not_null<QWidget*> widget,
+		int fillHeight,
+		int fromy,
+		QRect clip);
+	static void PaintBackground(
+		QPainter &p,
+		not_null<Ui::ChatTheme*> theme,
+		QSize fill,
+		QRect clip);
 
 protected:
 	void paintEvent(QPaintEvent *e) override;
@@ -227,10 +247,17 @@ private:
 [[nodiscard]] bool ShowSendPremiumError(
 	not_null<SessionController*> controller,
 	not_null<DocumentData*> document);
+[[nodiscard]] bool ShowSendPremiumError(
+	std::shared_ptr<ChatHelpers::Show> show,
+	not_null<DocumentData*> document);
 
 [[nodiscard]] bool ShowReactPremiumError(
 	not_null<SessionController*> controller,
 	not_null<HistoryItem*> item,
 	const Data::ReactionId &id);
+
+[[nodiscard]] rpl::producer<const Data::WallPaper*> WallPaperResolved(
+	not_null<Data::Session*> owner,
+	const Data::WallPaper *paper);
 
 } // namespace Window

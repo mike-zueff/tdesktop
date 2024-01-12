@@ -16,10 +16,7 @@ inline constexpr auto FileStatusSizeFailed = 0xFFFFFFF2LL;
 [[nodiscard]] QString FormatSizeText(qint64 size);
 [[nodiscard]] QString FormatDownloadText(qint64 ready, qint64 total);
 [[nodiscard]] QString FormatProgressText(qint64 ready, qint64 total);
-[[nodiscard]] QString FormatDateTime(
-	QDateTime date,
-	QString dateFormat,
-	QString timeFormat);
+[[nodiscard]] QString FormatDateTime(QDateTime date);
 [[nodiscard]] QString FormatDurationText(qint64 duration);
 [[nodiscard]] QString FormatDurationWords(qint64 duration);
 [[nodiscard]] QString FormatDurationWordsSlowmode(qint64 duration);
@@ -29,6 +26,7 @@ inline constexpr auto FileStatusSizeFailed = 0xFFFFFFF2LL;
 [[nodiscard]] QString FormatImageSizeText(const QSize &size);
 [[nodiscard]] QString FormatPhone(const QString &phone);
 [[nodiscard]] QString FormatTTL(float64 ttl);
+[[nodiscard]] QString FormatTTLAfter(float64 ttl);
 [[nodiscard]] QString FormatTTLTiny(float64 ttl);
 [[nodiscard]] QString FormatMuteFor(float64 sec);
 [[nodiscard]] QString FormatMuteForTiny(float64 sec);

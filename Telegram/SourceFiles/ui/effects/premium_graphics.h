@@ -9,6 +9,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/effects/round_checkbox.h"
 
+namespace style {
+struct PremiumLimits;
+} // namespace style
+
 namespace tr {
 template <typename ...>
 struct phrase;
@@ -24,6 +28,7 @@ namespace style {
 struct RoundImageCheckbox;
 struct PremiumOption;
 struct TextStyle;
+struct PremiumBubble;
 } // namespace style
 
 namespace Ui {
@@ -34,8 +39,11 @@ class VerticalLayout;
 
 namespace Premium {
 
+inline constexpr auto kLimitRowRatio = 0.5;
+
 void AddBubbleRow(
 	not_null<Ui::VerticalLayout*> parent,
+	const style::PremiumBubble &st,
 	rpl::producer<> showFinishes,
 	int min,
 	int current,
@@ -44,16 +52,56 @@ void AddBubbleRow(
 	std::optional<tr::phrase<lngtag_count>> phrase,
 	const style::icon *icon);
 
-void AddLimitRow(
+struct BubbleRowState {
+	int counter = 0;
+	float64 ratio = 0.;
+	bool animateFromZero = false;
+	bool dynamic = false;
+};
+void AddBubbleRow(
 	not_null<Ui::VerticalLayout*> parent,
-	QString max,
-	QString min = {});
+	const style::PremiumBubble &st,
+	rpl::producer<> showFinishes,
+	rpl::producer<BubbleRowState> state,
+	bool premiumPossible,
+	Fn<QString(int)> text,
+	const style::icon *icon,
+	const style::margins &outerPadding);
 
 void AddLimitRow(
 	not_null<Ui::VerticalLayout*> parent,
+	const style::PremiumLimits &st,
+	QString max,
+	QString min = {},
+	float64 ratio = kLimitRowRatio);
+
+void AddLimitRow(
+	not_null<Ui::VerticalLayout*> parent,
+	const style::PremiumLimits &st,
 	int max,
 	std::optional<tr::phrase<lngtag_count>> phrase,
-	int min = 0);
+	int min = 0,
+	float64 ratio = kLimitRowRatio);
+
+struct LimitRowLabels {
+	rpl::producer<QString> leftLabel;
+	rpl::producer<QString> leftCount;
+	rpl::producer<QString> rightLabel;
+	rpl::producer<QString> rightCount;
+};
+
+struct LimitRowState {
+	float64 ratio = 0.;
+	bool animateFromZero = false;
+	bool dynamic = false;
+};
+
+void AddLimitRow(
+	not_null<Ui::VerticalLayout*> parent,
+	const style::PremiumLimits &st,
+	LimitRowLabels labels,
+	rpl::producer<LimitRowState> state,
+	const style::margins &padding);
 
 struct AccountsRowArgs final {
 	std::shared_ptr<Ui::RadiobuttonGroup> group;
@@ -78,14 +126,16 @@ void AddAccountsRow(
 [[nodiscard]] QGradientStops GiftGradientStops();
 
 struct ListEntry final {
-	rpl::producer<QString> subtitle;
-	rpl::producer<TextWithEntities> description;
+	rpl::producer<QString> title;
+	rpl::producer<TextWithEntities> about;
 	int leftNumber = 0;
 	int rightNumber = 0;
 	std::optional<QString> customRightText;
+	const style::icon *icon = nullptr;
 };
 void ShowListBox(
 	not_null<Ui::GenericBox*> box,
+	const style::PremiumLimits &st,
 	std::vector<ListEntry> entries);
 
 void AddGiftOptions(

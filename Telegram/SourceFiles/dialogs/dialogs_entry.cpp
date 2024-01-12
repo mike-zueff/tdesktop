@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_folder.h"
 #include "data/data_forum_topic.h"
 #include "data/data_chat_filters.h"
+#include "data/data_saved_sublist.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "mainwidget.h"
@@ -83,6 +84,8 @@ Entry::Entry(not_null<Data::Session*> owner, Type type)
 	? (Flag::IsThread | Flag::IsHistory)
 	: (type == Type::ForumTopic)
 	? Flag::IsThread
+	: (type == Type::SavedSublist)
+	? Flag::IsSavedSublist
 	: Flag(0)) {
 }
 
@@ -109,7 +112,7 @@ Data::Forum *Entry::asForum() {
 }
 
 Data::Folder *Entry::asFolder() {
-	return (_flags & Flag::IsThread)
+	return (_flags & (Flag::IsThread | Flag::IsSavedSublist))
 		? nullptr
 		: static_cast<Data::Folder*>(this);
 }
@@ -123,6 +126,12 @@ Data::Thread *Entry::asThread() {
 Data::ForumTopic *Entry::asTopic() {
 	return ((_flags & Flag::IsThread) && !(_flags & Flag::IsHistory))
 		? static_cast<Data::ForumTopic*>(this)
+		: nullptr;
+}
+
+Data::SavedSublist *Entry::asSublist() {
+	return (_flags & Flag::IsSavedSublist)
+		? static_cast<Data::SavedSublist*>(this)
 		: nullptr;
 }
 
@@ -144,6 +153,10 @@ const Data::Thread *Entry::asThread() const {
 
 const Data::ForumTopic *Entry::asTopic() const {
 	return const_cast<Entry*>(this)->asTopic();
+}
+
+const Data::SavedSublist *Entry::asSublist() const {
+	return const_cast<Entry*>(this)->asSublist();
 }
 
 void Entry::pinnedIndexChanged(FilterId filterId, int was, int now) {
@@ -300,10 +313,10 @@ PositionChange Entry::adjustByPosInChatList(
 		not_null<MainList*> list) {
 	const auto links = chatListLinks(filterId);
 	Assert(links != nullptr);
-	const auto from = links->main->pos();
+	const auto from = links->main->top();
 	list->indexed()->adjustByDate(*links);
-	const auto to = links->main->pos();
-	return { from, to };
+	const auto to = links->main->top();
+	return { .from = from, .to = to, .height = links->main->height() };
 }
 
 void Entry::setChatListTimeId(TimeId date) {
@@ -315,7 +328,7 @@ void Entry::setChatListTimeId(TimeId date) {
 }
 
 int Entry::posInChatList(FilterId filterId) const {
-	return mainChatListLink(filterId)->pos();
+	return mainChatListLink(filterId)->index();
 }
 
 not_null<Row*> Entry::addToChatList(
@@ -333,7 +346,7 @@ not_null<Row*> Entry::addToChatList(
 void Entry::removeFromChatList(
 		FilterId filterId,
 		not_null<MainList*> list) {
-	if (!asTopic() && isPinnedDialog(filterId)) {
+	if (isPinnedDialog(filterId)) {
 		owner().setChatPinned(this, filterId, false);
 	}
 
@@ -377,6 +390,10 @@ void Entry::updateChatListEntryPostponed() {
 			updateChatListEntry();
 		}
 	});
+}
+
+void Entry::updateChatListEntryHeight() {
+	session().changes().entryUpdated(this, Data::EntryUpdate::Flag::Height);
 }
 
 } // namespace Dialogs

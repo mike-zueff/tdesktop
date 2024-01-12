@@ -7,9 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "history/history_item.h"
 #include "base/timer.h"
+#include "history/history_item.h"
 #include "ui/image/image_location.h"
+#include "window/window_session_controller_link_info.h"
 
 class History;
 
@@ -28,11 +29,13 @@ struct SponsoredFrom {
 	bool isMegagroup = false;
 	bool isChannel = false;
 	bool isPublic = false;
-	bool isBot = false;
+	std::optional<Window::PeerByLinkInfo> botLinkInfo;
 	bool isExactPost = false;
 	bool isRecommended = false;
-	ImageWithLocation userpic;
+	QString externalLink;
+	PhotoId webpageOrBotPhotoId = PhotoId(0);
 	bool isForceUserpicDisplay = false;
+	QString buttonText;
 };
 
 struct SponsoredMessage {
@@ -42,6 +45,9 @@ struct SponsoredMessage {
 	History *history = nullptr;
 	MsgId msgId;
 	QString chatInviteHash;
+	QString externalLink;
+	TextWithEntities sponsorInfo;
+	TextWithEntities additionalInfo;
 };
 
 class SponsoredMessages final {
@@ -55,6 +61,11 @@ public:
 		std::optional<QString> hash;
 		PeerData *peer = nullptr;
 		MsgId msgId;
+		std::vector<TextWithEntities> info;
+		QString externalLink;
+		bool isForceUserpicDisplay = false;
+		QString buttonText;
+		std::optional<Window::PeerByLinkInfo> botLinkInfo;
 	};
 	using RandomId = QByteArray;
 	explicit SponsoredMessages(not_null<Session*> owner);
@@ -66,6 +77,7 @@ public:
 	void request(not_null<History*> history, Fn<void()> done);
 	void clearItems(not_null<History*> history);
 	[[nodiscard]] Details lookupDetails(const FullMsgId &fullId) const;
+	void clicked(const FullMsgId &fullId);
 
 	[[nodiscard]] bool append(not_null<History*> history);
 	void inject(
@@ -82,6 +94,7 @@ private:
 	using OwnedItem = std::unique_ptr<HistoryItem, HistoryItem::Destroyer>;
 	struct Entry {
 		OwnedItem item;
+		FullMsgId itemFullId;
 		SponsoredMessage sponsored;
 	};
 	struct List {

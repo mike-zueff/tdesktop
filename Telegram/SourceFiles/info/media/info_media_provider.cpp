@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "history/history_item_helpers.h"
 #include "data/data_session.h"
 #include "data/data_chat.h"
 #include "data/data_channel.h"
@@ -23,6 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_peer_values.h"
 #include "data/data_document.h"
 #include "styles/style_info.h"
+#include "styles/style_overview.h"
 
 namespace Info::Media {
 namespace {
@@ -415,7 +417,7 @@ std::unique_ptr<BaseLayout> Provider::createLayout(
 		return nullptr;
 	};
 	const auto getFile = [&]() -> DocumentData* {
-		if (auto media = item->media()) {
+		if (const auto media = item->media()) {
 			return media->document();
 		}
 		return nullptr;
@@ -423,10 +425,18 @@ std::unique_ptr<BaseLayout> Provider::createLayout(
 
 	const auto &songSt = st::overviewFileLayout;
 	using namespace Overview::Layout;
+	const auto options = [&] {
+		const auto media = item->media();
+		return MediaOptions{ .spoiler = media && media->hasSpoiler() };
+	};
 	switch (type) {
 	case Type::Photo:
 		if (const auto photo = getPhoto()) {
-			return std::make_unique<Photo>(delegate, item, photo);
+			return std::make_unique<Photo>(
+				delegate,
+				item,
+				photo,
+				options());
 		}
 		return nullptr;
 	case Type::GIF:
@@ -436,7 +446,7 @@ std::unique_ptr<BaseLayout> Provider::createLayout(
 		return nullptr;
 	case Type::Video:
 		if (const auto file = getFile()) {
-			return std::make_unique<Video>(delegate, item, file);
+			return std::make_unique<Video>(delegate, item, file, options());
 		}
 		return nullptr;
 	case Type::File:

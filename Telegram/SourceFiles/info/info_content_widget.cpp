@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "window/window_session_controller.h"
 #include "ui/widgets/scroll_area.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/wrap/padding_wrap.h"
 #include "ui/search_field_controller.h"
 #include "lang/lang_keys.h"
@@ -273,6 +273,11 @@ void ContentWidget::setViewport(
 	}, _scroll->lifetime());
 }
 
+auto ContentWidget::titleStories()
+-> rpl::producer<Dialogs::Stories::Content> {
+	return nullptr;
+}
+
 void ContentWidget::saveChanges(FnMut<void()> done) {
 	done();
 }
@@ -332,6 +337,14 @@ Key ContentMemento::key() const {
 		return Key(poll, pollContextId());
 	} else if (const auto self = settingsSelf()) {
 		return Settings::Tag{ self };
+	} else if (const auto peer = storiesPeer()) {
+		return Stories::Tag{ peer, storiesTab() };
+	} else if (const auto peer = statisticsPeer()) {
+		return Statistics::Tag{
+			peer,
+			statisticsContextId(),
+			statisticsStoryId(),
+		};
 	} else {
 		return Downloads::Tag();
 	}
@@ -361,6 +374,17 @@ ContentMemento::ContentMemento(Settings::Tag settings)
 }
 
 ContentMemento::ContentMemento(Downloads::Tag downloads) {
+}
+
+ContentMemento::ContentMemento(Stories::Tag stories)
+: _storiesPeer(stories.peer)
+, _storiesTab(stories.tab) {
+}
+
+ContentMemento::ContentMemento(Statistics::Tag statistics)
+: _statisticsPeer(statistics.peer)
+, _statisticsContextId(statistics.contextId)
+, _statisticsStoryId(statistics.storyId) {
 }
 
 } // namespace Info

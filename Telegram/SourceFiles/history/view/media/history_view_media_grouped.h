@@ -55,6 +55,9 @@ public:
 	DocumentData *getDocument() const override;
 
 	TextForMimeData selectedText(TextSelection selection) const override;
+	SelectedQuote selectedQuote(TextSelection selection) const override;
+	TextSelection selectionFromQuote(
+		const SelectedQuote &quote) const override;
 
 	std::vector<Ui::BubbleSelectionInterval> getBubbleSelectionIntervals(
 		TextSelection selection) const override;
@@ -67,6 +70,7 @@ public:
 		bool pressed) override;
 
 	TextWithEntities getCaption() const override;
+	void hideSpoilers() override;
 	Storage::SharedMediaTypesMask sharedMediaTypes() const override;
 
 	bool overrideEditedDate() const override {

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_histories.h"
 
+#include "api/api_text_entities.h"
 #include "data/data_session.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
@@ -14,12 +15,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_forum.h"
 #include "data/data_forum_topic.h"
 #include "data/data_scheduled_messages.h"
+#include "data/data_user.h"
 #include "base/unixtime.h"
 #include "base/random.h"
 #include "main/main_session.h"
 #include "window/notifications_manager.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "history/history_item_helpers.h"
 #include "history/view/history_view_element.h"
 #include "core/application.h"
 #include "apiwrap.h"
@@ -30,6 +33,71 @@ namespace {
 constexpr auto kReadRequestTimeout = 3 * crl::time(1000);
 
 } // namespace
+
+MTPInputReplyTo ReplyToForMTP(
+		not_null<History*> history,
+		FullReplyTo replyTo) {
+	const auto owner = &history->owner();
+	if (replyTo.storyId) {
+		if (const auto peer = owner->peerLoaded(replyTo.storyId.peer)) {
+			if (const auto user = peer->asUser()) {
+				return MTP_inputReplyToStory(
+					user->inputUser,
+					MTP_int(replyTo.storyId.story));
+			}
+		}
+	} else if (replyTo.messageId || replyTo.topicRootId) {
+		const auto to = LookupReplyTo(history, replyTo.messageId);
+		const auto replyingToTopic = replyTo.topicRootId
+			? history->peer->forumTopicFor(replyTo.topicRootId)
+			: nullptr;
+		const auto replyingToTopicId = replyTo.topicRootId
+			? (replyingToTopic
+				? replyingToTopic->rootId()
+				: Data::ForumTopic::kGeneralId)
+			: (to ? to->topicRootId() : Data::ForumTopic::kGeneralId);
+		const auto replyToTopicId = to
+			? to->topicRootId()
+			: replyingToTopicId;
+		const auto external = replyTo.messageId
+			&& (replyTo.messageId.peer != history->peer->id
+				|| replyingToTopicId != replyToTopicId);
+		const auto quoteEntities = Api::EntitiesToMTP(
+			&history->session(),
+			replyTo.quote.entities,
+			Api::ConvertOption::SkipLocal);
+		using Flag = MTPDinputReplyToMessage::Flag;
+		return MTP_inputReplyToMessage(
+			MTP_flags((replyTo.topicRootId ? Flag::f_top_msg_id : Flag())
+				| (external ? Flag::f_reply_to_peer_id : Flag())
+				| (replyTo.quote.text.isEmpty()
+					? Flag()
+					: (Flag::f_quote_text | Flag::f_quote_offset))
+				| (quoteEntities.v.isEmpty()
+					? Flag()
+					: Flag::f_quote_entities)),
+			MTP_int(replyTo.messageId ? replyTo.messageId.msg : 0),
+			MTP_int(replyTo.topicRootId),
+			(external
+				? owner->peer(replyTo.messageId.peer)->input
+				: MTPInputPeer()),
+			MTP_string(replyTo.quote.text),
+			quoteEntities,
+			MTP_int(replyTo.quoteOffset));
+	}
+	return MTPInputReplyTo();
+}
+
+MTPInputMedia WebPageForMTP(
+		const Data::WebPageDraft &draft,
+		bool required) {
+	using Flag = MTPDinputMediaWebPage::Flag;
+	return MTP_inputMediaWebPage(
+		MTP_flags((required ? Flag() : Flag::f_optional)
+			| (draft.forceLargeMedia ? Flag::f_force_large_media : Flag())
+			| (draft.forceSmallMedia ? Flag::f_force_small_media : Flag())),
+		MTP_string(draft.url));
+}
 
 Histories::Histories(not_null<Session*> owner)
 : _owner(owner)
@@ -640,7 +708,7 @@ void Histories::deleteAllMessages(
 			)).done([=](const MTPUpdates &result) {
 				session().api().applyUpdates(result);
 			//}).fail([=](const MTP::Error &error) {
-			//	if (error.type() == qstr("CHANNEL_TOO_LARGE")) {
+			//	if (error.type() == u"CHANNEL_TOO_LARGE"_q) {
 			//		Ui::show(Box<Ui::InformBox>(tr::lng_cant_delete_channel(tr::now)));
 			//	}
 			}).send();
@@ -885,23 +953,24 @@ bool Histories::isCreatingTopic(
 
 int Histories::sendPreparedMessage(
 		not_null<History*> history,
-		MsgId replyTo,
-		MsgId topicRootId,
+		FullReplyTo replyTo,
 		uint64 randomId,
-		Fn<PreparedMessage(MsgId replyTo, MsgId topicRootId)> message,
+		Fn<PreparedMessage(not_null<History*>, FullReplyTo)> message,
 		Fn<void(const MTPUpdates&, const MTP::Response&)> done,
 		Fn<void(const MTP::Error&, const MTP::Response&)> fail) {
-	if (isCreatingTopic(history, topicRootId)) {
+	if (isCreatingTopic(history, replyTo.topicRootId)) {
 		const auto id = ++_requestAutoincrement;
-		const auto creatingId = FullMsgId(history->peer->id, topicRootId);
+		const auto creatingId = FullMsgId(
+			history->peer->id,
+			replyTo.topicRootId);
 		auto i = _creatingTopics.find(creatingId);
 		if (i == end(_creatingTopics)) {
-			sendCreateTopicRequest(history, topicRootId);
+			sendCreateTopicRequest(history, replyTo.topicRootId);
 			i = _creatingTopics.emplace(creatingId).first;
 		}
 		i->second.push_back({
 			.randomId = randomId,
-			.replyTo = replyTo,
+			.replyTo = replyTo.messageId,
 			.message = std::move(message),
 			.done = std::move(done),
 			.fail = std::move(fail),
@@ -910,9 +979,14 @@ int Histories::sendPreparedMessage(
 		_creatingTopicRequests.emplace(id);
 		return id;
 	}
-	const auto realReply = convertTopicReplyTo(history, replyTo);
-	const auto realRoot = convertTopicReplyTo(history, topicRootId);
-	return v::match(message(realReply, realRoot), [&](const auto &request) {
+	const auto realReplyTo = FullReplyTo{
+		.messageId = convertTopicReplyToId(history, replyTo.messageId),
+		.quote = replyTo.quote,
+		.storyId = replyTo.storyId,
+		.topicRootId = convertTopicReplyToId(history, replyTo.topicRootId),
+		.quoteOffset = replyTo.quoteOffset,
+	};
+	return v::match(message(history, realReplyTo), [&](const auto &request) {
 		const auto type = RequestType::Send;
 		return sendRequest(history, type, [=](Fn<void()> finish) {
 			const auto session = &_owner->session();
@@ -955,8 +1029,10 @@ void Histories::checkTopicCreated(FullMsgId rootId, MsgId realRoot) {
 			_creatingTopicRequests.erase(entry.requestId);
 			sendPreparedMessage(
 				history,
-				entry.replyTo,
-				realRoot,
+				FullReplyTo{
+					.messageId = entry.replyTo,
+					.topicRootId = realRoot,
+				},
 				entry.randomId,
 				std::move(entry.message),
 				std::move(entry.done),
@@ -976,14 +1052,23 @@ void Histories::checkTopicCreated(FullMsgId rootId, MsgId realRoot) {
 	}
 }
 
-MsgId Histories::convertTopicReplyTo(
+FullMsgId Histories::convertTopicReplyToId(
 		not_null<History*> history,
-		MsgId replyTo) const {
-	if (!replyTo) {
+		FullMsgId replyToId) const {
+	const auto id = (history->peer->id == replyToId.peer)
+		? convertTopicReplyToId(history, replyToId.msg)
+		: replyToId.msg;
+	return { replyToId.peer, id };
+}
+
+MsgId Histories::convertTopicReplyToId(
+		not_null<History*> history,
+		MsgId replyToId) const {
+	if (!replyToId) {
 		return {};
 	}
-	const auto i = _createdTopicIds.find({ history->peer->id, replyTo });
-	return (i != end(_createdTopicIds)) ? i->second : replyTo;
+	const auto i = _createdTopicIds.find({ history->peer->id, replyToId });
+	return (i != end(_createdTopicIds)) ? i->second : replyToId;
 }
 
 void Histories::checkPostponed(not_null<History*> history, int id) {

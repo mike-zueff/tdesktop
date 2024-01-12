@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/weak_ptr.h"
 #include "apiwrap.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 
 namespace HistoryView {
 namespace {
@@ -38,8 +39,9 @@ namespace {
 [[nodiscard]] Ui::MessageBarContent ContentWithPreview(
 		not_null<HistoryItem*> item,
 		Image *preview,
+		bool spoiler,
 		Fn<void()> repaint) {
-	auto result = ContentWithoutPreview(item, std::move(repaint));
+	auto result = ContentWithoutPreview(item, repaint);
 	if (!preview) {
 		static const auto kEmpty = [&] {
 			const auto size = st::historyReplyHeight * cIntRetinaFactor();
@@ -51,8 +53,12 @@ namespace {
 			return result;
 		}();
 		result.preview = kEmpty;
+		result.spoilerRepaint = nullptr;
 	} else {
-		result.preview = preview->original();
+		result.preview = Images::Round(
+			preview->original(),
+			ImageRoundRadius::Small);
+		result.spoilerRepaint = spoiler ? repaint : nullptr;
 	}
 	return result;
 }
@@ -90,7 +96,11 @@ namespace {
 		}) | rpl::then(
 			rpl::single(kFullLoaded)
 		) | rpl::map([=] {
-			return ContentWithPreview(item, media->replyPreview(), repaint);
+			return ContentWithPreview(
+				item,
+				media->replyPreview(),
+				media->hasSpoiler(),
+				repaint);
 		});
 	}) | rpl::flatten_latest();
 }

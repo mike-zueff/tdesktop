@@ -8,8 +8,10 @@
 
 #include "base/flat_map.h"
 #include "ui/abstract_button.h"
+#include "ui/effects/shake_animation.h"
 #include "ui/paint/blobs.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "ui/widgets/call_button.h"
 #include "ui/widgets/labels.h"
 #include "base/random.h"
@@ -47,7 +49,6 @@ constexpr auto kGlowAlpha = 150;
 constexpr auto kOverrideColorBgAlpha = 76;
 constexpr auto kOverrideColorRippleAlpha = 50;
 
-constexpr auto kShiftDuration = crl::time(300);
 constexpr auto kSwitchStateDuration = crl::time(120);
 constexpr auto kSwitchLabelDuration = crl::time(180);
 
@@ -516,15 +517,13 @@ CallMuteButton::CallMuteButton(
 	parent,
 	_st->active.bgSize,
 	rpl::combine(
-		rpl::single(anim::Disabled()) | rpl::then(anim::Disables()),
+		PowerSaving::OnValue(PowerSaving::kCalls),
 		std::move(hideBlobs),
 		_state.value(
 		) | rpl::map([](const CallMuteButtonState &state) {
 			return IsInactive(state.type);
 		})
-	) | rpl::map([](bool animDisabled, bool hide, bool isBadState) {
-		return isBadState || !(!animDisabled && !hide);
-	})))
+	) | rpl::map(rpl::mappers::_1 || rpl::mappers::_2 || rpl::mappers::_3)))
 , _content(base::make_unique_q<AbstractButton>(parent))
 , _colors(Colors())
 , _iconState(iconStateFrom(initial.type)) {
@@ -997,29 +996,10 @@ void CallMuteButton::shake() {
 	if (_shakeAnimation.animating()) {
 		return;
 	}
-	const auto update = [=] {
-		const auto fullProgress = _shakeAnimation.value(1.) * 6;
-		const auto segment = std::clamp(int(std::floor(fullProgress)), 0, 5);
-		const auto part = fullProgress - segment;
-		const auto from = (segment == 0)
-			? 0.
-			: (segment == 1 || segment == 3 || segment == 5)
-			? 1.
-			: -1.;
-		const auto to = (segment == 0 || segment == 2 || segment == 4)
-			? 1.
-			: (segment == 1 || segment == 3)
-			? -1.
-			: 0.;
-		const auto shift = from * (1. - part) + to * part;
-		_labelShakeShift = int(base::SafeRound(shift * st::shakeShift));
+	_shakeAnimation.start(DefaultShakeCallback([=](int shift) {
+		_labelShakeShift = shift;
 		updateLabelsGeometry();
-	};
-	_shakeAnimation.start(
-		update,
-		0.,
-		1.,
-		kShiftDuration);
+	}), 0., 1., st::shakeDuration);
 }
 
 CallMuteButton::HandleMouseState CallMuteButton::HandleMouseStateFromType(

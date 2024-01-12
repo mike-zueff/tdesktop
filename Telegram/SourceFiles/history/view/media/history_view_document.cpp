@@ -9,12 +9,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/random.h"
 #include "lang/lang_keys.h"
+#include "lottie/lottie_icon.h"
 #include "storage/localstorage.h"
 #include "main/main_session.h"
 #include "media/player/media_player_float.h" // Media::Player::RoundPainter.
 #include "media/audio/media_audio.h"
 #include "media/player/media_player_instance.h"
 #include "history/history_item_components.h"
+#include "history/history_item_helpers.h" // ClearMediaAsExpired.
 #include "history/history.h"
 #include "core/click_handler_types.h" // kDocumentFilenameTooltipProperty.
 #include "history/view/history_view_element.h"
@@ -29,6 +31,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_style.h"
 #include "ui/cached_round_corners.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
+#include "ui/rect.h"
 #include "ui/ui_utility.h"
 #include "data/data_session.h"
 #include "data/data_document.h"
@@ -40,11 +44,100 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_transcribes.h"
 #include "apiwrap.h"
 #include "styles/style_chat.h"
+#include "styles/style_dialogs.h"
 
 namespace HistoryView {
 namespace {
 
 constexpr auto kAudioVoiceMsgUpdateView = crl::time(100);
+
+void DrawCornerBadgeTTL(
+		QPainter &p,
+		const style::color &color,
+		const QRect &circleRect) {
+	p.save();
+	const auto partRect = QRect(
+		circleRect.left() + circleRect.width() - st::dialogsTTLBadgeSize * 0.85,
+		circleRect.top() + circleRect.height() - st::dialogsTTLBadgeSize * 0.85,
+		st::dialogsTTLBadgeSize,
+		st::dialogsTTLBadgeSize);
+
+	auto hq = PainterHighQualityEnabler(p);
+	p.setBrush(color);
+	p.drawEllipse(partRect);
+
+	const auto innerRect = partRect - st::dialogsTTLBadgeInnerMargins;
+	const auto ttlText = u"1"_q;
+
+	p.setFont(st::dialogsScamFont);
+	p.setPen(st::premiumButtonFg);
+	p.drawText(innerRect, ttlText, style::al_center);
+
+	constexpr auto kPenWidth = 1.5;
+
+	const auto penWidth = style::ConvertScaleExact(kPenWidth);
+	auto pen = QPen(st::premiumButtonFg);
+	pen.setJoinStyle(Qt::RoundJoin);
+	pen.setCapStyle(Qt::RoundCap);
+	pen.setWidthF(penWidth);
+
+	p.setPen(pen);
+	p.setBrush(Qt::NoBrush);
+	p.drawArc(innerRect, arc::kQuarterLength, arc::kHalfLength);
+
+	p.setClipRect(innerRect
+		- QMargins(innerRect.width() / 2, 0, -penWidth, -penWidth));
+	pen.setStyle(Qt::DotLine);
+	p.setPen(pen);
+	p.drawEllipse(innerRect);
+	p.restore();
+}
+
+[[nodiscard]] HistoryView::TtlPaintCallback CreateTtlPaintCallback(
+		std::shared_ptr<rpl::lifetime> lifetime,
+		Fn<void()> update) {
+	struct State final {
+		std::unique_ptr<Lottie::Icon> start;
+		std::unique_ptr<Lottie::Icon> idle;
+	};
+	const auto iconSize = Size(std::min(
+		st::historyFileInPause.width(),
+		st::historyFileInPause.height()));
+	const auto state = lifetime->make_state<State>();
+	state->start = Lottie::MakeIcon({
+		.name = u"voice_ttl_start"_q,
+		.color = &st::historyFileInIconFg,
+		.sizeOverride = iconSize,
+	});
+
+	const auto animateSingle = [=](
+			not_null<Lottie::Icon*> icon,
+			Fn<void()> next) {
+		auto callback = [=] {
+			update();
+			if (icon->frameIndex() == icon->framesCount()) {
+				next();
+			}
+		};
+		icon->animate(std::move(callback), 0, icon->framesCount());
+	};
+	const auto animate = [=](auto reanimate) -> void {
+		animateSingle(state->idle.get(), [=] { reanimate(reanimate); });
+	};
+	animateSingle(
+		state->start.get(),
+		[=] {
+			state->idle = Lottie::MakeIcon({
+				.name = u"voice_ttl_idle"_q,
+				.color = &st::historyFileInIconFg,
+				.sizeOverride = iconSize,
+			});
+			animate(animate);
+		});
+	return [=](QPainter &p, QRect r, QColor c) {
+		(state->idle ? state->idle : state->start)->paintInCenter(p, r, c);
+	};
+}
 
 [[nodiscard]] QString CleanTagSymbols(const QString &value) {
 	auto result = QString();
@@ -171,7 +264,7 @@ void PaintWaveform(
 		accumulate_max(result, st::normalFont->width(text));
 	};
 	add(FormatDownloadText(document->size, document->size));
-	const auto duration = document->getDuration();
+	const auto duration = document->duration() / 1000;
 	if (const auto song = document->song()) {
 		add(FormatPlayedText(duration, duration));
 		add(FormatDurationAndSizeText(duration, document->size));
@@ -194,7 +287,8 @@ Document::Document(
 	not_null<DocumentData*> document)
 : File(parent, realParent)
 , _data(document) {
-	if (_data->isVideoMessage()) {
+	const auto isRound = _data->isVideoMessage();
+	if (isRound) {
 		const auto &entry = _data->session().api().transcribes().entry(
 			realParent);
 		_transcribedRound = entry.shown;
@@ -208,7 +302,44 @@ Document::Document(
 		_tooltipFilename.setTooltipText(named->name);
 	}
 
-	setDocumentLinks(_data, realParent);
+	if ((_data->isVoiceMessage() || isRound)
+		&& IsVoiceOncePlayable(_parent->data())) {
+		_parent->data()->removeFromSharedMediaIndex();
+		setDocumentLinks(_data, realParent, [=] {
+			_openl = nullptr;
+
+			auto lifetime = std::make_shared<rpl::lifetime>();
+			rpl::merge(
+				::Media::Player::instance()->updatedNotifier(
+				) | rpl::filter([=](::Media::Player::TrackState state) {
+					using State = ::Media::Player::State;
+					const auto badState = state.state == State::Stopped
+						|| state.state == State::StoppedAtEnd
+						|| state.state == State::StoppedAtError
+						|| state.state == State::StoppedAtStart;
+					return (state.id.contextId() != _realParent->fullId())
+						&& !badState;
+				}) | rpl::to_empty,
+				::Media::Player::instance()->tracksFinished(
+				) | rpl::filter([=](AudioMsgId::Type type) {
+					return (type == AudioMsgId::Type::Voice);
+				}) | rpl::to_empty
+			) | rpl::start_with_next([=]() mutable {
+				_drawTtl = nullptr;
+				const auto item = _parent->data();
+				if (lifetime) {
+					base::take(lifetime)->destroy();
+				}
+				// Destroys this.
+				ClearMediaAsExpired(item);
+			}, *lifetime);
+			_drawTtl = CreateTtlPaintCallback(lifetime, [=] { repaint(); });
+
+			return false;
+		});
+	} else {
+		setDocumentLinks(_data, realParent);
+	}
 
 	setStatusSize(Ui::FileStatusSizeReady);
 
@@ -272,9 +403,9 @@ void Document::createComponents(bool caption) {
 			_realParent->fullId());
 	}
 	if (const auto voice = Get<HistoryDocumentVoice>()) {
-		voice->seekl = std::make_shared<VoiceSeekClickHandler>(
-			_data,
-			[](FullMsgId) {});
+		voice->seekl = !IsVoiceOncePlayable(_parent->data())
+			? std::make_shared<VoiceSeekClickHandler>(_data, [](FullMsgId) {})
+			: nullptr;
 		if (_transcribedRound) {
 			voice->round = std::make_unique<::Media::Player::RoundPainter>(
 				_realParent);
@@ -305,7 +436,9 @@ QSize Document::countOptimalSize() {
 	const auto voice = Get<HistoryDocumentVoice>();
 	if (voice) {
 		const auto session = &_realParent->history()->session();
-		if (!session->premium()) {
+		if (_parent->data()->media()->ttlSeconds()
+			|| (!session->premium()
+				&& !session->api().transcribes().trialsSupport())) {
 			voice->transcribe = nullptr;
 			voice->transcribeText = {};
 		} else {
@@ -585,6 +718,10 @@ void Document::draw(
 				PainterHighQualityEnabler hq(p);
 				p.setBrush(stm->msgFileBg);
 				p.drawEllipse(inner);
+
+				if (_parent->data()->media()->ttlSeconds()) {
+					DrawCornerBadgeTTL(p, stm->msgFileBg, inner);
+				}
 			}
 		}
 
@@ -621,7 +758,9 @@ void Document::draw(
 			: nullptr;
 
 		const auto paintContent = [&](QPainter &q) {
-			if (previous && radialOpacity > 0. && radialOpacity < 1.) {
+			if (_drawTtl) {
+				_drawTtl(q, inner, context.st->historyFileInIconFg()->c);
+			} else if (previous && radialOpacity > 0. && radialOpacity < 1.) {
 				PaintInterpolatedIcon(q, icon, *previous, radialOpacity, inner);
 			} else {
 				icon.paintInCenter(q, inner);
@@ -743,14 +882,20 @@ void Document::draw(
 	if (const auto captioned = Get<HistoryDocumentCaptioned>()) {
 		p.setPen(stm->historyTextFg);
 		_parent->prepareCustomEmojiPaint(p, context, captioned->caption);
+		auto highlightRequest = context.computeHighlightCache();
 		captioned->caption.draw(p, {
 			.position = { st::msgPadding.left(), captiontop },
 			.availableWidth = captionw,
 			.palette = &stm->textPalette,
+			.pre = stm->preCache.get(),
+			.blockquote = context.quoteCache(parent()->contentColorIndex()),
+			.colors = context.st->highlightColors(),
 			.spoiler = Ui::Text::DefaultSpoilerCache(),
 			.now = context.now,
-			.paused = context.paused,
+			.pausedEmoji = context.paused || On(PowerSaving::kEmojiChat),
+			.pausedSpoiler = context.paused || On(PowerSaving::kChatSpoiler),
 			.selection = selection,
+			.highlight = highlightRequest ? &*highlightRequest : nullptr,
 		});
 	}
 }
@@ -1205,19 +1350,58 @@ TextForMimeData Document::selectedText(TextSelection selection) const {
 	return result;
 }
 
+SelectedQuote Document::selectedQuote(TextSelection selection) const {
+	if (const auto voice = Get<HistoryDocumentVoice>()) {
+		const auto length = voice->transcribeText.length();
+		if (selection.from < length) {
+			return {};
+		}
+		selection = HistoryView::UnshiftItemSelection(
+			selection,
+			voice->transcribeText);
+	}
+	if (const auto captioned = Get<HistoryDocumentCaptioned>()) {
+		return Element::FindSelectedQuote(
+			captioned->caption,
+			selection,
+			_realParent);
+	}
+	return {};
+}
+
+TextSelection Document::selectionFromQuote(
+		const SelectedQuote &quote) const {
+	if (const auto captioned = Get<HistoryDocumentCaptioned>()) {
+		const auto result = Element::FindSelectionFromQuote(
+			captioned->caption,
+			quote);
+		if (result.empty()) {
+			return {};
+		} else if (const auto voice = Get<HistoryDocumentVoice>()) {
+			return HistoryView::ShiftItemSelection(
+				result,
+				voice->transcribeText);
+		}
+		return result;
+	}
+	return {};
+}
+
 bool Document::uploading() const {
 	return _data->uploading();
 }
 
 void Document::setStatusSize(int64 newSize, TimeId realDuration) const {
-	TimeId duration = _data->isSong()
-		? _data->song()->duration
-		: (_data->isVoiceMessage()
-			? _data->voice()->duration
-			: _transcribedRound
-			? _data->round()->duration
-			: -1);
-	File::setStatusSize(newSize, _data->size, duration, realDuration);
+	const auto duration = (_data->isSong()
+		|| _data->isVoiceMessage()
+		|| _transcribedRound)
+		? _data->duration()
+		: -1;
+	File::setStatusSize(
+		newSize,
+		_data->size,
+		(duration >= 0) ? duration / 1000 : -1,
+		realDuration);
 	if (auto thumbed = Get<HistoryDocumentThumbed>()) {
 		if (_statusSize == Ui::FileStatusSizeReady) {
 			thumbed->link = tr::lng_media_download(tr::now).toUpper();
@@ -1349,6 +1533,8 @@ void Document::drawGrouped(
 		float64 highlightOpacity,
 		not_null<uint64*> cacheKey,
 		not_null<QPixmap*> cache) const {
+	const auto maybeMediaHighlight = context.highlightPathCache
+		&& context.highlightPathCache->isEmpty();
 	p.translate(geometry.topLeft());
 	draw(
 		p,
@@ -1356,6 +1542,10 @@ void Document::drawGrouped(
 		geometry.width(),
 		LayoutMode::Grouped,
 		rounding);
+	if (maybeMediaHighlight
+		&& !context.highlightPathCache->isEmpty()) {
+		context.highlightPathCache->translate(geometry.topLeft());
+	}
 	p.translate(-geometry.topLeft());
 }
 
@@ -1452,6 +1642,12 @@ TextWithEntities Document::getCaption() const {
 		return captioned->caption.toTextWithEntities();
 	}
 	return TextWithEntities();
+}
+
+void Document::hideSpoilers() {
+	if (const auto captioned = Get<HistoryDocumentCaptioned>()) {
+		captioned->caption.setSpoilerRevealed(false, anim::type::instant);
+	}
 }
 
 Ui::Text::String Document::createCaption() {

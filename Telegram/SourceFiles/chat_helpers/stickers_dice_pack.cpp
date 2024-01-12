@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "data/data_session.h"
 #include "data/data_document.h"
+#include "ui/chat/attach/attach_prepare.h"
 #include "ui/image/image_location_factory.h"
 #include "storage/localimageloader.h"
 #include "base/unixtime.h"
@@ -25,6 +26,7 @@ const QString DicePacks::kDartString = QString::fromUtf8("\xF0\x9F\x8E\xAF");
 const QString DicePacks::kSlotString = QString::fromUtf8("\xF0\x9F\x8E\xB0");
 const QString DicePacks::kFballString = QString::fromUtf8("\xE2\x9A\xBD");
 const QString DicePacks::kBballString = QString::fromUtf8("\xF0\x9F\x8F\x80");
+const QString DicePacks::kPartyPopper = QString::fromUtf8("\xf0\x9f\x8e\x89");
 
 DicePack::DicePack(not_null<Main::Session*> session, const QString &emoji)
 : _session(session)
@@ -34,7 +36,7 @@ DicePack::DicePack(not_null<Main::Session*> session, const QString &emoji)
 DicePack::~DicePack() = default;
 
 DocumentData *DicePack::lookup(int value) {
-	if (!_requestId) {
+	if (!_requestId && _emoji != DicePacks::kPartyPopper) {
 		load();
 	}
 	tryGenerateLocalZero();
@@ -116,6 +118,8 @@ void DicePack::tryGenerateLocalZero() {
 		generateLocal(8, u"slot_0_idle"_q);
 		generateLocal(14, u"slot_1_idle"_q);
 		generateLocal(20, u"slot_2_idle"_q);
+	} else if (_emoji == DicePacks::kPartyPopper) {
+		generateLocal(0, u"winners"_q);
 	}
 }
 
@@ -127,8 +131,9 @@ void DicePack::generateLocal(int index, const QString &name) {
 		QByteArray(),
 		nullptr,
 		SendMediaType::File,
-		FileLoadTo(0, {}, 0, 0, 0),
-		{});
+		FileLoadTo(0, {}, {}, 0),
+		{},
+		false);
 	task.process({ .generateGoodThumbnail = false });
 	const auto result = task.peekResult();
 	Assert(result != nullptr);

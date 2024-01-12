@@ -13,12 +13,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/click_handler_types.h"
 #include "ui/effects/animations.h"
 #include "ui/effects/radial_animation.h"
-#include "styles/style_overview.h"
 
 class Image;
 
 namespace style {
 struct RoundCheckbox;
+struct OverviewFileLayout;
 } // namespace style
 
 namespace Data {
@@ -26,6 +26,10 @@ class Media;
 class PhotoMedia;
 class DocumentMedia;
 } // namespace Data
+
+namespace Ui {
+class SpoilerAnimation;
+} // namespace Ui
 
 namespace Overview {
 namespace Layout {
@@ -36,9 +40,12 @@ class Delegate;
 
 class PaintContext : public PaintContextBase {
 public:
-	PaintContext(crl::time ms, bool selecting) : PaintContextBase(ms, selecting) {
+	PaintContext(crl::time ms, bool selecting, bool paused)
+	: PaintContextBase(ms, selecting)
+	, paused(paused) {
 	}
 	bool skipBorder = false;
+	bool paused = false;
 
 };
 
@@ -101,6 +108,9 @@ public:
 	RadialProgressItem(const RadialProgressItem &other) = delete;
 
 	void clickHandlerActiveChanged(const ClickHandlerPtr &action, bool active) override;
+
+	virtual void clearSpoiler() {
+	}
 
 	~RadialProgressItem();
 
@@ -173,12 +183,19 @@ struct Info : public RuntimeComponent<Info, LayoutItemBase> {
 	int top = 0;
 };
 
+struct MediaOptions {
+	bool spoiler = false;
+	bool story = false;
+};
+
 class Photo final : public ItemBase {
 public:
 	Photo(
 		not_null<Delegate*> delegate,
 		not_null<HistoryItem*> parent,
-		not_null<PhotoData*> photo);
+		not_null<PhotoData*> photo,
+		MediaOptions options);
+	~Photo();
 
 	void initDimensions() override;
 	int32 resizeGetHeight(int32 width) override;
@@ -192,13 +209,16 @@ public:
 private:
 	void ensureDataMediaCreated() const;
 	void setPixFrom(not_null<Image*> image);
+	void clearSpoiler();
 
 	const not_null<PhotoData*> _data;
 	mutable std::shared_ptr<Data::PhotoMedia> _dataMedia;
 	ClickHandlerPtr _link;
+	std::unique_ptr<Ui::SpoilerAnimation> _spoiler;
 
 	QPixmap _pix;
 	bool _goodLoaded = false;
+	bool _story = false;
 
 };
 
@@ -265,7 +285,8 @@ public:
 	Video(
 		not_null<Delegate*> delegate,
 		not_null<HistoryItem*> parent,
-		not_null<DocumentData*> video);
+		not_null<DocumentData*> video,
+		MediaOptions options);
 	~Video();
 
 	void initDimensions() override;
@@ -276,6 +297,7 @@ public:
 		StateRequest request) const override;
 
 	void clearHeavyPart() override;
+	void clearSpoiler() override;
 
 protected:
 	float64 dataProgress() const override;
@@ -292,8 +314,11 @@ private:
 	StatusText _status;
 
 	QString _duration;
+	std::unique_ptr<Ui::SpoilerAnimation> _spoiler;
+
 	QPixmap _pix;
 	bool _pixBlurred = true;
+	bool _story = false;
 
 };
 
@@ -322,9 +347,8 @@ protected:
 
 private:
 	void ensureDataMediaCreated() const;
-	int duration() const;
 
-	not_null<DocumentData*> _data;
+	const not_null<DocumentData*> _data;
 	mutable std::shared_ptr<Data::DocumentMedia> _dataMedia;
 	StatusText _status;
 	ClickHandlerPtr _namel;
@@ -344,6 +368,7 @@ struct DocumentFields {
 	TimeId dateOverride = 0;
 	bool forceFileLayout = false;
 };
+
 class Document final : public RadialProgressItem {
 public:
 	Document(

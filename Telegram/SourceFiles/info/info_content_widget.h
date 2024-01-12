@@ -11,6 +11,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/rp_widget.h"
 #include "info/info_wrap_widget.h"
 
+namespace Dialogs::Stories {
+struct Content;
+} // namespace Dialogs::Stories
+
 namespace Storage {
 enum class SharedMediaType : signed char;
 } // namespace Storage
@@ -24,14 +28,24 @@ template <typename Widget>
 class PaddingWrap;
 } // namespace Ui
 
-namespace Info {
-namespace Settings {
+namespace Info::Settings {
 struct Tag;
-} // namespace Settings
+} // namespace Info::Settings
 
-namespace Downloads {
+namespace Info::Downloads {
 struct Tag;
-} // namespace Downloads
+} // namespace Info::Downloads
+
+namespace Info::Stories {
+struct Tag;
+enum class Tab;
+} // namespace Info::Stories
+
+namespace Info::Statistics {
+struct Tag;
+} // namespace Info::Statistics
+
+namespace Info {
 
 class ContentMemento;
 class Controller;
@@ -82,6 +96,11 @@ public:
 	}
 
 	[[nodiscard]] virtual rpl::producer<QString> title() = 0;
+	[[nodiscard]] virtual rpl::producer<QString> subtitle() {
+		return nullptr;
+	}
+	[[nodiscard]] virtual auto titleStories()
+		-> rpl::producer<Dialogs::Stories::Content>;
 
 	virtual void saveChanges(FnMut<void()> done);
 
@@ -150,6 +169,8 @@ public:
 		PeerId migratedPeerId);
 	explicit ContentMemento(Settings::Tag settings);
 	explicit ContentMemento(Downloads::Tag downloads);
+	explicit ContentMemento(Stories::Tag stories);
+	explicit ContentMemento(Statistics::Tag statistics);
 	ContentMemento(not_null<PollData*> poll, FullMsgId contextId)
 	: _poll(poll)
 	, _pollContextId(contextId) {
@@ -171,6 +192,21 @@ public:
 	}
 	UserData *settingsSelf() const {
 		return _settingsSelf;
+	}
+	PeerData *storiesPeer() const {
+		return _storiesPeer;
+	}
+	Stories::Tab storiesTab() const {
+		return _storiesTab;
+	}
+	PeerData *statisticsPeer() const {
+		return _statisticsPeer;
+	}
+	FullMsgId statisticsContextId() const {
+		return _statisticsContextId;
+	}
+	FullStoryId statisticsStoryId() const {
+		return _statisticsStoryId;
 	}
 	PollData *poll() const {
 		return _poll;
@@ -214,6 +250,11 @@ private:
 	const PeerId _migratedPeerId = 0;
 	Data::ForumTopic *_topic = nullptr;
 	UserData * const _settingsSelf = nullptr;
+	PeerData * const _storiesPeer = nullptr;
+	Stories::Tab _storiesTab = {};
+	PeerData * const _statisticsPeer = nullptr;
+	const FullMsgId _statisticsContextId;
+	const FullStoryId _statisticsStoryId;
 	PollData * const _poll = nullptr;
 	const FullMsgId _pollContextId;
 

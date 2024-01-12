@@ -16,6 +16,7 @@ namespace Ui {
 
 SingleMediaPreview *SingleMediaPreview::Create(
 		QWidget *parent,
+		const style::ComposeControls &st,
 		Fn<bool()> gifPaused,
 		const PreparedFile &file,
 		AttachControls::Type type) {
@@ -43,23 +44,27 @@ SingleMediaPreview *SingleMediaPreview::Create(
 	}
 	return CreateChild<SingleMediaPreview>(
 		parent,
+		st,
 		std::move(gifPaused),
 		preview,
 		animated,
 		Core::IsMimeSticker(file.information->filemime),
+		file.spoiler,
 		animationPreview ? file.path : QString(),
 		type);
 }
 
 SingleMediaPreview::SingleMediaPreview(
 	QWidget *parent,
+	const style::ComposeControls &st,
 	Fn<bool()> gifPaused,
 	QImage preview,
 	bool animated,
 	bool sticker,
+	bool spoiler,
 	const QString &animatedPreviewPath,
 	AttachControls::Type type)
-: AbstractSingleMediaPreview(parent, type)
+: AbstractSingleMediaPreview(parent, st, type)
 , _gifPaused(std::move(gifPaused))
 , _sticker(sticker) {
 	Expects(!preview.isNull());
@@ -67,7 +72,11 @@ SingleMediaPreview::SingleMediaPreview(
 
 	preparePreview(preview);
 	prepareAnimatedPreview(animatedPreviewPath, animated);
-	updatePhotoEditorButton();
+	setSpoiler(spoiler);
+}
+
+bool SingleMediaPreview::supportsSpoilers() const {
+	return !_sticker || sendWay().sendImagesAsPhotos();
 }
 
 bool SingleMediaPreview::drawBackground() const {

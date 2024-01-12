@@ -25,10 +25,11 @@ class Session;
 class Forum;
 class Folder;
 class ForumTopic;
-class CloudImageView;
+class SavedSublist;
 } // namespace Data
 
 namespace Ui {
+struct PeerUserpicView;
 } // namespace Ui
 
 namespace Dialogs::Ui {
@@ -56,6 +57,7 @@ enum class SortMode {
 struct PositionChange {
 	int from = -1;
 	int to = -1;
+	int height = 0;
 };
 
 struct UnreadState {
@@ -150,6 +152,7 @@ public:
 		History,
 		Folder,
 		ForumTopic,
+		SavedSublist,
 	};
 	Entry(not_null<Data::Session*> owner, Type type);
 	virtual ~Entry();
@@ -162,12 +165,14 @@ public:
 	Data::Folder *asFolder();
 	Data::Thread *asThread();
 	Data::ForumTopic *asTopic();
+	Data::SavedSublist *asSublist();
 
 	const History *asHistory() const;
 	const Data::Forum *asForum() const;
 	const Data::Folder *asFolder() const;
 	const Data::Thread *asThread() const;
 	const Data::ForumTopic *asTopic() const;
+	const Data::SavedSublist *asSublist() const;
 
 	PositionChange adjustByPosInChatList(
 		FilterId filterId,
@@ -191,6 +196,7 @@ public:
 		not_null<Row*> row);
 	void updateChatListEntry();
 	void updateChatListEntryPostponed();
+	void updateChatListEntryHeight();
 	[[nodiscard]] bool isPinnedDialog(FilterId filterId) const {
 		return lookupPinnedIndex(filterId) != 0;
 	}
@@ -204,34 +210,36 @@ public:
 	void setChatListTimeId(TimeId date);
 	virtual void updateChatListExistence();
 	bool needUpdateInChatList() const;
-	virtual TimeId adjustedChatListTimeId() const;
+	[[nodiscard]] virtual TimeId adjustedChatListTimeId() const;
 
-	virtual int fixedOnTopIndex() const = 0;
+	[[nodiscard]] virtual int fixedOnTopIndex() const = 0;
 	static constexpr auto kArchiveFixOnTopIndex = 1;
 	static constexpr auto kTopPromotionFixOnTopIndex = 2;
 
-	virtual bool shouldBeInChatList() const = 0;
-	virtual UnreadState chatListUnreadState() const = 0;
-	virtual BadgesState chatListBadgesState() const = 0;
-	virtual HistoryItem *chatListMessage() const = 0;
-	virtual bool chatListMessageKnown() const = 0;
-	virtual void requestChatListMessage() = 0;
-	virtual const QString &chatListName() const = 0;
-	virtual const QString &chatListNameSortKey() const = 0;
-	virtual const base::flat_set<QString> &chatListNameWords() const = 0;
-	virtual const base::flat_set<QChar> &chatListFirstLetters() const = 0;
+	[[nodiscard]] virtual bool shouldBeInChatList() const = 0;
+	[[nodiscard]] virtual UnreadState chatListUnreadState() const = 0;
+	[[nodiscard]] virtual BadgesState chatListBadgesState() const = 0;
+	[[nodiscard]] virtual HistoryItem *chatListMessage() const = 0;
+	[[nodiscard]] virtual bool chatListMessageKnown() const = 0;
+	[[nodiscard]] virtual const QString &chatListName() const = 0;
+	[[nodiscard]] virtual const QString &chatListNameSortKey() const = 0;
+	[[nodiscard]] virtual int chatListNameVersion() const = 0;
+	[[nodiscard]] virtual auto chatListNameWords() const
+		-> const base::flat_set<QString> & = 0;
+	[[nodiscard]] virtual auto chatListFirstLetters() const
+		-> const base::flat_set<QChar> & = 0;
 
-	virtual bool folderKnown() const {
+	[[nodiscard]] virtual bool folderKnown() const {
 		return true;
 	}
-	virtual Data::Folder *folder() const {
+	[[nodiscard]] virtual Data::Folder *folder() const {
 		return nullptr;
 	}
 
-	virtual void loadUserpic() = 0;
+	virtual void chatListPreloadData() = 0;
 	virtual void paintUserpic(
 		Painter &p,
-		std::shared_ptr<Data::CloudImageView> &view,
+		Ui::PeerUserpicView &view,
 		const Ui::PaintContext &context) const = 0;
 
 	[[nodiscard]] TimeId chatListTimeId() const {
@@ -253,8 +261,9 @@ private:
 	enum class Flag : uchar {
 		IsThread = (1 << 0),
 		IsHistory = (1 << 1),
-		UpdatePostponed = (1 << 2),
-		InUnreadChangeBlock = (1 << 3),
+		IsSavedSublist = (1 << 2),
+		UpdatePostponed = (1 << 3),
+		InUnreadChangeBlock = (1 << 4),
 	};
 	friend inline constexpr bool is_flag_type(Flag) { return true; }
 	using Flags = base::flags<Flag>;
@@ -262,8 +271,6 @@ private:
 	virtual void changedChatListPinHook();
 	void pinnedIndexChanged(FilterId filterId, int was, int now);
 	[[nodiscard]] uint64 computeSortPosition(FilterId filterId) const;
-
-	[[nodiscard]] virtual int chatListNameVersion() const = 0;
 
 	void setChatListExistence(bool exists);
 	not_null<Row*> mainChatListLink(FilterId filterId) const;

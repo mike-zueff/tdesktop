@@ -40,6 +40,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unixtime.h"
 #include "boxes/peers/edit_contact_box.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 #include "styles/style_layers.h"
 #include "styles/style_info.h"
 #include "styles/style_menu_icons.h"
@@ -97,16 +98,15 @@ namespace {
 
 [[nodiscard]] rpl::producer<TextWithEntities> PeerCustomStatus(
 		not_null<PeerData*> peer) {
-	const auto user = peer->asUser();
-	if (!user) {
+	if (peer->isChat()) {
 		return rpl::single(TextWithEntities());
 	}
-	const auto owner = &user->owner();
-	return user->session().changes().peerFlagsValue(
-		user,
+	const auto owner = &peer->owner();
+	return peer->session().changes().peerFlagsValue(
+		peer,
 		Data::PeerUpdate::Flag::EmojiStatus
 	) | rpl::map([=] {
-		const auto id = user->emojiStatusId();
+		const auto id = peer->emojiStatusId();
 		return id
 			? ResolveIsCustom(owner, id)
 			: rpl::single(TextWithEntities());
@@ -480,6 +480,7 @@ SlidingBar::SlidingBar(
 , _shadow(parent) {
 	setup(parent);
 	_wrapped.hide(anim::type::instant);
+	_shadow.hide();
 }
 
 void SlidingBar::setup(not_null<Ui::RpWidget*> parent) {
@@ -497,10 +498,13 @@ void SlidingBar::setup(not_null<Ui::RpWidget*> parent) {
 			st::lineWidth);
 	}, _shadow.lifetime());
 
-	_wrapped.shownValue(
-	) | rpl::start_with_next([=](bool shown) {
-		_shadow.setVisible(shown);
-	}, _shadow.lifetime());
+	_shadow.showOn(rpl::combine(
+		_wrapped.shownValue(),
+		_wrapped.heightValue(),
+		rpl::mappers::_1 && rpl::mappers::_2 > 0
+	) | rpl::filter([=](bool shown) {
+		return (shown == _shadow.isHidden());
+	}));
 }
 
 void SlidingBar::toggleContent(bool visible) {
@@ -516,14 +520,13 @@ void SlidingBar::raise() {
 }
 
 void SlidingBar::setVisible(bool visible) {
-	if (_shown == visible) {
-		return;
-	}
 	_shown = visible;
 	if (!_shown) {
 		_wrapped.hide(anim::type::instant);
 	} else if (_contentShown) {
 		_wrapped.show(anim::type::instant);
+	} else if (!_wrapped.isHidden() && !_wrapped.animating()) {
+		_wrapped.hide(anim::type::instant);
 	}
 }
 
@@ -680,22 +683,17 @@ void ContactStatus::setupBlockHandler(not_null<UserData*> user) {
 void ContactStatus::setupShareHandler(not_null<UserData*> user) {
 	_inner->shareClicks(
 	) | rpl::start_with_next([=] {
-		const auto show = std::make_shared<Window::Show>(_controller);
+		const auto show = _controller->uiShow();
 		const auto share = [=](Fn<void()> &&close) {
 			user->setSettings(0);
 			user->session().api().request(MTPcontacts_AcceptContact(
 				user->inputUser
 			)).done([=](const MTPUpdates &result) {
 				user->session().api().applyUpdates(result);
-
-				if (show->valid()) {
-					Ui::Toast::Show(
-						show->toastParent(),
-						tr::lng_new_contact_share_done(
-							tr::now,
-							lt_user,
-							user->shortName()));
-				}
+				show->showToast(tr::lng_new_contact_share_done(
+					tr::now,
+					lt_user,
+					user->shortName()));
 			}).send();
 			close();
 		};
@@ -716,8 +714,9 @@ void ContactStatus::setupShareHandler(not_null<UserData*> user) {
 
 void ContactStatus::setupUnarchiveHandler(not_null<PeerData*> peer) {
 	_inner->unarchiveClicks(
-	) | rpl::start_with_next([=] {
-		Window::ToggleHistoryArchived(peer->owner().history(peer), false);
+	) | rpl::start_with_next([=, show = _controller->uiShow()] {
+		using namespace Window;
+		ToggleHistoryArchived(show, peer->owner().history(peer), false);
 		peer->owner().notifySettings().resetToDefault(peer);
 		if (const auto settings = peer->settings()) {
 			const auto flags = PeerSetting::AutoArchived
@@ -732,8 +731,8 @@ void ContactStatus::setupReportHandler(not_null<PeerData*> peer) {
 	_inner->reportClicks(
 	) | rpl::start_with_next([=] {
 		Expects(!peer->isUser());
-		const auto show = std::make_shared<Window::Show>(_controller);
 
+		const auto show = _controller->uiShow();
 		const auto callback = crl::guard(_inner, [=](Fn<void()> &&close) {
 			close();
 
@@ -748,11 +747,7 @@ void ContactStatus::setupReportHandler(not_null<PeerData*> peer) {
 				peer->session().api().deleteConversation(peer, false);
 			});
 
-			if (show->valid()) {
-				Ui::Toast::Show(
-					show->toastParent(),
-					tr::lng_report_spam_done(tr::now));
-			}
+			show->showToast(tr::lng_report_spam_done(tr::now));
 
 			// Destroys _bar.
 			_controller->showBackFromStack();
@@ -838,6 +833,10 @@ void ContactStatus::show() {
 		}
 	}
 	_bar.show();
+}
+
+void ContactStatus::hide() {
+	_bar.hide();
 }
 
 TopicReopenBar::TopicReopenBar(

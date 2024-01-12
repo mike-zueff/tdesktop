@@ -25,6 +25,7 @@ enum class CustomEmojiSizeTag : uchar {
 	Normal,
 	Large,
 	Isolated,
+	SetIcon,
 
 	kCount,
 };
@@ -49,6 +50,10 @@ public:
 	[[nodiscard]] std::unique_ptr<Ui::Text::CustomEmoji> create(
 		not_null<DocumentData*> document,
 		Fn<void()> update,
+		SizeTag tag = SizeTag::Normal,
+		int sizeOverride = 0);
+
+	[[nodiscard]] Ui::Text::CustomEmojiFactory factory(
 		SizeTag tag = SizeTag::Normal,
 		int sizeOverride = 0);
 
@@ -78,11 +83,24 @@ public:
 	[[nodiscard]] Main::Session &session() const;
 	[[nodiscard]] Session &owner() const;
 
+	[[nodiscard]] QString registerInternalEmoji(
+		QImage emoji,
+		QMargins padding = {},
+		bool textColor = true);
+	[[nodiscard]] QString registerInternalEmoji(
+		const style::icon &icon,
+		QMargins padding = {},
+		bool textColor = true);
+
 	[[nodiscard]] uint64 coloredSetId() const;
 
 private:
 	static constexpr auto kSizeCount = int(SizeTag::kCount);
 
+	struct InternalEmojiData {
+		QImage image;
+		bool textColor = true;
+	};
 	struct RepaintBunch {
 		crl::time when = 0;
 		std::vector<base::weak_ptr<Ui::CustomEmoji::Instance>> instances;
@@ -90,6 +108,7 @@ private:
 	struct LoaderWithSetId {
 		std::unique_ptr<Ui::CustomEmoji::Loader> loader;
 		uint64 setId = 0;
+		bool colored = false;
 	};
 
 	[[nodiscard]] LoaderWithSetId createLoaderWithSetId(
@@ -125,6 +144,8 @@ private:
 		SizeTag tag,
 		int sizeOverride,
 		LoaderFactory factory);
+	[[nodiscard]] std::unique_ptr<Ui::Text::CustomEmoji> internal(
+		QStringView data);
 	[[nodiscard]] static int SizeIndex(SizeTag tag);
 
 	const not_null<Session*> _owner;
@@ -146,10 +167,6 @@ private:
 		not_null<Listener*>,
 		base::flat_set<DocumentId>> _listeners;
 	base::flat_set<DocumentId> _pendingForRequest;
-	base::flat_map<
-		uint64,
-		base::flat_set<
-			not_null<Ui::CustomEmoji::Instance*>>> _coloredSetPending;
 
 	mtpRequestId _requestId = 0;
 
@@ -160,6 +177,9 @@ private:
 	base::Timer _repaintTimer;
 	bool _repaintTimerScheduled = false;
 	bool _requestSetsScheduled = false;
+
+	std::vector<InternalEmojiData> _internalEmoji;
+	base::flat_map<not_null<const style::icon*>, QString> _iconEmoji;
 
 #if 0 // inject-to-on_main
 	crl::time _repaintsLastAdded = 0;

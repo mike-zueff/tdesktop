@@ -11,9 +11,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 enum class PremiumPreview;
 
+namespace style {
+struct RoundButton;
+} // namespace style
+
+namespace ChatHelpers {
+class Show;
+} // namespace ChatHelpers
+
 namespace Ui {
 class RpWidget;
+class RoundButton;
 class GradientButton;
+class VerticalLayout;
 } // namespace Ui
 
 namespace Main {
@@ -47,18 +57,39 @@ void StartPremiumPayment(
 
 [[nodiscard]] QString LookupPremiumRef(PremiumPreview section);
 
+void ShowPremiumPromoToast(
+	std::shared_ptr<ChatHelpers::Show> show,
+	TextWithEntities textWithLink,
+	const QString &ref);
+
 struct SubscribeButtonArgs final {
-	not_null<Window::SessionController*> controller;
+	Window::SessionController *controller = nullptr;
 	not_null<Ui::RpWidget*> parent;
 	Fn<QString()> computeRef;
 	std::optional<rpl::producer<QString>> text;
 	std::optional<QGradientStops> gradientStops;
 	Fn<QString()> computeBotUrl; // nullable
+	std::shared_ptr<ChatHelpers::Show> show;
 };
+
+
+[[nodiscard]] not_null<Ui::RoundButton*> CreateLockedButton(
+	not_null<QWidget*> parent,
+	rpl::producer<QString> text,
+	const style::RoundButton &st,
+	rpl::producer<bool> locked);
 
 [[nodiscard]] not_null<Ui::GradientButton*> CreateSubscribeButton(
 	SubscribeButtonArgs &&args);
 
+[[nodiscard]] std::vector<PremiumPreview> PremiumPreviewOrder(
+	not_null<::Main::Session*> session);
+
+void AddSummaryPremium(
+	not_null<Ui::VerticalLayout*> content,
+	not_null<Window::SessionController*> controller,
+	const QString &ref,
+	Fn<void(PremiumPreview)> buttonCallback);
 
 } // namespace Settings
 

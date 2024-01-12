@@ -51,9 +51,9 @@ using FileKey = quint64;
 enum class StartResult : uchar;
 
 struct MessageDraft {
-	MsgId msgId = 0;
+	FullReplyTo reply;
 	TextWithTags textWithTags;
-	Data::PreviewState previewState = Data::PreviewState::Allowed;
+	Data::WebPageDraft webpage;
 };
 
 struct MessageDraftSource {
@@ -184,9 +184,9 @@ private:
 		Failed,
 	};
 	enum class BotTrustFlag : uchar {
-		NoOpenGame  = (1 << 0),
-		Payment     = (1 << 1),
-		OpenWebView = (1 << 2),
+		NoOpenGame        = (1 << 0),
+		Payment           = (1 << 1),
+		OpenWebView       = (1 << 2),
 	};
 	friend inline constexpr bool is_flag_type(BotTrustFlag) { return true; };
 

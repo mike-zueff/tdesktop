@@ -7,18 +7,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "history/view/reactions/history_view_reactions_strip.h"
-#include "data/data_message_reactions.h"
+#include "base/expected.h"
 #include "base/unique_qptr.h"
+#include "data/data_message_reactions.h"
+#include "history/view/reactions/history_view_reactions_strip.h"
 #include "ui/effects/animation_value.h"
 #include "ui/effects/round_area_with_shadow.h"
 #include "ui/rp_widget.h"
 
 namespace Data {
+struct Reaction;
 struct ReactionId;
 } // namespace Data
 
 namespace ChatHelpers {
+class Show;
 class TabbedPanel;
 class EmojiListWidget;
 class StickersListFooter;
@@ -37,29 +40,68 @@ class PlainShadow;
 
 namespace HistoryView::Reactions {
 
+class UnifiedFactoryOwner final {
+public:
+	using RecentFactory = Fn<std::unique_ptr<Ui::Text::CustomEmoji>(
+		DocumentId,
+		Fn<void()>)>;
+
+	UnifiedFactoryOwner(
+		not_null<Main::Session*> session,
+		const std::vector<Data::Reaction> &reactions,
+		Strip *strip = nullptr);
+
+	[[nodiscard]] const std::vector<DocumentId> &unifiedIdsList() const {
+		return _unifiedIdsList;
+	}
+
+	[[nodiscard]] Data::ReactionId lookupReactionId(
+		DocumentId unifiedId) const;
+
+	[[nodiscard]] RecentFactory factory();
+
+private:
+	const not_null<Main::Session*> _session;
+	Strip *_strip = nullptr;
+
+	std::vector<DocumentId> _unifiedIdsList;
+	base::flat_map<DocumentId, QString> _defaultReactionIds;
+	base::flat_map<DocumentId, int> _defaultReactionInStripMap;
+
+	QPoint _defaultReactionShift;
+	QPoint _stripPaintOneShift;
+
+};
+
 class Selector final : public Ui::RpWidget {
 public:
 	Selector(
 		not_null<QWidget*> parent,
-		not_null<Window::SessionController*> parentController,
+		const style::EmojiPan &st,
+		std::shared_ptr<ChatHelpers::Show> show,
 		const Data::PossibleItemReactionsRef &reactions,
 		IconFactory iconFactory,
-		Fn<void(bool fast)> close);
+		Fn<void(bool fast)> close,
+		bool child = false);
 	Selector(
 		not_null<QWidget*> parent,
-		not_null<Window::SessionController*> parentController,
+		const style::EmojiPan &st,
+		std::shared_ptr<ChatHelpers::Show> show,
 		ChatHelpers::EmojiListMode mode,
 		std::vector<DocumentId> recent,
-		Fn<void(bool fast)> close);
+		Fn<void(bool fast)> close,
+		bool child = false);
 
 	[[nodiscard]] bool useTransparency() const;
 
 	int countWidth(int desiredWidth, int maxWidth);
-	[[nodiscard]] QMargins extentsForShadow() const;
+	[[nodiscard]] QMargins marginsForShadow() const;
 	[[nodiscard]] int extendTopForCategories() const;
 	[[nodiscard]] int minimalHeight() const;
+	[[nodiscard]] int countAppearedWidth(float64 progress) const;
 	void setSpecialExpandTopSkip(int skip);
 	void initGeometry(int innerTop);
+	void beforeDestroy();
 
 	[[nodiscard]] rpl::producer<ChosenReaction> chosen() const {
 		return _chosen.events();
@@ -67,6 +109,10 @@ public:
 	[[nodiscard]] rpl::producer<> premiumPromoChosen() const {
 		return _premiumPromoChosen.events();
 	}
+	[[nodiscard]] rpl::producer<> willExpand() const {
+		return _willExpand.events();
+	}
+	[[nodiscard]] rpl::producer<> escapes() const;
 
 	void updateShowState(
 		float64 progress,
@@ -81,17 +127,22 @@ private:
 		QRect categories;
 		QRect list;
 		float64 radius = 0.;
+		float64 expanding = 0.;
 		int finalBottom = 0;
+		int frame = 0;
+		QRect outer;
 	};
 
 	Selector(
 		not_null<QWidget*> parent,
-		not_null<Window::SessionController*> parentController,
+		const style::EmojiPan &st,
+		std::shared_ptr<ChatHelpers::Show> show,
 		const Data::PossibleItemReactionsRef &reactions,
 		ChatHelpers::EmojiListMode mode,
 		std::vector<DocumentId> recent,
 		IconFactory iconFactory,
-		Fn<void(bool fast)> close);
+		Fn<void(bool fast)> close,
+		bool child);
 
 	void paintEvent(QPaintEvent *e) override;
 	void mouseMoveEvent(QMouseEvent *e) override;
@@ -102,11 +153,14 @@ private:
 	void paintAppearing(QPainter &p);
 	void paintCollapsed(QPainter &p);
 	void paintExpanding(Painter &p, float64 progress);
-	ExpandingRects paintExpandingBg(QPainter &p, float64 progress);
+	void paintExpandingBg(QPainter &p, const ExpandingRects &rects);
 	void paintFadingExpandIcon(QPainter &p, float64 progress);
 	void paintExpanded(QPainter &p);
+	void paintNonTransparentExpandRect(QPainter &p, const QRect &) const;
 	void paintBubble(QPainter &p, int innerWidth);
 	void paintBackgroundToBuffer();
+
+	ExpandingRects updateExpandingRects(float64 progress);
 
 	[[nodiscard]] int recentCount() const;
 	[[nodiscard]] int countSkipLeft() const;
@@ -115,27 +169,29 @@ private:
 
 	void expand();
 	void cacheExpandIcon();
-	void createList(not_null<Window::SessionController*> controller);
+	void createList();
 	void finishExpand();
 	ChosenReaction lookupChosen(const Data::ReactionId &id) const;
+	void preloadAllRecentsAnimations();
 
-	const base::weak_ptr<Window::SessionController> _parentController;
+	const style::EmojiPan &_st;
+	const std::shared_ptr<ChatHelpers::Show> _show;
 	const Data::PossibleItemReactions _reactions;
 	const std::vector<DocumentId> _recent;
 	const ChatHelpers::EmojiListMode _listMode;
 	Fn<void()> _jumpedToPremium;
-	base::flat_map<DocumentId, int> _defaultReactionInStripMap;
 	Ui::RoundAreaWithShadow _cachedRound;
-	QPoint _defaultReactionShift;
-	QPoint _stripPaintOneShift;
 	std::unique_ptr<Strip> _strip;
 
 	rpl::event_stream<ChosenReaction> _chosen;
 	rpl::event_stream<> _premiumPromoChosen;
+	rpl::event_stream<> _willExpand;
+	rpl::event_stream<> _escapes;
 
 	Ui::ScrollArea *_scroll = nullptr;
 	ChatHelpers::EmojiListWidget *_list = nullptr;
 	ChatHelpers::StickersListFooter *_footer = nullptr;
+	std::unique_ptr<UnifiedFactoryOwner> _unifiedFactoryOwner;
 	Ui::PlainShadow *_shadow = nullptr;
 	rpl::variable<int> _shadowTop = 0;
 	rpl::variable<int> _shadowSkip = 0;
@@ -151,7 +207,7 @@ private:
 	QMargins _padding;
 	int _specialExpandTopSkip = 0;
 	int _collapsedTopSkip = 0;
-	int _size = 0;
+	const int _size = 0;
 	int _recentRows = 0;
 	int _columns = 0;
 	int _skipx = 0;
@@ -191,5 +247,14 @@ AttachSelectorResult AttachSelectorToMenu(
 	Fn<void(ChosenReaction)> chosen,
 	Fn<void(FullMsgId)> showPremiumPromo,
 	IconFactory iconFactory);
+
+[[nodiscard]] auto AttachSelectorToMenu(
+	not_null<Ui::PopupMenu*> menu,
+	QPoint desiredPosition,
+	const style::EmojiPan &st,
+	std::shared_ptr<ChatHelpers::Show> show,
+	const Data::PossibleItemReactionsRef &reactions,
+	IconFactory iconFactory
+) -> base::expected<not_null<Selector*>, AttachSelectorResult>;
 
 } // namespace HistoryView::Reactions

@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "ui/cached_round_corners.h"
+
 namespace style {
 struct DialogRow;
 } // namespace style
@@ -35,24 +37,44 @@ using namespace ::Ui;
 
 class VideoUserpic;
 
+struct TopicJumpCorners {
+	CornersPixmaps normal;
+	CornersPixmaps inverted;
+	QPixmap small;
+	int invertedRadius = 0;
+	int smallKey = 0; // = `-radius` if top right else `radius`.
+};
+
+struct TopicJumpCache {
+	TopicJumpCorners corners;
+	TopicJumpCorners over;
+	TopicJumpCorners selected;
+	TopicJumpCorners rippleMask;
+};
+
 struct PaintContext {
 	not_null<const style::DialogRow*> st;
+	TopicJumpCache *topicJumpCache = nullptr;
 	Data::Folder *folder = nullptr;
 	Data::Forum *forum = nullptr;
+	required<QBrush> currentBg;
 	FilterId filter = 0;
+	float64 topicsExpanded = 0.;
 	crl::time now = 0;
 	int width = 0;
 	bool active = false;
 	bool selected = false;
+	bool topicJumpSelected = false;
 	bool paused = false;
 	bool search = false;
 	bool narrow = false;
 	bool displayUnreadInfo = false;
 };
 
-const style::icon *ChatTypeIcon(
+[[nodiscard]] const style::icon *ChatTypeIcon(
 	not_null<PeerData*> peer,
-	const PaintContext &context = { .st = &st::defaultDialogRow });
+	const PaintContext &context);
+[[nodiscard]] const style::icon *ChatTypeIcon(not_null<PeerData*> peer);
 
 class RowPainter {
 public:
@@ -81,43 +103,5 @@ void PaintCollapsedRow(
 	const QString &text,
 	int unread,
 	const PaintContext &context);
-
-enum class UnreadBadgeSize {
-	Dialogs,
-	MainMenu,
-	HistoryToDown,
-	StickersPanel,
-	StickersBox,
-	TouchBar,
-	ReactionInDialogs,
-
-	kCount,
-};
-struct UnreadBadgeStyle {
-	UnreadBadgeStyle();
-
-	style::align align = style::al_right;
-	bool active = false;
-	bool selected = false;
-	bool muted = false;
-	int textTop = 0;
-	int size = 0;
-	int padding = 0;
-	UnreadBadgeSize sizeId = UnreadBadgeSize::Dialogs;
-	style::font font;
-};
-
-[[nodiscard]] QSize CountUnreadBadgeSize(
-	const QString &unreadCount,
-	const UnreadBadgeStyle &st,
-	int allowDigits = 0);
-
-QRect PaintUnreadBadge(
-	QPainter &p,
-	const QString &t,
-	int x,
-	int y,
-	const UnreadBadgeStyle &st,
-	int allowDigits = 0);
 
 } // namespace Dialogs::Ui

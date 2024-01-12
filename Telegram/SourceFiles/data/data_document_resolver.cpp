@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_document_resolver.h"
 
-#include "facades.h"
+#include "base/options.h"
 #include "base/platform/base_platform_info.h"
 #include "ui/boxes/confirm_box.h"
 #include "core/application.h"
@@ -16,12 +16,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_document.h"
 #include "data/data_document_media.h"
 #include "data/data_file_click_handler.h"
-#include "data/data_file_origin.h"
 #include "data/data_session.h"
 #include "history/view/media/history_view_gif.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "media/player/media_player_instance.h"
+#include "lang/lang_keys.h"
 #include "platform/platform_file_utilities.h"
 #include "ui/chat/chat_theme.h"
 #include "ui/text/text_utilities.h"
@@ -36,6 +36,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Data {
 namespace {
+
+base::options::toggle OptionExternalVideoPlayer({
+	.id = kOptionExternalVideoPlayer,
+	.name = "External video player",
+});
 
 void ConfirmDontWarnBox(
 		not_null<Ui::GenericBox*> box,
@@ -118,6 +123,8 @@ void LaunchWithWarning(
 
 } // namespace
 
+const char kOptionExternalVideoPlayer[] = "external-video-player";
+
 QString FileExtension(const QString &filepath) {
 	const auto reversed = ranges::views::reverse(filepath);
 	const auto last = ranges::find_first_of(reversed, ".\\/");
@@ -152,15 +159,8 @@ wv xm xml ym yuv").split(' ');
 bool IsExecutableName(const QString &filepath) {
 	static const auto kExtensions = [] {
 		const auto joined =
-#ifdef Q_OS_MAC
-			qsl("\
-applescript action app bin command csh osx workflow terminal url caction \
-mpkg pkg scpt scptd xhtm webarchive");
-#elif defined Q_OS_UNIX // Q_OS_MAC
-			qsl("bin csh deb desktop ksh out pet pkg pup rpm run sh shar \
-slp zsh");
-#else // Q_OS_MAC || Q_OS_UNIX
-			qsl("\
+#ifdef Q_OS_WIN
+			u"\
 ad ade adp app application appref-ms asp asx bas bat bin cab cdxml cer cfg \
 chi chm cmd cnt com cpl crt csh der diagcab dll drv eml exe fon fxp gadget \
 grp hlp hpj hta htt inf ini ins inx isp isu its jar jnlp job js jse key ksh \
@@ -171,8 +171,15 @@ php-s pht phtml pif pl plg pm pod prf prg ps1 ps2 ps1xml ps2xml psc1 psc2 \
 psd1 psm1 pssc pst py py3 pyc pyd pyi pyo pyw pywz pyz rb reg rgs scf scr \
 sct search-ms settingcontent-ms sh shb shs slk sys t tmp u3p url vb vbe vbp \
 vbs vbscript vdx vsmacros vsd vsdm vsdx vss vssm vssx vst vstm vstx vsw vsx \
-vtx website ws wsc wsf wsh xbap xll xnk xs");
-#endif // !Q_OS_MAC && !Q_OS_UNIX
+vtx website ws wsc wsf wsh xbap xll xnk xs"_q;
+#elif defined Q_OS_MAC // Q_OS_MAC
+			u"\
+applescript action app bin command csh osx workflow terminal url caction \
+mpkg pkg scpt scptd xhtm webarchive"_q;
+#else // Q_OS_WIN || Q_OS_MAC
+			u"bin csh deb desktop ksh out pet pkg pup rpm run sh shar \
+slp zsh"_q;
+#endif // !Q_OS_WIN && !Q_OS_MAC
 		const auto list = joined.split(' ');
 		return base::flat_set<QString>(list.begin(), list.end());
 	}();
@@ -184,7 +191,7 @@ vtx website ws wsc wsf wsh xbap xll xnk xs");
 
 bool IsIpRevealingName(const QString &filepath) {
 	static const auto kExtensions = [] {
-		const auto joined = u"htm html svg"_q;
+		const auto joined = u"htm html svg m4v m3u8"_q;
 		const auto list = joined.split(' ');
 		return base::flat_set<QString>(list.begin(), list.end());
 	}();
@@ -242,12 +249,15 @@ void ResolveDocument(
 	const auto msgId = item ? item->fullId() : FullMsgId();
 
 	const auto showDocument = [&] {
-		if (cUseExternalVideoPlayer()
+		if (OptionExternalVideoPlayer.value()
 			&& document->isVideoFile()
 			&& !document->filepath().isEmpty()) {
 			File::Launch(document->location(false).fname);
 		} else if (controller) {
-			controller->openDocument(document, msgId, topicRootId, true);
+			controller->openDocument(
+				document,
+				true,
+				{ msgId, topicRootId });
 		}
 	};
 
@@ -287,10 +297,6 @@ void ResolveDocument(
 			|| document->isVoiceMessage()
 			|| document->isVideoMessage()) {
 			::Media::Player::instance()->playPause({ document, msgId });
-		} else if (item
-			&& document->isAnimation()
-			&& HistoryView::Gif::CanPlayInline(document)) {
-			document->owner().requestAnimationPlayInline(item);
 		} else {
 			showDocument();
 		}

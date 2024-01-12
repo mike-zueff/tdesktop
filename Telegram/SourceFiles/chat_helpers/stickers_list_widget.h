@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "chat_helpers/compose/compose_features.h"
 #include "chat_helpers/tabbed_selector.h"
 #include "data/stickers/data_stickers.h"
 #include "ui/round_rect.h"
@@ -29,6 +30,7 @@ class PopupMenu;
 class RippleAnimation;
 class BoxContent;
 class PathShiftGradient;
+class TabbedSearch;
 } // namespace Ui
 
 namespace Lottie {
@@ -49,6 +51,7 @@ enum class Notification;
 
 namespace style {
 struct EmojiPan;
+struct FlatLabel;
 } // namespace style
 
 namespace ChatHelpers {
@@ -58,13 +61,32 @@ enum class ValidateIconAnimations;
 class StickersListFooter;
 class LocalStickersManager;
 
+enum class StickersListMode {
+	Full,
+	Masks,
+	UserpicBuilder,
+};
+
+struct StickersListDescriptor {
+	std::shared_ptr<Show> show;
+	StickersListMode mode = StickersListMode::Full;
+	Fn<bool()> paused;
+	const style::EmojiPan *st = nullptr;
+	ComposeFeatures features;
+};
+
 class StickersListWidget final : public TabbedSelector::Inner {
 public:
+	using Mode = StickersListMode;
+
 	StickersListWidget(
 		QWidget *parent,
 		not_null<Window::SessionController*> controller,
-		Window::GifPauseReason level,
-		bool masks = false);
+		PauseReason level,
+		Mode mode = Mode::Full);
+	StickersListWidget(
+		QWidget *parent,
+		StickersListDescriptor &&descriptor);
 
 	rpl::producer<FileChosen> chosen() const;
 	rpl::producer<> scrollUpdated() const;
@@ -88,7 +110,7 @@ public:
 	uint64 currentSet(int yOffset) const;
 
 	void sendSearchRequest();
-	void searchForSets(const QString &query);
+	void searchForSets(const QString &query, std::vector<EmojiPtr> emoji);
 
 	std::shared_ptr<Lottie::FrameRenderer> getLottieRenderer();
 
@@ -196,6 +218,7 @@ private:
 		const QVector<DocumentData*> &pack,
 		bool skipPremium);
 
+	void setupSearch();
 	void preloadMoreOfficial();
 	QSize boundingBoxSize() const;
 
@@ -217,7 +240,6 @@ private:
 	bool stickerHasDeleteButton(const Set &set, int index) const;
 	std::vector<Sticker> collectRecentStickers();
 	void refreshRecentStickers(bool resize = true);
-	void refreshPremiumStickers();
 	void refreshFavedStickers();
 	enum class GroupStickersPlace {
 		Visible,
@@ -225,7 +247,6 @@ private:
 	};
 	void refreshMegagroupStickers(GroupStickersPlace place);
 	void refreshSettingsVisibility();
-	void appendPremiumCloudSet();
 
 	void updateSelected();
 	void setSelected(OverState newSelected);
@@ -281,7 +302,9 @@ private:
 	[[nodiscard]] int stickersRight() const;
 	[[nodiscard]] bool featuredHasAddButton(int index) const;
 	[[nodiscard]] QRect featuredAddRect(int index) const;
-	[[nodiscard]] QRect featuredAddRect(const SectionInfo &info) const;
+	[[nodiscard]] QRect featuredAddRect(
+		const SectionInfo &info,
+		bool installedSet) const;
 	[[nodiscard]] bool hasRemoveButton(int index) const;
 	[[nodiscard]] QRect removeButtonRect(int index) const;
 	[[nodiscard]] QRect removeButtonRect(const SectionInfo &info) const;
@@ -319,6 +342,7 @@ private:
 	void searchResultsDone(const MTPmessages_FoundStickerSets &result);
 	void refreshSearchRows();
 	void refreshSearchRows(const std::vector<uint64> *cloudSets);
+	void fillFilteredStickersRow();
 	void fillLocalSearchRows(const QString &query);
 	void fillCloudSearchRows(const std::vector<uint64> &cloudSets);
 	void addSearchRow(not_null<Data::StickersSet*> set);
@@ -330,7 +354,11 @@ private:
 		int index,
 		not_null<DocumentData*> document);
 
-	not_null<Window::SessionController*> _controller;
+	const Mode _mode;
+	const std::shared_ptr<Show> _show;
+	const ComposeFeatures _features;
+	Ui::RoundRect _overBg;
+	std::unique_ptr<Ui::TabbedSearch> _search;
 	MTP::Sender _api;
 	std::unique_ptr<LocalStickersManager> _localSetsManager;
 	ChannelData *_megagroupSet = nullptr;
@@ -338,12 +366,12 @@ private:
 	std::vector<Set> _mySets;
 	std::vector<Set> _officialSets;
 	std::vector<Set> _searchSets;
-	int _premiumsIndex = -1;
 	int _featuredSetsCount = 0;
 	std::vector<bool> _custom;
 	base::flat_set<not_null<DocumentData*>> _favedStickersMap;
 	std::weak_ptr<Lottie::FrameRenderer> _lottieRenderer;
 
+	bool _showingSetById = false;
 	crl::time _lastScrolledAt = 0;
 	crl::time _lastFullUpdatedAt = 0;
 
@@ -366,7 +394,7 @@ private:
 	OverState _pressed;
 	QPoint _lastMousePosition;
 
-	Ui::RoundRect _trendingAddBgOver, _trendingAddBg;
+	Ui::RoundRect _trendingAddBgOver, _trendingAddBg, _inactiveButtonBg;
 	Ui::RoundRect _groupCategoryAddBgOver, _groupCategoryAddBg;
 
 	const std::unique_ptr<Ui::PathShiftGradient> _pathGradient;
@@ -379,6 +407,8 @@ private:
 
 	QString _addText;
 	int _addWidth;
+	QString _installedText;
+	int _installedWidth;
 
 	object_ptr<Ui::LinkButton> _settings;
 
@@ -387,6 +417,7 @@ private:
 
 	std::unique_ptr<StickerPremiumMark> _premiumMark;
 
+	std::vector<not_null<DocumentData*>> _filteredStickers;
 	std::map<QString, std::vector<uint64>> _searchCache;
 	std::vector<std::pair<uint64, QStringList>> _searchIndex;
 	base::Timer _searchRequestTimer;
@@ -401,6 +432,7 @@ private:
 
 [[nodiscard]] object_ptr<Ui::BoxContent> MakeConfirmRemoveSetBox(
 	not_null<Main::Session*> session,
+	const style::FlatLabel &st,
 	uint64 setId);
 
 } // namespace ChatHelpers

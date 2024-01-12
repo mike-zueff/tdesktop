@@ -10,6 +10,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/sender.h"
 #include "base/algorithm.h"
 
+namespace Ui {
+struct ColorIndicesCompressed;
+} // namespace Ui
+
 namespace Main {
 
 class Account;
@@ -17,6 +21,7 @@ class Account;
 class AppConfig final {
 public:
 	explicit AppConfig(not_null<Account*> account);
+	~AppConfig();
 
 	void start();
 
@@ -30,6 +35,8 @@ public:
 			return getString(key, fallback);
 		} else if constexpr (std::is_same_v<Type, std::vector<QString>>) {
 			return getStringArray(key, std::move(fallback));
+		} else if constexpr (std::is_same_v<Type, std::vector<int>>) {
+			return getIntArray(key, std::move(fallback));
 		} else if constexpr (std::is_same_v<
 				Type,
 				std::vector<std::map<QString, QString>>>) {
@@ -72,13 +79,18 @@ private:
 	[[nodiscard]] std::vector<std::map<QString, QString>> getStringMapArray(
 		const QString &key,
 		std::vector<std::map<QString, QString>> &&fallback) const;
+	[[nodiscard]] std::vector<int> getIntArray(
+		const QString &key,
+		std::vector<int> &&fallback) const;
 
 	const not_null<Account*> _account;
 	std::optional<MTP::Sender> _api;
 	mtpRequestId _requestId = 0;
+	int32 _hash = 0;
 	base::flat_map<QString, MTPJSONValue> _data;
 	rpl::event_stream<> _refreshed;
 	base::flat_set<QString> _dismissedSuggestions;
+
 	rpl::lifetime _lifetime;
 
 };

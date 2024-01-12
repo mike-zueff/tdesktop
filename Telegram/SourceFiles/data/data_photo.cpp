@@ -8,23 +8,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_photo.h"
 
 #include "data/data_session.h"
-#include "data/data_file_origin.h"
 #include "data/data_reply_preview.h"
 #include "data/data_photo_media.h"
-#include "ui/image/image.h"
 #include "main/main_session.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "media/streaming/media_streaming_loader_local.h"
 #include "media/streaming/media_streaming_loader_mtproto.h"
-#include "mainwidget.h"
 #include "storage/file_download.h"
 #include "core/application.h"
-#include "facades.h"
 
 namespace {
 
-constexpr auto kPhotoSideLimit = 1280;
+constexpr auto kPhotoSideLimit = 2560;
 
 using Data::PhotoMedia;
 using Data::PhotoSize;
@@ -210,22 +206,25 @@ bool PhotoData::uploading() const {
 
 Image *PhotoData::getReplyPreview(
 		Data::FileOrigin origin,
-		not_null<PeerData*> context) {
+		not_null<PeerData*> context,
+		bool spoiler) {
 	if (!_replyPreview) {
 		_replyPreview = std::make_unique<Data::ReplyPreview>(this);
 	}
-	return _replyPreview->image(origin, context);
+	return _replyPreview->image(origin, context, spoiler);
 }
 
 Image *PhotoData::getReplyPreview(not_null<HistoryItem*> item) {
-	return getReplyPreview(item->fullId(), item->history()->peer);
+	const auto media = item->media();
+	const auto spoiler = media && media->hasSpoiler();
+	return getReplyPreview(item->fullId(), item->history()->peer, spoiler);
 }
 
-bool PhotoData::replyPreviewLoaded() const {
+bool PhotoData::replyPreviewLoaded(bool spoiler) const {
 	if (!_replyPreview) {
 		return false;
 	}
-	return _replyPreview->loaded();
+	return _replyPreview->loaded(spoiler);
 }
 
 void PhotoData::setRemoteLocation(

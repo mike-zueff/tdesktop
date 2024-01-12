@@ -37,6 +37,7 @@ class Form;
 struct FormUpdate;
 struct Error;
 struct InvoiceId;
+struct InvoicePremiumGiftCode;
 
 enum class Mode {
 	Payment,
@@ -67,6 +68,9 @@ public:
 	static void Start(
 		not_null<Main::Session*> session,
 		const QString &slug,
+		Fn<void(CheckoutResult)> reactivate);
+	static void Start(
+		InvoicePremiumGiftCode giftCodeInvoice,
 		Fn<void(CheckoutResult)> reactivate);
 	[[nodiscard]] static std::optional<PaidInvoice> InvoicePaid(
 		not_null<const HistoryItem*> item);
@@ -150,6 +154,9 @@ private:
 	QVariant panelClickHandlerContext() override;
 
 	QString panelWebviewDataPath() override;
+	Webview::ThemeParams panelWebviewThemeParams() override;
+
+	std::optional<QDate> panelOverrideExpireDateThreshold() override;
 
 	const not_null<Main::Session*> _session;
 	const std::unique_ptr<Form> _form;
@@ -161,7 +168,6 @@ private:
 	bool _sendFormPending = false;
 	bool _sendFormFailed = false;
 
-	bool _themeUpdateScheduled = false;
 	rpl::lifetime _gettingPasswordState;
 	rpl::lifetime _lifetime;
 

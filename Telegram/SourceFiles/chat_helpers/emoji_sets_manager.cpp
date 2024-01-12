@@ -36,14 +36,14 @@ struct Set : public Blob {
 };
 
 inline auto PreviewPath(int i) {
-	return qsl(":/gui/emoji/set%1_preview.webp").arg(i);
+	return u":/gui/emoji/set%1_preview.webp"_q.arg(i);
 }
 
 const auto kSets = {
 	Set{ { 0,    0,         0, "Mac" },       PreviewPath(0) },
-	Set{ { 1, 1392, 8'184'590, "Android" },   PreviewPath(1) },
-	Set{ { 2, 1393, 5'413'219, "Twemoji" },   PreviewPath(2) },
-	Set{ { 3, 1394, 6'967'218, "JoyPixels" }, PreviewPath(3) },
+	Set{ { 1, 1804, 8'115'639, "Android" },   PreviewPath(1) },
+	Set{ { 2, 1805, 5'481'197, "Twemoji" },   PreviewPath(2) },
+	Set{ { 3, 1806, 7'047'594, "JoyPixels" }, PreviewPath(3) },
 };
 
 using Loading = MTP::DedicatedLoader::Progress;
@@ -153,9 +153,8 @@ QString StateDescription(const SetState &state) {
 }
 
 bool GoodSetPartName(const QString &name) {
-	return (name == qstr("config.json"))
-		|| (name.startsWith(qstr("emoji_"))
-			&& name.endsWith(qstr(".webp")));
+	return (name == u"config.json"_q)
+		|| (name.startsWith(u"emoji_"_q) && name.endsWith(u".webp"_q));
 }
 
 bool UnpackSet(const QString &path, const QString &folder) {
@@ -263,7 +262,7 @@ void Row::paintRadio(QPainter &p) {
 	}
 	const auto loading = _loading
 		? _loading->computeState()
-		: Ui::RadialState{ 0., 0, FullArcLength };
+		: Ui::RadialState{ 0., 0, arc::kFullLength };
 	const auto isToggledSet = v::is<Active>(_state.current());
 	const auto isActiveSet = isToggledSet || v::is<Loading>(_state.current());
 	const auto toggled = _toggled.value(isToggledSet ? 1. : 0.);
@@ -302,7 +301,7 @@ void Row::paintRadio(QPainter &p) {
 			_st->thickness,
 			pen.color(),
 			_st->bg);
-	} else if (loading.arcLength < FullArcLength) {
+	} else if (loading.arcLength < arc::kFullLength) {
 		p.drawArc(rect, loading.arcFrom, loading.arcLength);
 	} else {
 		p.drawEllipse(rect);

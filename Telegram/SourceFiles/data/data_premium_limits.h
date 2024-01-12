@@ -21,6 +21,10 @@ public:
 	[[nodiscard]] int channelsPremium() const;
 	[[nodiscard]] int channelsCurrent() const;
 
+	[[nodiscard]] int similarChannelsDefault() const;
+	[[nodiscard]] int similarChannelsPremium() const;
+	[[nodiscard]] int similarChannelsCurrent() const;
+
 	[[nodiscard]] int gifsDefault() const;
 	[[nodiscard]] int gifsPremium() const;
 	[[nodiscard]] int gifsCurrent() const;
@@ -33,9 +37,17 @@ public:
 	[[nodiscard]] int dialogFiltersPremium() const;
 	[[nodiscard]] int dialogFiltersCurrent() const;
 
+	[[nodiscard]] int dialogShareableFiltersDefault() const;
+	[[nodiscard]] int dialogShareableFiltersPremium() const;
+	[[nodiscard]] int dialogShareableFiltersCurrent() const;
+
 	[[nodiscard]] int dialogFiltersChatsDefault() const;
 	[[nodiscard]] int dialogFiltersChatsPremium() const;
 	[[nodiscard]] int dialogFiltersChatsCurrent() const;
+
+	[[nodiscard]] int dialogFiltersLinksDefault() const;
+	[[nodiscard]] int dialogFiltersLinksPremium() const;
+	[[nodiscard]] int dialogFiltersLinksCurrent() const;
 
 	[[nodiscard]] int dialogsPinnedDefault() const;
 	[[nodiscard]] int dialogsPinnedPremium() const;
@@ -44,6 +56,12 @@ public:
 	[[nodiscard]] int dialogsFolderPinnedDefault() const;
 	[[nodiscard]] int dialogsFolderPinnedPremium() const;
 	[[nodiscard]] int dialogsFolderPinnedCurrent() const;
+
+	[[nodiscard]] int topicsPinnedCurrent() const;
+
+	[[nodiscard]] int savedSublistsPinnedDefault() const;
+	[[nodiscard]] int savedSublistsPinnedPremium() const;
+	[[nodiscard]] int savedSublistsPinnedCurrent() const;
 
 	[[nodiscard]] int channelsPublicDefault() const;
 	[[nodiscard]] int channelsPublicPremium() const;
@@ -60,6 +78,8 @@ public:
 	[[nodiscard]] int aboutLengthDefault() const;
 	[[nodiscard]] int aboutLengthPremium() const;
 	[[nodiscard]] int aboutLengthCurrent() const;
+
+	[[nodiscard]] int maxBoostLevel() const;
 
 private:
 	[[nodiscard]] int appConfigLimit(

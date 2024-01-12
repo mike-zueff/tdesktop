@@ -63,15 +63,15 @@ public:
 	bool hasThumbDisplay() const;
 
 	void addToHistory(
-		History *history,
+		not_null<History*> history,
 		MessageFlags flags,
 		MsgId msgId,
 		PeerId fromId,
 		TimeId date,
 		UserId viaBotId,
-		MsgId replyToId,
+		FullReplyTo replyTo,
 		const QString &postAuthor) const;
-	QString getErrorOnSend(History *history) const;
+	QString getErrorOnSend(not_null<History*> history) const;
 
 	// interface for Layout:: usage
 	std::optional<Data::LocationPoint> getLocationPoint() const;

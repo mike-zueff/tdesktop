@@ -8,19 +8,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/peers/edit_participant_box.h"
 
 #include "lang/lang_keys.h"
+#include "ui/controls/userpic_button.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/padding_wrap.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/buttons.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/box_content_divider.h"
 #include "ui/layers/generic_box.h"
 #include "ui/toast/toast.h"
 #include "ui/text/text_utilities.h"
 #include "ui/text/text_options.h"
-#include "ui/special_buttons.h"
 #include "ui/painter.h"
 #include "chat_helpers/emoji_suggestions_widget.h"
 #include "settings/settings_privacy_security.h"
@@ -85,11 +85,7 @@ EditParticipantBox::Inner::Inner(
 : RpWidget(parent)
 , _peer(peer)
 , _user(user)
-, _userPhoto(
-	this,
-	_user,
-	Ui::UserpicButton::Role::Custom,
-	st::rightsPhotoButton)
+, _userPhoto(this, _user, st::rightsPhotoButton)
 , _hasAdminRights(hasAdminRights)
 , _rows(this) {
 	_rows->heightValue(
@@ -97,7 +93,7 @@ EditParticipantBox::Inner::Inner(
 		resizeToWidth(width());
 	}, lifetime());
 
-	_userPhoto->setPointerCursor(false);
+	_userPhoto->setAttribute(Qt::WA_TransparentForMouseEvents);
 	_userName.setText(
 		st::rightsNameStyle,
 		_user->name(),
@@ -207,7 +203,6 @@ EditAdminBox::EditAdminBox(
 	peer,
 	user,
 	(rights.flags != 0))
-, _show(this)
 , _oldRights(rights)
 , _oldRank(rank)
 , _addingBot(std::move(addingBot)) {
@@ -301,7 +296,7 @@ void EditAdminBox::prepare() {
 			& (filterByMyRights ? channel->adminRights() : ~Flag(0)));
 
 	const auto disabledMessages = [&] {
-		auto result = std::map<Flags, QString>();
+		auto result = base::flat_map<Flags, QString>();
 		if (!canSave()) {
 			result.emplace(
 				~Flags(0),
@@ -389,8 +384,11 @@ void EditAdminBox::prepare() {
 			if (!_saveCallback) {
 				return;
 			} else if (_addAsAdmin && !_addAsAdmin->checked()) {
+				const auto weak = Ui::MakeWeak(this);
 				AddBotToGroup(user(), peer(), _addingBot->token);
-				getDelegate()->hideLayer();
+				if (const auto strong = weak.data()) {
+					strong->closeBox();
+				}
 				return;
 			} else if (_addingBot && !_addingBot->existing) {
 				const auto phrase = peer()->isBroadcast()
@@ -403,7 +401,7 @@ void EditAdminBox::prepare() {
 						Ui::Text::Bold(peer()->name()),
 						Ui::Text::WithEntities),
 					crl::guard(this, [=] { finishAddAdmin(); })
-				}), Ui::LayerOption::KeepOther);
+				}));
 			} else {
 				_finishSave();
 			}
@@ -466,13 +464,14 @@ not_null<Ui::InputField*> EditAdminBox::addRankInput(
 		st::rightsAboutMargin);
 	result->setMaxLength(kAdminRoleLimit);
 	result->setInstantReplaces(Ui::InstantReplaces::TextOnly());
-	connect(result, &Ui::InputField::changed, [=] {
+	result->changes(
+	) | rpl::start_with_next([=] {
 		const auto text = result->getLastText();
 		const auto removed = TextUtilities::RemoveEmoji(text);
 		if (removed != text) {
 			result->setText(removed);
 		}
-	});
+	}, result->lifetime());
 
 	container->add(
 		object_ptr<Ui::FlatLabel>(
@@ -622,21 +621,20 @@ void EditAdminBox::sendTransferRequestFrom(
 		channel->inputChannel,
 		user->inputUser,
 		result.result
-	)).done([=, toastParent = _show.toastParent()](const MTPUpdates &result) {
+	)).done([=](const MTPUpdates &result) {
 		api->applyUpdates(result);
-		Ui::Toast::Show(
-			toastParent,
+		if (!box && !weak) {
+			return;
+		}
+		const auto show = box ? box->uiShow() : weak->uiShow();
+		show->showToast(
 			(channel->isBroadcast()
 				? tr::lng_rights_transfer_done_channel
 				: tr::lng_rights_transfer_done_group)(
 					tr::now,
 					lt_user,
 					user->shortName()));
-		if (box) {
-			Ui::BoxShow(box).hideLayer();
-		} else if (weak) {
-			weak->_show.hideLayer();
-		}
+		show->hideLayer();
 	}).fail(crl::guard(this, [=](const MTP::Error &error) {
 		if (weak) {
 			_transferRequestId = 0;
@@ -647,15 +645,15 @@ void EditAdminBox::sendTransferRequestFrom(
 
 		const auto &type = error.type();
 		const auto problem = [&] {
-			if (type == qstr("CHANNELS_ADMIN_PUBLIC_TOO_MUCH")) {
+			if (type == u"CHANNELS_ADMIN_PUBLIC_TOO_MUCH"_q) {
 				return tr::lng_channels_too_much_public_other(tr::now);
-			} else if (type == qstr("CHANNELS_ADMIN_LOCATED_TOO_MUCH")) {
+			} else if (type == u"CHANNELS_ADMIN_LOCATED_TOO_MUCH"_q) {
 				return tr::lng_channels_too_much_located_other(tr::now);
-			} else if (type == qstr("ADMINS_TOO_MUCH")) {
+			} else if (type == u"ADMINS_TOO_MUCH"_q) {
 				return (channel->isBroadcast()
 					? tr::lng_error_admin_limit_channel
 					: tr::lng_error_admin_limit)(tr::now);
-			} else if (type == qstr("CHANNEL_INVALID")) {
+			} else if (type == u"CHANNEL_INVALID"_q) {
 				return (channel->isBroadcast()
 					? tr::lng_channel_not_accessible
 					: tr::lng_group_not_accessible)(tr::now);
@@ -663,9 +661,9 @@ void EditAdminBox::sendTransferRequestFrom(
 			return Lang::Hard::ServerError();
 		}();
 		const auto recoverable = [&] {
-			return (type == qstr("PASSWORD_MISSING"))
-				|| (type == qstr("PASSWORD_TOO_FRESH_XXX"))
-				|| (type == qstr("SESSION_TOO_FRESH_XXX"));
+			return (type == u"PASSWORD_MISSING"_q)
+				|| (type == u"PASSWORD_TOO_FRESH_XXX"_q)
+				|| (type == u"SESSION_TOO_FRESH_XXX"_q);
 		}();
 		const auto weak = Ui::MakeWeak(this);
 		getDelegate()->show(Ui::MakeInformBox(problem));
@@ -698,7 +696,6 @@ EditRestrictedBox::EditRestrictedBox(
 	bool hasAdminRights,
 	ChatRestrictionsInfo rights)
 : EditParticipantBox(nullptr, peer, user, hasAdminRights)
-, _show(this)
 , _oldRights(rights) {
 }
 
@@ -729,7 +726,7 @@ void EditRestrictedBox::prepare() {
 			? (Flag::ChangeInfo | Flag::PinMessages)
 			: Flags(0)));
 	const auto disabledMessages = [&] {
-		auto result = std::map<Flags, QString>();
+		auto result = base::flat_map<Flags, QString>();
 		if (!canSave()) {
 			result.emplace(
 				~Flags(0),
@@ -792,7 +789,7 @@ ChatRestrictionsInfo EditRestrictedBox::defaultRights() const {
 }
 
 void EditRestrictedBox::showRestrictUntil() {
-	_show.showBox(Box([=](not_null<Ui::GenericBox*> box) {
+	uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
 		const auto save = [=](TimeId result) {
 			if (!result) {
 				return;

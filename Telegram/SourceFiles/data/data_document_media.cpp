@@ -10,9 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_document.h"
 #include "data/data_document_resolver.h"
 #include "data/data_session.h"
-#include "data/data_cloud_themes.h"
 #include "data/data_file_origin.h"
-#include "data/data_auto_download.h"
 #include "media/clip/media_clip_reader.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
@@ -25,7 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/core_settings.h"
 #include "core/application.h"
 #include "storage/file_download.h"
-#include "ui/image/image.h"
+#include "ui/chat/attach/attach_prepare.h"
 
 #include <QtCore/QBuffer>
 #include <QtGui/QImageReader>
@@ -60,7 +58,8 @@ enum class FileType {
 		QByteArray data,
 		FileType type) {
 	if (type == FileType::Video || type == FileType::VideoSticker) {
-		auto result = ::Media::Clip::PrepareForSending(path, data);
+		auto result = v::get<Ui::PreparedFileInformation::Video>(
+			::Media::Clip::PrepareForSending(path, data).media);
 		if (result.isWebmSticker && type == FileType::Video) {
 			result.thumbnail = Images::Opaque(std::move(result.thumbnail));
 		}
@@ -291,7 +290,7 @@ void DocumentMedia::automaticLoad(
 		return;
 	}
 	const auto toCache = _owner->saveToCache();
-	if (!toCache && Core::App().settings().askDownloadPath()) {
+	if (!toCache && !Core::App().canSaveFileWithoutAskingForPath()) {
 		// We need a filename, but we're supposed to ask user for it.
 		// No automatic download in this case.
 		return;

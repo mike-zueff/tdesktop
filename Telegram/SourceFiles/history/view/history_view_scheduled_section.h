@@ -30,7 +30,6 @@ namespace Ui {
 class ScrollArea;
 class PlainShadow;
 class FlatButton;
-class HistoryDownButton;
 struct PreparedList;
 class SendFilesWay;
 } // namespace Ui
@@ -105,6 +104,7 @@ public:
 	bool listScrollTo(int top, bool syntetic = true) override;
 	void listCancelRequest() override;
 	void listDeleteRequest() override;
+	void listTryProcessKeyInput(not_null<QKeyEvent*> e) override;
 	rpl::producer<Data::MessagesSlice> listSource(
 		Data::MessagePosition aroundId,
 		int limitBefore,
@@ -151,6 +151,9 @@ public:
 		Painter &p,
 		const Ui::ChatPaintContext &context) override;
 	QString listElementAuthorRank(not_null<const Element*> view) override;
+	History *listTranslateHistory() override;
+	void listAddTranslatedItems(
+		not_null<TranslateTracker*> tracker) override;
 
 	// CornerButtonsDelegate delegate.
 	void cornerButtonsShowAtPosition(
@@ -194,11 +197,14 @@ private:
 		Api::SendOptions options) const;
 	void send();
 	void send(Api::SendOptions options);
-	void sendVoice(QByteArray bytes, VoiceWaveform waveform, int duration);
 	void sendVoice(
 		QByteArray bytes,
 		VoiceWaveform waveform,
-		int duration,
+		crl::time duration);
+	void sendVoice(
+		QByteArray bytes,
+		VoiceWaveform waveform,
+		crl::time duration,
 		Api::SendOptions options);
 	void edit(
 		not_null<HistoryItem*> item,
@@ -225,6 +231,9 @@ private:
 		std::optional<bool> overrideSendImagesAsPhotos,
 		const QString &insertTextOnCancel = QString());
 	bool showSendingFilesError(const Ui::PreparedList &list) const;
+	bool showSendingFilesError(
+		const Ui::PreparedList &list,
+		std::optional<bool> compress) const;
 	void sendingFilesConfirmed(
 		Ui::PreparedList &&list,
 		Ui::SendFilesWay way,

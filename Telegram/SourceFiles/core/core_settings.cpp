@@ -7,17 +7,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/core_settings.h"
 
-#include "boxes/send_files_box.h"
-#include "history/view/history_view_quick_action.h"
-#include "ui/widgets/input_fields.h"
-#include "storage/serialize_common.h"
-#include "window/section_widget.h"
 #include "base/platform/base_platform_info.h"
-#include "webrtc/webrtc_create_adm.h"
-#include "media/player/media_player_instance.h"
-#include "ui/gl/gl_detection.h"
 #include "calls/group/calls_group_common.h"
-#include "facades.h"
+#include "history/view/history_view_quick_action.h"
+#include "lang/lang_keys.h"
+#include "platform/platform_notifications_manager.h"
+#include "spellcheck/spellcheck_types.h"
+#include "storage/serialize_common.h"
+#include "ui/gl/gl_detection.h"
+#include "ui/widgets/fields/input_field.h"
+#include "webrtc/webrtc_create_adm.h"
+#include "window/section_widget.h"
 
 namespace Core {
 namespace {
@@ -38,6 +38,18 @@ namespace {
 	return result;
 }
 
+void LogPosition(const WindowPosition &position, const QString &name) {
+	DEBUG_LOG(("%1 Pos: Writing to storage %2, %3, %4, %5"
+		" (scale %6%, maximized %7)")
+		.arg(name)
+		.arg(position.x)
+		.arg(position.y)
+		.arg(position.w)
+		.arg(position.h)
+		.arg(position.scale)
+		.arg(position.maximized));
+}
+
 [[nodiscard]] QByteArray Serialize(const WindowPosition &position) {
 	auto result = QByteArray();
 	const auto size = 7 * sizeof(qint32);
@@ -54,14 +66,6 @@ namespace {
 			<< qint32(position.maximized)
 			<< qint32(position.scale);
 	}
-	DEBUG_LOG(("Window Pos: Writing to storage %1, %2, %3, %4"
-		" (scale %5%, maximized %6)")
-		.arg(position.x)
-		.arg(position.y)
-		.arg(position.w)
-		.arg(position.h)
-		.arg(position.scale)
-		.arg(Logs::b(position.maximized)));
 	return result;
 }
 
@@ -85,6 +89,35 @@ namespace {
 
 } // namespace
 
+[[nodiscard]] WindowPosition AdjustToScale(
+		WindowPosition position,
+		const QString &name) {
+	DEBUG_LOG(("%1 Pos: Initializing first %2, %3, %4, %5 "
+		"(scale %6%, maximized %7)")
+		.arg(name)
+		.arg(position.x)
+		.arg(position.y)
+		.arg(position.w)
+		.arg(position.h)
+		.arg(position.scale)
+		.arg(position.maximized));
+
+	if (!position.scale) {
+		return position;
+	}
+	const auto scaleFactor = cScale() / float64(position.scale);
+	if (scaleFactor != 1.) {
+		// Change scale while keeping the position center in place.
+		position.x += position.w / 2;
+		position.y += position.h / 2;
+		position.w *= scaleFactor;
+		position.h *= scaleFactor;
+		position.x -= position.w / 2;
+		position.y -= position.h / 2;
+	}
+	return position;
+}
+
 Settings::Settings()
 : _sendSubmitWay(Ui::InputSubmitSettings::Enter)
 , _floatPlayerColumn(Window::Column::Second)
@@ -92,10 +125,16 @@ Settings::Settings()
 , _dialogsWidthRatio(DefaultDialogsWidthRatio()) {
 }
 
+Settings::~Settings() = default;
+
 QByteArray Settings::serialize() const {
 	const auto themesAccentColors = _themesAccentColors.serialize();
 	const auto windowPosition = Serialize(_windowPosition);
+	LogPosition(_windowPosition, u"Window"_q);
+	const auto mediaViewPosition = Serialize(_mediaViewPosition);
+	LogPosition(_mediaViewPosition, u"Viewer"_q);
 	const auto proxy = _proxy.serialize();
+	const auto skipLanguages = _skipTranslationLanguages.current();
 
 	auto recentEmojiPreloadGenerated = std::vector<RecentEmojiPreload>();
 	if (_recentEmojiPreload.empty()) {
@@ -153,7 +192,18 @@ QByteArray Settings::serialize() const {
 		+ Serialize::stringSize(_customDeviceModel.current())
 		+ sizeof(qint32) * 4
 		+ (_accountsOrder.size() * sizeof(quint64))
-		+ sizeof(qint32) * 5;
+		+ sizeof(qint32) * 7
+		+ (skipLanguages.size() * sizeof(quint64))
+		+ sizeof(qint32)
+		+ sizeof(quint64)
+		+ sizeof(qint32) * 3
+		+ Serialize::bytearraySize(mediaViewPosition)
+		+ sizeof(qint32)
+		+ sizeof(quint64)
+		+ sizeof(qint32) * 2;
+	for (const auto &id : _recentEmojiSkip) {
+		size += Serialize::stringSize(id);
+	}
 
 	auto result = QByteArray();
 	result.reserve(size);
@@ -169,7 +219,7 @@ QByteArray Settings::serialize() const {
 			<< qint32(_askDownloadPath ? 1 : 0)
 			<< _downloadPath.current()
 			<< _downloadPathBookmark
-			<< qint32(_nonDefaultVoicePlaybackSpeed ? 1 : 0)
+			<< qint32(1)
 			<< qint32(_soundNotify ? 1 : 0)
 			<< qint32(_desktopNotify ? 1 : 0)
 			<< qint32(_flashBounceNotify ? 1 : 0)
@@ -201,7 +251,7 @@ QByteArray Settings::serialize() const {
 			<< qint32(_suggestEmoji ? 1 : 0)
 			<< qint32(_suggestStickersByEmoji ? 1 : 0)
 			<< qint32(_spellcheckerEnabled.current() ? 1 : 0)
-			<< qint32(SerializePlaybackSpeed(_videoPlaybackSpeed.current()))
+			<< qint32(SerializePlaybackSpeed(_videoPlaybackSpeed))
 			<< _videoPipGeometry
 			<< qint32(_dictionariesEnabled.current().size());
 		for (const auto i : _dictionariesEnabled.current()) {
@@ -249,7 +299,7 @@ QByteArray Settings::serialize() const {
 			<< qint32(_disableOpenGL ? 1 : 0)
 			<< _photoEditorBrush
 			<< qint32(_groupCallNoiseSuppression ? 1 : 0)
-			<< qint32(_voicePlaybackSpeed * 100)
+			<< qint32(SerializePlaybackSpeed(_voicePlaybackSpeed))
 			<< qint32(_closeToTaskbar.current() ? 1 : 0)
 			<< _customDeviceModel.current()
 			<< qint32(_playerRepeatMode.current())
@@ -267,7 +317,34 @@ QByteArray Settings::serialize() const {
 			<< qint32(_chatQuickAction)
 			<< qint32(_hardwareAcceleratedVideo ? 1 : 0)
 			<< qint32(_suggestAnimatedEmoji ? 1 : 0)
-			<< qint32(_cornerReaction.current() ? 1 : 0);
+			<< qint32(_cornerReaction.current() ? 1 : 0)
+			<< qint32(_translateButtonEnabled ? 1 : 0);
+
+		stream
+			<< qint32(skipLanguages.size());
+		for (const auto &id : skipLanguages) {
+			stream << quint64(id.value);
+		}
+
+		stream
+			<< qint32(_rememberedDeleteMessageOnlyForYou ? 1 : 0);
+
+		stream
+			<< qint32(_translateChatEnabled.current() ? 1 : 0)
+			<< quint64(QLocale::Language(_translateToRaw.current()))
+			<< qint32(_windowTitleContent.current().hideChatName ? 1 : 0)
+			<< qint32(_windowTitleContent.current().hideAccountName ? 1 : 0)
+			<< qint32(_windowTitleContent.current().hideTotalUnread ? 1 : 0)
+			<< mediaViewPosition
+			<< qint32(_ignoreBatterySaving.current() ? 1 : 0)
+			<< quint64(_macRoundIconDigest.value_or(0))
+			<< qint32(_storiesClickTooltipHidden.current() ? 1 : 0)
+			<< qint32(_recentEmojiSkip.size());
+		for (const auto &id : _recentEmojiSkip) {
+			stream << id;
+		}
+		stream
+			<< qint32(_trayIconMonochrome.current() ? 1 : 0);
 	}
 	return result;
 }
@@ -288,7 +365,7 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	qint32 askDownloadPath = _askDownloadPath ? 1 : 0;
 	QString downloadPath = _downloadPath.current();
 	QByteArray downloadPathBookmark = _downloadPathBookmark;
-	qint32 nonDefaultVoicePlaybackSpeed = _nonDefaultVoicePlaybackSpeed ? 1 : 0;
+	qint32 nonDefaultVoicePlaybackSpeed = 1;
 	qint32 soundNotify = _soundNotify ? 1 : 0;
 	qint32 desktopNotify = _desktopNotify ? 1 : 0;
 	qint32 flashBounceNotify = _flashBounceNotify ? 1 : 0;
@@ -318,8 +395,8 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	qint32 suggestEmoji = _suggestEmoji ? 1 : 0;
 	qint32 suggestStickersByEmoji = _suggestStickersByEmoji ? 1 : 0;
 	qint32 spellcheckerEnabled = _spellcheckerEnabled.current() ? 1 : 0;
-	qint32 videoPlaybackSpeed = Core::Settings::SerializePlaybackSpeed(_videoPlaybackSpeed.current());
-	qint32 voicePlaybackSpeed = _voicePlaybackSpeed * 100;
+	qint32 videoPlaybackSpeed = SerializePlaybackSpeed(_videoPlaybackSpeed);
+	qint32 voicePlaybackSpeed = SerializePlaybackSpeed(_voicePlaybackSpeed);
 	QByteArray videoPipGeometry = _videoPipGeometry;
 	qint32 dictionariesEnabledCount = 0;
 	std::vector<int> dictionariesEnabled;
@@ -361,6 +438,21 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	qint32 chatQuickAction = static_cast<qint32>(_chatQuickAction);
 	qint32 suggestAnimatedEmoji = _suggestAnimatedEmoji ? 1 : 0;
 	qint32 cornerReaction = _cornerReaction.current() ? 1 : 0;
+	qint32 legacySkipTranslationForLanguage = _translateButtonEnabled ? 1 : 0;
+	qint32 skipTranslationLanguagesCount = 0;
+	std::vector<LanguageId> skipTranslationLanguages;
+	qint32 rememberedDeleteMessageOnlyForYou = _rememberedDeleteMessageOnlyForYou ? 1 : 0;
+	qint32 translateChatEnabled = _translateChatEnabled.current() ? 1 : 0;
+	quint64 translateToRaw = _translateToRaw.current();
+	qint32 hideChatName = _windowTitleContent.current().hideChatName ? 1 : 0;
+	qint32 hideAccountName = _windowTitleContent.current().hideAccountName ? 1 : 0;
+	qint32 hideTotalUnread = _windowTitleContent.current().hideTotalUnread ? 1 : 0;
+	QByteArray mediaViewPosition;
+	qint32 ignoreBatterySaving = _ignoreBatterySaving.current() ? 1 : 0;
+	quint64 macRoundIconDigest = _macRoundIconDigest.value_or(0);
+	qint32 storiesClickTooltipHidden = _storiesClickTooltipHidden.current() ? 1 : 0;
+	base::flat_set<QString> recentEmojiSkip;
+	qint32 trayIconMonochrome = (_trayIconMonochrome.current() ? 1 : 0);
 
 	stream >> themesAccentColors;
 	if (!stream.atEnd()) {
@@ -558,6 +650,65 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	if (!stream.atEnd()) {
 		stream >> cornerReaction;
 	}
+	if (!stream.atEnd()) {
+		stream >> legacySkipTranslationForLanguage;
+	}
+	if (!stream.atEnd()) {
+		stream >> skipTranslationLanguagesCount;
+		if (stream.status() == QDataStream::Ok) {
+			for (auto i = 0; i != skipTranslationLanguagesCount; ++i) {
+				quint64 language;
+				stream >> language;
+				skipTranslationLanguages.push_back({
+					QLocale::Language(language)
+				});
+			}
+		}
+
+		stream >> rememberedDeleteMessageOnlyForYou;
+	}
+	if (!stream.atEnd()) {
+		stream
+			>> translateChatEnabled
+			>> translateToRaw;
+	}
+	if (!stream.atEnd()) {
+		stream
+			>> hideChatName
+			>> hideAccountName
+			>> hideTotalUnread;
+	}
+	if (!stream.atEnd()) {
+		stream >> mediaViewPosition;
+	}
+	if (!stream.atEnd()) {
+		stream >> ignoreBatterySaving;
+	}
+	if (!stream.atEnd()) {
+		stream >> macRoundIconDigest;
+	}
+	if (!stream.atEnd()) {
+		stream >> storiesClickTooltipHidden;
+	}
+	if (!stream.atEnd()) {
+		auto count = qint32();
+		stream >> count;
+		if (stream.status() == QDataStream::Ok) {
+			for (auto i = 0; i != count; ++i) {
+				auto id = QString();
+				stream >> id;
+				if (stream.status() == QDataStream::Ok) {
+					recentEmojiSkip.emplace(id);
+				}
+			}
+		}
+	}
+	if (!stream.atEnd()) {
+		stream >> trayIconMonochrome;
+	} else {
+		// Let existing clients use the old value.
+		trayIconMonochrome = 0;
+	}
 	if (stream.status() != QDataStream::Ok) {
 		LOG(("App Error: "
 			"Bad data for Core::Settings::constructFromSerialized()"));
@@ -627,16 +778,9 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	_suggestStickersByEmoji = (suggestStickersByEmoji == 1);
 	_spellcheckerEnabled = (spellcheckerEnabled == 1);
 	_videoPlaybackSpeed = DeserializePlaybackSpeed(videoPlaybackSpeed);
-	{
-		// Restore settings from 3.0.1 version.
-		if (voicePlaybackSpeed == 100) {
-			_nonDefaultVoicePlaybackSpeed = false;
-			_voicePlaybackSpeed = 2.0;
-		} else {
-			_nonDefaultVoicePlaybackSpeed =
-				(nonDefaultVoicePlaybackSpeed == 1);
-			_voicePlaybackSpeed = voicePlaybackSpeed / 100.;
-		}
+	_voicePlaybackSpeed = DeserializePlaybackSpeed(voicePlaybackSpeed);
+	if (nonDefaultVoicePlaybackSpeed != 1) {
+		_voicePlaybackSpeed.enabled = false;
 	}
 	_videoPipGeometry = (videoPipGeometry);
 	_dictionariesEnabled = std::move(dictionariesEnabled);
@@ -701,17 +845,17 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	_closeToTaskbar = (closeToTaskbar == 1);
 	_customDeviceModel = customDeviceModel;
 	_accountsOrder = accountsOrder;
-	const auto uncheckedPlayerRepeatMode = static_cast<Media::Player::RepeatMode>(playerRepeatMode);
+	const auto uncheckedPlayerRepeatMode = static_cast<Media::RepeatMode>(playerRepeatMode);
 	switch (uncheckedPlayerRepeatMode) {
-	case Media::Player::RepeatMode::None:
-	case Media::Player::RepeatMode::One:
-	case Media::Player::RepeatMode::All: _playerRepeatMode = uncheckedPlayerRepeatMode; break;
+	case Media::RepeatMode::None:
+	case Media::RepeatMode::One:
+	case Media::RepeatMode::All: _playerRepeatMode = uncheckedPlayerRepeatMode; break;
 	}
-	const auto uncheckedPlayerOrderMode = static_cast<Media::Player::OrderMode>(playerOrderMode);
+	const auto uncheckedPlayerOrderMode = static_cast<Media::OrderMode>(playerOrderMode);
 	switch (uncheckedPlayerOrderMode) {
-	case Media::Player::OrderMode::Default:
-	case Media::Player::OrderMode::Reverse:
-	case Media::Player::OrderMode::Shuffle: _playerOrderMode = uncheckedPlayerOrderMode; break;
+	case Media::OrderMode::Default:
+	case Media::OrderMode::Reverse:
+	case Media::OrderMode::Shuffle: _playerOrderMode = uncheckedPlayerOrderMode; break;
 	}
 	_macWarnBeforeQuit = (macWarnBeforeQuit == 1);
 	_hardwareAcceleratedVideo = (hardwareAcceleratedVideo == 1);
@@ -727,6 +871,38 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	}
 	_suggestAnimatedEmoji = (suggestAnimatedEmoji == 1);
 	_cornerReaction = (cornerReaction == 1);
+	{ // Parse the legacy translation setting.
+		if (legacySkipTranslationForLanguage == 0) {
+			_translateButtonEnabled = false;
+		} else if (legacySkipTranslationForLanguage == 1) {
+			_translateButtonEnabled = true;
+		} else {
+			_translateButtonEnabled = (legacySkipTranslationForLanguage > 0);
+			skipTranslationLanguages.push_back({
+				QLocale::Language(std::abs(legacySkipTranslationForLanguage))
+			});
+		}
+		_skipTranslationLanguages = std::move(skipTranslationLanguages);
+	}
+	_rememberedDeleteMessageOnlyForYou = (rememberedDeleteMessageOnlyForYou == 1);
+	_translateChatEnabled = (translateChatEnabled == 1);
+	_translateToRaw = int(QLocale::Language(translateToRaw));
+	_windowTitleContent = WindowTitleContent{
+		.hideChatName = (hideChatName == 1),
+		.hideAccountName = (hideAccountName == 1),
+		.hideTotalUnread = (hideTotalUnread == 1),
+	};
+	if (!mediaViewPosition.isEmpty()) {
+		_mediaViewPosition = Deserialize(mediaViewPosition);
+		if (!_mediaViewPosition.w && !_mediaViewPosition.maximized) {
+			_mediaViewPosition = { .maximized = 2 };
+		}
+	}
+	_ignoreBatterySaving = (ignoreBatterySaving == 1);
+	_macRoundIconDigest = macRoundIconDigest ? macRoundIconDigest : std::optional<uint64>();
+	_storiesClickTooltipHidden = (storiesClickTooltipHidden == 1);
+	_recentEmojiSkip = std::move(recentEmojiSkip);
+	_trayIconMonochrome = (trayIconMonochrome == 1);
 }
 
 QString Settings::getSoundPath(const QString &key) const {
@@ -734,7 +910,7 @@ QString Settings::getSoundPath(const QString &key) const {
 	if (it != _soundOverrides.end()) {
 		return it->second;
 	}
-	return qsl(":/sounds/") + key + qsl(".mp3");
+	return u":/sounds/"_q + key + u".mp3"_q;
 }
 
 void Settings::setTabbedSelectorSectionEnabled(bool enabled) {
@@ -819,7 +995,8 @@ rpl::producer<int> Settings::thirdColumnWidthChanges() const {
 }
 
 const std::vector<RecentEmoji> &Settings::recentEmoji() const {
-	if (_recentEmoji.empty()) {
+	if (!_recentEmojiResolved) {
+		_recentEmojiResolved = true;
 		resolveRecentEmoji();
 	}
 	return _recentEmoji;
@@ -860,6 +1037,8 @@ void Settings::resolveRecentEmoji() const {
 	for (const auto emoji : Ui::Emoji::GetDefaultRecent()) {
 		if (_recentEmoji.size() >= specialCount + kRecentEmojiLimit) {
 			break;
+		} else if (_recentEmojiSkip.contains(emoji->id())) {
+			continue;
 		} else if (!haveAlready({ emoji })) {
 			_recentEmoji.push_back({ { emoji }, 1 });
 		}
@@ -869,6 +1048,9 @@ void Settings::resolveRecentEmoji() const {
 void Settings::incrementRecentEmoji(RecentEmojiId id) {
 	resolveRecentEmoji();
 
+	if (const auto emoji = std::get_if<EmojiPtr>(&id.data)) {
+		_recentEmojiSkip.remove((*emoji)->id());
+	}
 	auto i = _recentEmoji.begin(), e = _recentEmoji.end();
 	for (; i != e; ++i) {
 		if (i->id == id) {
@@ -920,6 +1102,36 @@ void Settings::incrementRecentEmoji(RecentEmojiId id) {
 	_saveDelayed.fire({});
 }
 
+void Settings::hideRecentEmoji(RecentEmojiId id) {
+	resolveRecentEmoji();
+
+	_recentEmoji.erase(
+		ranges::remove(_recentEmoji, id, &RecentEmoji::id),
+		end(_recentEmoji));
+	if (const auto emoji = std::get_if<EmojiPtr>(&id.data)) {
+		for (const auto always : Ui::Emoji::GetDefaultRecent()) {
+			if (always == *emoji) {
+				_recentEmojiSkip.emplace(always->id());
+				break;
+			}
+		}
+	}
+	_recentEmojiUpdated.fire({});
+	_saveDelayed.fire({});
+}
+
+void Settings::resetRecentEmoji() {
+	resolveRecentEmoji();
+
+	_recentEmoji.clear();
+	_recentEmojiSkip.clear();
+	_recentEmojiPreload.clear();
+	_recentEmojiResolved = false;
+
+	_recentEmojiUpdated.fire({});
+	_saveDelayed.fire({});
+}
+
 void Settings::setLegacyRecentEmojiPreload(
 		QVector<QPair<QString, ushort>> data) {
 	if (!_recentEmojiPreload.empty() || data.isEmpty()) {
@@ -931,8 +1143,37 @@ void Settings::setLegacyRecentEmojiPreload(
 	}
 }
 
+EmojiPtr Settings::lookupEmojiVariant(EmojiPtr emoji) const {
+	if (emoji->hasVariants()) {
+		const auto i = _emojiVariants.find(emoji->nonColoredId());
+		if (i != end(_emojiVariants)) {
+			return emoji->variant(i->second);
+		}
+		const auto j = _emojiVariants.find(QString());
+		if (j != end(_emojiVariants)) {
+			return emoji->variant(j->second);
+		}
+	}
+	return emoji;
+}
+
+bool Settings::hasChosenEmojiVariant(EmojiPtr emoji) const {
+	return _emojiVariants.contains(QString())
+		|| _emojiVariants.contains(emoji->nonColoredId());
+}
+
 void Settings::saveEmojiVariant(EmojiPtr emoji) {
+	Expects(emoji->hasVariants());
+
 	_emojiVariants[emoji->nonColoredId()] = emoji->variantIndex(emoji);
+	_saveDelayed.fire({});
+}
+
+void Settings::saveAllEmojiVariants(EmojiPtr emoji) {
+	Expects(emoji->hasVariants());
+
+	_emojiVariants.clear();
+	_emojiVariants[QString()] = emoji->variantIndex(emoji);
 	_saveDelayed.fire({});
 }
 
@@ -957,7 +1198,6 @@ void Settings::resetOnLastLogout() {
 	_downloadPath = QString();
 	_downloadPathBookmark = QByteArray();
 
-	_nonDefaultVoicePlaybackSpeed = false;
 	_soundNotify = true;
 	_desktopNotify = true;
 	_flashBounceNotify = true;
@@ -1001,8 +1241,8 @@ void Settings::resetOnLastLogout() {
 	_suggestStickersByEmoji = true;
 	_suggestAnimatedEmoji = true;
 	_spellcheckerEnabled = true;
-	_videoPlaybackSpeed = 1.;
-	_voicePlaybackSpeed = 1.;
+	_videoPlaybackSpeed = PlaybackSpeed();
+	_voicePlaybackSpeed = PlaybackSpeed();
 	//_videoPipGeometry = QByteArray();
 	_dictionariesEnabled = std::vector<int>();
 	_autoDownloadDictionaries = true;
@@ -1018,6 +1258,7 @@ void Settings::resetOnLastLogout() {
 	_tabbedReplacedWithInfo = false; // per-window
 	_systemDarkModeEnabled = false;
 	_hiddenGroupCallTooltips = 0;
+	_storiesClickTooltipHidden = false;
 
 	_recentEmojiPreload.clear();
 	_recentEmoji.clear();
@@ -1034,6 +1275,127 @@ float64 Settings::DefaultDialogsWidthRatio() {
 	return ThirdColumnByDefault()
 		? kDefaultBigDialogsWidthRatio
 		: kDefaultDialogsWidthRatio;
+}
+
+qint32 Settings::SerializePlaybackSpeed(PlaybackSpeed speed) {
+	using namespace Media;
+
+	const auto value = int(base::SafeRound(
+		std::clamp(speed.value, kSpeedMin, kSpeedMax) * 100));
+	return speed.enabled ? value : -value;
+}
+
+auto Settings::DeserializePlaybackSpeed(qint32 speed) -> PlaybackSpeed {
+	using namespace Media;
+
+	auto enabled = true;
+	const auto validate = [&](float64 result) {
+		return PlaybackSpeed{
+			.value = (result == 1.) ? kSpedUpDefault : result,
+			.enabled = enabled && (result != 1.),
+		};
+	};
+	if (speed >= 0 && speed < 10) {
+		// The old values in settings.
+		return validate((std::clamp(speed, 0, 6) + 2) / 4.);
+	} else if (speed < 0) {
+		speed = -speed;
+		enabled = false;
+	}
+	return validate(std::clamp(speed / 100., kSpeedMin, kSpeedMax));
+}
+
+bool Settings::nativeNotifications() const {
+	return _nativeNotifications.value_or(
+		Platform::Notifications::ByDefault());
+}
+
+void Settings::setNativeNotifications(bool value) {
+	_nativeNotifications = (value == Platform::Notifications::ByDefault())
+		? std::nullopt
+		: std::make_optional(value);
+}
+
+void Settings::setTranslateButtonEnabled(bool value) {
+	_translateButtonEnabled = value;
+}
+
+bool Settings::translateButtonEnabled() const {
+	return _translateButtonEnabled;
+}
+
+void Settings::setTranslateChatEnabled(bool value) {
+	_translateChatEnabled = value;
+}
+
+bool Settings::translateChatEnabled() const {
+	return _translateChatEnabled.current();
+}
+
+rpl::producer<bool> Settings::translateChatEnabledValue() const {
+	return _translateChatEnabled.value();
+}
+
+[[nodiscard]] const std::vector<LanguageId> &DefaultSkipLanguages() {
+	using namespace Platform;
+
+	static auto Result = [&] {
+		auto list = std::vector<LanguageId>();
+		list.push_back({ LanguageId::FromName(Lang::Id()) });
+		const auto systemId = LanguageId::FromName(SystemLanguage());
+		if (list.back() != systemId) {
+			list.push_back(systemId);
+		}
+
+		Ensures(!list.empty());
+		return list;
+	}();
+	return Result;
+}
+
+[[nodiscard]] std::vector<LanguageId> NonEmptySkipList(
+		std::vector<LanguageId> list) {
+	return list.empty() ? DefaultSkipLanguages() : list;
+}
+
+void Settings::setTranslateTo(LanguageId id) {
+	_translateToRaw = int(id.value);
+}
+
+LanguageId Settings::translateTo() const {
+	if (const auto raw = _translateToRaw.current()) {
+		return { QLocale::Language(raw) };
+	}
+	return DefaultSkipLanguages().front();
+}
+
+rpl::producer<LanguageId> Settings::translateToValue() const {
+	return _translateToRaw.value() | rpl::map([=](int raw) {
+		return raw
+			? LanguageId{ QLocale::Language(raw) }
+			: DefaultSkipLanguages().front();
+	}) | rpl::distinct_until_changed();
+}
+
+void Settings::setSkipTranslationLanguages(
+		std::vector<LanguageId> languages) {
+	_skipTranslationLanguages = std::move(languages);
+}
+
+auto Settings::skipTranslationLanguages() const -> std::vector<LanguageId> {
+	return NonEmptySkipList(_skipTranslationLanguages.current());
+}
+
+auto Settings::skipTranslationLanguagesValue() const
+-> rpl::producer<std::vector<LanguageId>> {
+	return _skipTranslationLanguages.value() | rpl::map(NonEmptySkipList);
+}
+
+void Settings::setRememberedDeleteMessageOnlyForYou(bool value) {
+	_rememberedDeleteMessageOnlyForYou = value;
+}
+bool Settings::rememberedDeleteMessageOnlyForYou() const {
+	return _rememberedDeleteMessageOnlyForYou;
 }
 
 } // namespace Core

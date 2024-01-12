@@ -14,13 +14,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 class Painter;
 class HistoryItem;
 
+namespace Ui {
+class SpoilerAnimation;
+} // namespace Ui
+
 namespace Data {
 class Thread;
+struct WebPageDraft;
 } // namespace Data
 
 namespace Window {
 class SessionController;
 } // namespace Window
+
+namespace ChatHelpers {
+class Show;
+} // namespace ChatHelpers
 
 namespace HistoryView::Controls {
 
@@ -38,7 +47,8 @@ public:
 
 	[[nodiscard]] rpl::producer<> itemsUpdated() const;
 
-	void editOptions(not_null<Window::SessionController*> controller);
+	void editOptions(std::shared_ptr<ChatHelpers::Show> show);
+	void editToNextOption();
 
 	[[nodiscard]] const HistoryItemsList &items() const;
 	[[nodiscard]] bool empty() const;
@@ -57,8 +67,20 @@ private:
 
 	rpl::event_stream<> _itemsUpdated;
 	Ui::Text::String _from, _text;
+	mutable std::unique_ptr<Ui::SpoilerAnimation> _spoiler;
 	int _nameVersion = 0;
 
 };
+
+void ClearDraftReplyTo(
+	not_null<History*> history,
+	MsgId topicRootId,
+	FullMsgId equalTo);
+
+void EditWebPageOptions(
+	std::shared_ptr<ChatHelpers::Show> show,
+	not_null<WebPageData*> webpage,
+	Data::WebPageDraft draft,
+	Fn<void(Data::WebPageDraft)> done);
 
 } // namespace HistoryView::Controls

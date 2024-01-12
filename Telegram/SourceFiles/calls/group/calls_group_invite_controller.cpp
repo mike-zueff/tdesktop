@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "lang/lang_keys.h"
 #include "styles/style_calls.h"
+#include "styles/style_dialogs.h" // searchedBarHeight
 
 namespace Calls::Group {
 namespace {
@@ -219,12 +220,14 @@ object_ptr<Ui::BoxContent> PrepareInviteBox(
 		}
 	};
 	const auto inviteWithAdd = [=](
+			std::shared_ptr<Ui::Show> show,
 			const std::vector<not_null<UserData*>> &users,
 			const std::vector<not_null<UserData*>> &nonMembers,
 			Fn<void()> finish) {
 		peer->session().api().chatParticipants().add(
 			peer,
 			nonMembers,
+			show,
 			true,
 			[=](bool) { invite(users); finish(); });
 	};
@@ -257,7 +260,8 @@ object_ptr<Ui::BoxContent> PrepareInviteBox(
 			finish();
 		};
 		const auto done = [=] {
-			inviteWithAdd(users, nonMembers, finishWithConfirm);
+			const auto show = (*shared) ? (*shared)->uiShow() : nullptr;
+			inviteWithAdd(show, users, nonMembers, finishWithConfirm);
 		};
 		auto box = ConfirmBox({
 			.text = text,

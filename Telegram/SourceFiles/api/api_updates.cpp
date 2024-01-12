@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_dc_options.h"
 #include "data/notify/data_notify_settings.h"
 #include "data/stickers/data_stickers.h"
+#include "data/data_saved_messages.h"
 #include "data/data_session.h"
 #include "data/data_user.h"
 #include "data/data_chat.h"
@@ -37,12 +38,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_forum.h"
 #include "data/data_scheduled_messages.h"
 #include "data/data_send_action.h"
+#include "data/data_stories.h"
 #include "data/data_message_reactions.h"
 #include "inline_bots/bot_attach_web_view.h"
 #include "chat_helpers/emoji_interactions.h"
 #include "lang/lang_cloud_manager.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "history/history_item_helpers.h"
 #include "history/history_unread_things.h"
 #include "core/application.h"
 #include "storage/storage_account.h"
@@ -95,7 +98,7 @@ void ProcessScheduledMessageWithElapsedTime(
 }
 
 bool IsForceLogoutNotification(const MTPDupdateServiceNotification &data) {
-	return qs(data.vtype()).startsWith(qstr("AUTH_KEY_DROP_"));
+	return qs(data.vtype()).startsWith(u"AUTH_KEY_DROP_"_q);
 }
 
 bool HasForceLogoutNotification(const MTPUpdates &updates) {
@@ -677,9 +680,11 @@ void Updates::getDifference() {
 	api().request(MTPupdates_GetDifference(
 		MTP_flags(0),
 		MTP_int(_ptsWaiter.current()),
-		MTPint(),
+		MTPint(), // pts_limit
+		MTPint(), // pts_total_limit
 		MTP_int(_updatesDate),
-		MTP_int(_updatesQts)
+		MTP_int(_updatesQts),
+		MTPint() // qts_limit
 	)).done([=](const MTPupdates_Difference &result) {
 		differenceDone(result);
 	}).fail([=](const MTP::Error &error) {
@@ -1108,6 +1113,7 @@ void Updates::applyUpdatesNoPtsCheck(const MTPUpdates &updates) {
 					? peerToMTP(_session->userPeerId())
 					: MTP_peerUser(d.vuser_id())),
 				MTP_peerUser(d.vuser_id()),
+				MTPPeer(), // saved_peer_id
 				d.vfwd_from() ? *d.vfwd_from() : MTPMessageFwdHeader(),
 				MTP_long(d.vvia_bot_id().value_or_empty()),
 				d.vreply_to() ? *d.vreply_to() : MTPMessageReplyHeader(),
@@ -1139,6 +1145,7 @@ void Updates::applyUpdatesNoPtsCheck(const MTPUpdates &updates) {
 				d.vid(),
 				MTP_peerUser(d.vfrom_id()),
 				MTP_peerChat(d.vchat_id()),
+				MTPPeer(), // saved_peer_id
 				d.vfwd_from() ? *d.vfwd_from() : MTPMessageFwdHeader(),
 				MTP_long(d.vvia_bot_id().value_or_empty()),
 				d.vreply_to() ? *d.vreply_to() : MTPMessageReplyHeader(),
@@ -1199,11 +1206,12 @@ void Updates::applyUpdateNoPtsCheck(const MTPUpdate &update) {
 					item->markMediaAndMentionRead();
 					_session->data().requestItemRepaint(item);
 
-					if (item->out()
-						&& item->history()->peer->isUser()
-						&& !requestingDifference()) {
-						item->history()->peer->asUser()->madeAction(
-							base::unixtime::now());
+					if (item->out()) {
+						const auto user = item->history()->peer->asUser();
+						if (user && !requestingDifference()) {
+							user->madeAction(base::unixtime::now());
+						}
+						ClearMediaAsExpired(item);
 					}
 				}
 			} else {
@@ -1513,7 +1521,8 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 			// Request last active supergroup participants if the 'from' user was not loaded yet.
 			// This will optimize similar getDifference() calls for almost all next messages.
 			if (isDataLoaded == DataIsLoadedResult::FromNotLoaded && channel && channel->isMegagroup()) {
-				if (channel->mgInfo->lastParticipants.size() < _session->serverConfig().chatSizeMax
+				if (channel->canViewMembers()
+					&& channel->mgInfo->lastParticipants.size() < _session->serverConfig().chatSizeMax
 					&& (channel->mgInfo->lastParticipants.empty()
 						|| channel->mgInfo->lastParticipants.size() < channel->membersCount())) {
 					session().api().chatParticipants().requestLast(channel);
@@ -1895,26 +1904,12 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 		}
 	} break;
 
-	case mtpc_updateUserPhoto: {
-		auto &d = update.c_updateUserPhoto();
-		if (auto user = session().data().userLoaded(d.vuser_id())) {
-			user->setPhoto(d.vphoto());
-			user->loadUserpic();
-			// After that update we don't have enough information to
-			// create a 'photo' with all necessary fields. So if
-			// we receive second such update we end up with a 'photo_id'
-			// in user_photos list without a loaded 'photo'.
-			// It fails to show in media overview if you try to open it.
-			//
-			//if (mtpIsTrue(d.vprevious()) || !user->userpicPhotoId()) {
-				session().storage().remove(Storage::UserPhotosRemoveAfter(
-					peerToUser(user->id),
-					user->userpicPhotoId()));
-			//} else {
-			//	session().storage().add(Storage::UserPhotosAddNew(
-			//		peerToUser(user->id),
-			//		user->userpicPhotoId()));
-			//}
+	case mtpc_updateUser: {
+		auto &d = update.c_updateUser();
+		if (const auto user = session().data().userLoaded(d.vuser_id())) {
+			if (user->wasFullUpdated()) {
+				user->updateFullForced();
+			}
 		}
 	} break;
 
@@ -1997,7 +1992,20 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 	case mtpc_updatePeerBlocked: {
 		const auto &d = update.c_updatePeerBlocked();
 		if (const auto peer = session().data().peerLoaded(peerFromMTP(d.vpeer_id()))) {
-			peer->setIsBlocked(mtpIsTrue(d.vblocked()));
+			peer->setIsBlocked(d.is_blocked());
+		}
+	} break;
+
+	case mtpc_updatePeerWallpaper: {
+		const auto &d = update.c_updatePeerWallpaper();
+		if (const auto peer = session().data().peerLoaded(peerFromMTP(d.vpeer()))) {
+			if (const auto paper = d.vwallpaper()) {
+				peer->setWallPaper(
+					Data::WallPaper::Create(&session(), *paper),
+					d.is_wallpaper_overridden());
+			} else {
+				peer->setWallPaper({});
+			}
 		}
 	} break;
 
@@ -2081,7 +2089,10 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 				windows.front()->window().show(Ui::MakeInformBox(text));
 			}
 		} else {
-			session().data().serviceNotification(text, d.vmedia());
+			session().data().serviceNotification(
+				text,
+				d.vmedia(),
+				d.is_invert_media());
 			session().api().authorizations().reload();
 		}
 	} break;
@@ -2198,6 +2209,16 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 		}
 	} break;
 
+	case mtpc_updatePinnedSavedDialogs: {
+		session().data().savedMessages().apply(
+			update.c_updatePinnedSavedDialogs());
+	} break;
+
+	case mtpc_updateSavedDialogPinned: {
+		session().data().savedMessages().apply(
+			update.c_updateSavedDialogPinned());
+	} break;
+
 	case mtpc_updateChannel: {
 		auto &d = update.c_updateChannel();
 		if (const auto channel = session().data().channelLoaded(d.vchannel_id())) {
@@ -2213,7 +2234,7 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 				history->requestChatListMessage();
 				if (!history->folderKnown()
 					|| (!history->unreadCountKnown()
-						&& !history->peer->isForum())) {
+						&& !history->isForum())) {
 					history->owner().histories().requestDialogEntry(history);
 				}
 				if (!channel->amCreator()) {
@@ -2297,16 +2318,47 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 		const auto &d = update.c_updateChannelPinnedTopic();
 		const auto peerId = peerFromChannel(d.vchannel_id());
 		if (const auto peer = session().data().peerLoaded(peerId)) {
-			const auto rootId = d.vtopic_id().value_or_empty();
+			const auto rootId = d.vtopic_id().v;
 			if (const auto topic = peer->forumTopicFor(rootId)) {
-				session().data().setChatPinned(topic, 0, true);
+				session().data().setChatPinned(topic, 0, d.is_pinned());
 			} else if (const auto forum = peer->forum()) {
-				if (rootId) {
-					forum->requestTopic(rootId);
-				} else {
-					forum->unpinTopic();
+				forum->requestTopic(rootId);
+			}
+		}
+	} break;
+
+	case mtpc_updateChannelPinnedTopics: {
+		const auto &d = update.c_updateChannelPinnedTopics();
+		const auto peerId = peerFromChannel(d.vchannel_id());
+		if (const auto peer = session().data().peerLoaded(peerId)) {
+			if (const auto forum = peer->forum()) {
+				const auto done = [&] {
+					const auto list = d.vorder();
+					if (!list) {
+						return false;
+					}
+					const auto &order = list->v;
+					const auto notLoaded = [&](const MTPint &topicId) {
+						return !forum->topicFor(topicId.v);
+					};
+					if (!ranges::none_of(order, notLoaded)) {
+						return false;
+					}
+					session().data().applyPinnedTopics(forum, order);
+					return true;
+				}();
+				if (!done) {
+					forum->reloadTopics();
 				}
 			}
+		}
+	} break;
+
+	case mtpc_updateChannelViewForumAsMessages: {
+		const auto &d = update.c_updateChannelViewForumAsMessages();
+		const auto id = ChannelId(d.vchannel_id());
+		if (const auto channel = session().data().channelLoaded(id)) {
+			channel->setViewAsMessagesFlag(mtpIsTrue(d.venabled()));
 		}
 	} break;
 
@@ -2505,7 +2557,20 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 	case mtpc_updateTranscribedAudio: {
 		const auto &data = update.c_updateTranscribedAudio();
 		_session->api().transcribes().apply(data);
-	}
+	} break;
+
+	case mtpc_updateStory: {
+		_session->data().stories().apply(update.c_updateStory());
+	} break;
+
+	case mtpc_updateReadStories: {
+		_session->data().stories().apply(update.c_updateReadStories());
+	} break;
+
+	case mtpc_updateStoriesStealthMode: {
+		const auto &data = update.c_updateStoriesStealthMode();
+		_session->data().stories().apply(data.vstealth_mode());
+	} break;
 
 	}
 }

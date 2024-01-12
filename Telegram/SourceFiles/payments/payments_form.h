@@ -95,6 +95,7 @@ struct StripePaymentMethod {
 
 struct SmartGlocalPaymentMethod {
 	QString publicToken;
+	QString tokenizeUrl;
 };
 
 struct NativePaymentMethod {
@@ -186,11 +187,43 @@ struct InvoiceSlug {
 	QString slug;
 };
 
+struct InvoicePremiumGiftCodeGiveaway {
+	not_null<ChannelData*> boostPeer;
+	std::vector<not_null<ChannelData*>> additionalChannels;
+	std::vector<QString> countries;
+	QString additionalPrize;
+	TimeId untilDate = 0;
+	bool onlyNewSubscribers = false;
+	bool showWinners = false;
+};
+
+struct InvoicePremiumGiftCodeUsers {
+	std::vector<not_null<UserData*>> users;
+	ChannelData *boostPeer = nullptr;
+};
+
+struct InvoicePremiumGiftCode {
+	std::variant<
+		InvoicePremiumGiftCodeUsers,
+		InvoicePremiumGiftCodeGiveaway> purpose;
+
+	uint64 randomId = 0;
+	QString currency;
+	uint64 amount = 0;
+	QString storeProduct;
+	int storeQuantity = 0;
+	int users = 0;
+	int months = 0;
+};
+
 struct InvoiceId {
-	std::variant<InvoiceMessage, InvoiceSlug> value;
+	std::variant<InvoiceMessage, InvoiceSlug, InvoicePremiumGiftCode> value;
 };
 
 [[nodiscard]] not_null<Main::Session*> SessionFromId(const InvoiceId &id);
+
+[[nodiscard]] MTPinputStorePaymentPurpose InvoicePremiumGiftCodeGiveawayToTL(
+	const InvoicePremiumGiftCode &invoice);
 
 class Form final : public base::has_weak_ptr {
 public:
@@ -217,6 +250,8 @@ public:
 	[[nodiscard]] rpl::producer<FormUpdate> updates() const {
 		return _updates.events();
 	}
+
+	[[nodiscard]] std::optional<QDate> overrideExpireDateThreshold() const;
 
 	void validateInformation(const Ui::RequestedInformation &information);
 	void validateCard(
@@ -284,9 +319,11 @@ private:
 		const Ui::RequestedInformation &information) const;
 
 	bool validateCardLocal(
-		const Ui::UncheckedCardDetails &details) const;
+		const Ui::UncheckedCardDetails &details,
+		const std::optional<QDate> &overrideExpireDateThreshold) const;
 	[[nodiscard]] Error cardErrorLocal(
-		const Ui::UncheckedCardDetails &details) const;
+		const Ui::UncheckedCardDetails &details,
+		const std::optional<QDate> &overrideExpireDateThreshold) const;
 
 	const InvoiceId _id;
 	const not_null<Main::Session*> _session;

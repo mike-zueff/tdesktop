@@ -15,12 +15,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/scroll_area.h"
 #include "history/view/history_view_top_bar_widget.h"
 
+#include <QtGui/QPainterPath>
+
 struct ClickContext;
 struct ClickHandlerContext;
 
 namespace Data {
 struct Group;
-class CloudImageView;
 } // namespace Data
 
 namespace HistoryView {
@@ -32,6 +33,9 @@ enum class CursorState : char;
 enum class PointState : char;
 class EmptyPainter;
 class Element;
+class TranslateTracker;
+struct PinnedId;
+struct SelectedQuote;
 } // namespace HistoryView
 
 namespace HistoryView::Reactions {
@@ -51,6 +55,7 @@ class PopupMenu;
 enum class ReportReason;
 struct ChatPaintContext;
 class PathShiftGradient;
+struct PeerUserpicView;
 } // namespace Ui
 
 namespace Dialogs::Ui {
@@ -99,8 +104,12 @@ public:
 
 	Ui::ChatPaintContext preparePaintContext(const QRect &clip) const;
 
-	void messagesReceived(PeerData *peer, const QVector<MTPMessage> &messages);
-	void messagesReceivedDown(PeerData *peer, const QVector<MTPMessage> &messages);
+	void messagesReceived(
+		not_null<PeerData*> peer,
+		const QVector<MTPMessage> &messages);
+	void messagesReceivedDown(
+		not_null<PeerData*> peer,
+		const QVector<MTPMessage> &messages);
 
 	[[nodiscard]] TextForMimeData getSelectedText() const;
 
@@ -111,6 +120,7 @@ public:
 	void checkActivation();
 	void recountHistoryGeometry();
 	void updateSize();
+	void setShownPinned(HistoryItem *item);
 
 	void repaintItem(const HistoryItem *item);
 	void repaintItem(const Element *view);
@@ -129,8 +139,6 @@ public:
 		int from,
 		int till) const;
 	void elementStartStickerLoop(not_null<const Element*> view);
-	[[nodiscard]] float64 elementHighlightOpacity(
-		not_null<const HistoryItem*> item) const;
 	void elementShowPollResults(
 		not_null<PollData*> poll,
 		FullMsgId context);
@@ -152,7 +160,7 @@ public:
 	void elementHandleViaClick(not_null<UserData*> bot);
 	bool elementIsChatWide();
 	not_null<Ui::PathShiftGradient*> elementPathShiftGradient();
-	void elementReplyTo(const FullMsgId &to);
+	void elementReplyTo(const FullReplyTo &to);
 	void elementStartInteraction(not_null<const Element*> view);
 	void elementStartPremium(
 		not_null<const Element*> view,
@@ -175,11 +183,10 @@ public:
 	void setChooseReportReason(Ui::ReportReason reason);
 	void clearChooseReportReason();
 
-	void setCanHaveFromUserpicsSponsored(bool value);
-
 	// -1 if should not be visible, -2 if bad history()
-	int itemTop(const HistoryItem *item) const;
-	int itemTop(const Element *view) const;
+	[[nodiscard]] int itemTop(const HistoryItem *item) const;
+	[[nodiscard]] int itemTop(const Element *view) const;
+	[[nodiscard]] Element *viewByItem(const HistoryItem *item) const;
 
 	// Returns (view, offset-from-top).
 	[[nodiscard]] std::pair<Element*, int> findViewForPinnedTracking(
@@ -194,6 +201,7 @@ public:
 	bool tooltipWindowActive() const override;
 
 	void onParentGeometryChanged();
+	bool consumeScrollAction(QPoint delta);
 
 	[[nodiscard]] Fn<HistoryView::ElementDelegate*()> elementDelegateFactory(
 		FullMsgId itemId) const;
@@ -306,6 +314,8 @@ private:
 
 	QPoint mapPointToItem(QPoint p, const Element *view) const;
 	QPoint mapPointToItem(QPoint p, const HistoryItem *item) const;
+	[[nodiscard]] HistoryView::SelectedQuote selectedQuote(
+		not_null<HistoryItem*> item) const;
 
 	void showContextMenu(QContextMenuEvent *e, bool showFromTouch = false);
 	void cancelContextDownload(not_null<DocumentData*> document);
@@ -441,6 +451,7 @@ private:
 
 	std::unique_ptr<BotAbout> _botAbout;
 	std::unique_ptr<HistoryView::EmptyPainter> _emptyPainter;
+	std::unique_ptr<HistoryView::TranslateTracker> _translateTracker;
 
 	mutable History *_curHistory = nullptr;
 	mutable int _curBlock = 0;
@@ -451,21 +462,20 @@ private:
 	std::optional<Ui::ReportReason> _chooseForReportReason;
 
 	const std::unique_ptr<Ui::PathShiftGradient> _pathGradient;
+	QPainterPath _highlightPathCache;
 	bool _isChatWide = false;
 
 	base::flat_set<not_null<const HistoryItem*>> _animatedStickersPlayed;
-	base::flat_map<
-		not_null<PeerData*>,
-		std::shared_ptr<Data::CloudImageView>> _userpics, _userpicsCache;
-	base::flat_map<
-		MsgId,
-		std::shared_ptr<Data::CloudImageView>> _sponsoredUserpics;
+	base::flat_map<not_null<PeerData*>, Ui::PeerUserpicView> _userpics;
+	base::flat_map<not_null<PeerData*>, Ui::PeerUserpicView> _userpicsCache;
+	base::flat_map<MsgId, Ui::PeerUserpicView> _hiddenSenderUserpics;
 	base::flat_map<
 		not_null<PeerData*>,
 		std::unique_ptr<VideoUserpic>> _videoUserpics;
 
 	std::unique_ptr<HistoryView::Reactions::Manager> _reactionsManager;
 	rpl::variable<HistoryItem*> _reactionsItem;
+	HistoryItem *_pinnedItem = nullptr;
 
 	MouseAction _mouseAction = MouseAction::None;
 	TextSelectType _mouseSelectType = TextSelectType::Letters;
@@ -478,7 +488,8 @@ private:
 	bool _pressWasInactive = false;
 	bool _recountedAfterPendingResizedItems = false;
 	bool _useCornerReaction = false;
-	bool _canHaveFromUserpicsSponsored = false;
+	bool _acceptsHorizontalScroll = false;
+	bool _horizontalScrollLocked = false;
 
 	QPoint _trippleClickPoint;
 	base::Timer _trippleClickTimer;

@@ -9,8 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "api/api_common.h"
 #include "base/timer.h"
-#include "base/flat_map.h"
-#include "base/flat_set.h"
 #include "mtproto/sender.h"
 #include "data/stickers/data_stickers_set.h"
 #include "data/data_messages.h"
@@ -32,8 +30,11 @@ class WallPaper;
 struct ResolvedForwardDraft;
 enum class DefaultNotify;
 enum class StickersType : uchar;
+class Forum;
 class ForumTopic;
 class Thread;
+class Story;
+class SavedMessages;
 } // namespace Data
 
 namespace InlineBots {
@@ -71,6 +72,7 @@ class InviteLinks;
 class ViewsManager;
 class ConfirmPhone;
 class PeerPhoto;
+class PeerColors;
 class Polls;
 class ChatParticipants;
 class UnreadThings;
@@ -78,6 +80,7 @@ class Ringtones;
 class Transcribes;
 class Premium;
 class Usernames;
+class Websites;
 
 namespace details {
 
@@ -138,10 +141,10 @@ public:
 
 	void applyUpdates(
 		const MTPUpdates &updates,
-		uint64 sentMessageRandomId = 0);
+		uint64 sentMessageRandomId = 0) const;
 	int applyAffectedHistory(
 		PeerData *peer, // May be nullptr, like for deletePhoneCallHistory.
-		const MTPmessages_AffectedHistory &result);
+		const MTPmessages_AffectedHistory &result) const;
 
 	void registerModifyRequest(const QString &key, mtpRequestId requestId);
 	void clearModifyRequest(const QString &key);
@@ -149,6 +152,8 @@ public:
 	void saveCurrentDraftToCloud();
 
 	void savePinnedOrder(Data::Folder *folder);
+	void savePinnedOrder(not_null<Data::Forum*> forum);
+	void savePinnedOrder(not_null<Data::SavedMessages*> saved);
 	void toggleHistoryArchived(
 		not_null<History*> history,
 		bool archived,
@@ -158,6 +163,7 @@ public:
 	QString exportDirectMessageLink(
 		not_null<HistoryItem*> item,
 		bool inRepliesContext);
+	QString exportDirectStoryLink(not_null<Data::Story*> item);
 
 	void requestContacts();
 	void requestDialogs(Data::Folder *folder = nullptr);
@@ -200,6 +206,10 @@ public:
 		const QString &hash,
 		FnMut<void(const MTPChatInvite &)> done,
 		Fn<void(const MTP::Error &)> fail);
+	void checkFilterInvite(
+		const QString &slug,
+		FnMut<void(const MTPchatlists_ChatlistInvite &)> done,
+		Fn<void(const MTP::Error &)> fail);
 
 	void processFullPeer(
 		not_null<PeerData*> peer,
@@ -236,8 +246,8 @@ public:
 	void setGroupStickerSet(
 		not_null<ChannelData*> megagroup,
 		const StickerSetIdentifier &set);
-	std::vector<not_null<DocumentData*>> *stickersByEmoji(
-		not_null<EmojiPtr> emoji);
+	[[nodiscard]] std::vector<not_null<DocumentData*>> *stickersByEmoji(
+		const QString &key);
 
 	void joinChannel(not_null<ChannelData*> channel);
 	void leaveChannel(not_null<ChannelData*> channel);
@@ -285,8 +295,12 @@ public:
 		const QString &phone,
 		const QString &firstName,
 		const QString &lastName,
-		const SendAction &action);
-	void shareContact(not_null<UserData*> user, const SendAction &action);
+		const SendAction &action,
+		Fn<void(bool)> done = nullptr);
+	void shareContact(
+		not_null<UserData*> user,
+		const SendAction &action,
+		Fn<void(bool)> done = nullptr);
 	void applyAffectedMessages(
 		not_null<PeerData*> peer,
 		const MTPmessages_AffectedMessages &result);
@@ -294,7 +308,7 @@ public:
 	void sendVoiceMessage(
 		QByteArray result,
 		VoiceWaveform waveform,
-		int duration,
+		crl::time duration,
 		const SendAction &action);
 	void sendFiles(
 		Ui::PreparedList &&list,
@@ -350,7 +364,14 @@ public:
 	std::optional<bool> contactSignupSilentCurrent() const;
 	void saveContactSignupSilent(bool silent);
 
+	[[nodiscard]] auto botCommonGroups(not_null<UserData*> bot) const
+		-> std::optional<std::vector<not_null<PeerData*>>>;
+	void requestBotCommonGroups(not_null<UserData*> bot, Fn<void()> done);
+
 	void saveSelfBio(const QString &text);
+
+	void registerStatsRequest(MTP::DcId dcId, mtpRequestId id);
+	void unregisterStatsRequest(MTP::DcId dcId, mtpRequestId id);
 
 	[[nodiscard]] Api::Authorizations &authorizations();
 	[[nodiscard]] Api::AttachedStickers &attachedStickers();
@@ -371,6 +392,8 @@ public:
 	[[nodiscard]] Api::Transcribes &transcribes();
 	[[nodiscard]] Api::Premium &premium();
 	[[nodiscard]] Api::Usernames &usernames();
+	[[nodiscard]] Api::Websites &websites();
+	[[nodiscard]] Api::PeerColors &peerColors();
 
 	void updatePrivacyLastSeens();
 
@@ -475,13 +498,14 @@ private:
 		const QString &firstName,
 		const QString &lastName,
 		UserId userId,
-		const SendAction &action);
+		const SendAction &action,
+		Fn<void(bool)> done);
 
 	void deleteHistory(
 		not_null<PeerData*> peer,
 		bool justClear,
 		bool revoke);
-	void applyAffectedMessages(const MTPmessages_AffectedMessages &result);
+	void applyAffectedMessages(const MTPmessages_AffectedMessages &result) const;
 
 	void deleteAllFromParticipantSend(
 		not_null<ChannelData*> channel,
@@ -502,13 +526,14 @@ private:
 	void sendMedia(
 		not_null<HistoryItem*> item,
 		const MTPInputMedia &media,
-		Api::SendOptions options);
+		Api::SendOptions options,
+		Fn<void(bool)> done = nullptr);
 	void sendMediaWithRandomId(
 		not_null<HistoryItem*> item,
 		const MTPInputMedia &media,
 		Api::SendOptions options,
-		uint64 randomId);
-	FileLoadTo fileLoadTaskOptions(const SendAction &action) const;
+		uint64 randomId,
+		Fn<void(bool)> done = nullptr);
 
 	void getTopPromotionDelayed(TimeId now, TimeId next);
 	void topPromotionDone(const MTPhelp_PromoData &proxy);
@@ -525,6 +550,8 @@ private:
 		not_null<PeerData*> peer,
 		not_null<ChannelData*> channel);
 	void migrateFail(not_null<PeerData*> peer, const QString &error);
+
+	void checkStatsSessions();
 
 	const not_null<Main::Session*> _session;
 
@@ -594,7 +621,7 @@ private:
 	base::Timer _featuredSetsReadTimer;
 	base::flat_set<uint64> _featuredSetsRead;
 
-	base::flat_map<not_null<EmojiPtr>, StickersByEmoji> _stickersByEmoji;
+	base::flat_map<QString, StickersByEmoji> _stickersByEmoji;
 
 	mtpRequestId _contactsRequestId = 0;
 	mtpRequestId _contactsStatusesRequestId = 0;
@@ -647,6 +674,7 @@ private:
 	mtpRequestId _termsUpdateRequestId = 0;
 
 	mtpRequestId _checkInviteRequestId = 0;
+	mtpRequestId _checkFilterInviteRequestId = 0;
 
 	struct MigrateCallbacks {
 		FnMut<void(not_null<ChannelData*>)> done;
@@ -660,6 +688,9 @@ private:
 		mtpRequestId requestId = 0;
 		QString requestedText;
 	} _bio;
+
+	base::flat_map<MTP::DcId, base::flat_set<mtpRequestId>> _statsRequests;
+	base::Timer _statsSessionKillTimer;
 
 	const std::unique_ptr<Api::Authorizations> _authorizations;
 	const std::unique_ptr<Api::AttachedStickers> _attachedStickers;
@@ -680,6 +711,8 @@ private:
 	const std::unique_ptr<Api::Transcribes> _transcribes;
 	const std::unique_ptr<Api::Premium> _premium;
 	const std::unique_ptr<Api::Usernames> _usernames;
+	const std::unique_ptr<Api::Websites> _websites;
+	const std::unique_ptr<Api::PeerColors> _peerColors;
 
 	mtpRequestId _wallPaperRequestId = 0;
 	QString _wallPaperSlug;
@@ -690,6 +723,12 @@ private:
 	std::optional<bool> _contactSignupSilent;
 	rpl::event_stream<bool> _contactSignupSilentChanges;
 
+	base::flat_map<
+		not_null<UserData*>,
+		std::vector<not_null<PeerData*>>> _botCommonGroups;
+	base::flat_map<not_null<UserData*>, Fn<void()>> _botCommonGroupsRequests;
+
 	base::flat_map<FullMsgId, QString> _unlikelyMessageLinks;
+	base::flat_map<FullStoryId, QString> _unlikelyStoryLinks;
 
 };

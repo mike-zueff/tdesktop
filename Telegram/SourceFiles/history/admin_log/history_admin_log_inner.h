@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_element.h"
 #include "history/admin_log/history_admin_log_item.h"
 #include "history/admin_log/history_admin_log_section.h"
+#include "menu/menu_antispam_validator.h"
 #include "ui/rp_widget.h"
 #include "ui/effects/animations.h"
 #include "ui/widgets/tooltip.h"
@@ -17,10 +18,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 
 struct ChatRestrictionsInfo;
-
-namespace Data {
-class CloudImageView;
-} // namespace Data
 
 namespace Main {
 class Session;
@@ -37,6 +34,7 @@ enum class PointState : char;
 namespace Ui {
 class PopupMenu;
 class ChatStyle;
+struct PeerUserpicView;
 } // namespace Ui
 
 namespace Window {
@@ -93,16 +91,8 @@ public:
 
 	// HistoryView::ElementDelegate interface.
 	HistoryView::Context elementContext() override;
-	std::unique_ptr<HistoryView::Element> elementCreate(
-		not_null<HistoryMessage*> message,
-		HistoryView::Element *replacing = nullptr) override;
-	std::unique_ptr<HistoryView::Element> elementCreate(
-		not_null<HistoryService*> message,
-		HistoryView::Element *replacing = nullptr) override;
 	bool elementUnderCursor(
 		not_null<const HistoryView::Element*> view) override;
-	[[nodiscard]] float64 elementHighlightOpacity(
-		not_null<const HistoryItem*> item) const override;
 	bool elementInSelectionMode() override;
 	bool elementIntersectsRange(
 		not_null<const HistoryView::Element*> view,
@@ -135,7 +125,7 @@ public:
 	void elementHandleViaClick(not_null<UserData*> bot) override;
 	bool elementIsChatWide() override;
 	not_null<Ui::PathShiftGradient*> elementPathShiftGradient() override;
-	void elementReplyTo(const FullMsgId &to) override;
+	void elementReplyTo(const FullReplyTo &to) override;
 	void elementStartInteraction(
 		not_null<const HistoryView::Element*> view) override;
 	void elementStartPremium(
@@ -277,9 +267,8 @@ private:
 	std::map<not_null<const HistoryItem*>, not_null<Element*>> _itemsByData;
 	base::flat_map<not_null<const HistoryItem*>, TimeId> _itemDates;
 	base::flat_set<FullMsgId> _animatedStickersPlayed;
-	base::flat_map<
-		not_null<PeerData*>,
-		std::shared_ptr<Data::CloudImageView>> _userpics, _userpicsCache;
+	base::flat_map<not_null<PeerData*>, Ui::PeerUserpicView> _userpics;
+	base::flat_map<not_null<PeerData*>, Ui::PeerUserpicView> _userpicsCache;
 	int _itemsTop = 0;
 	int _itemsWidth = 0;
 	int _itemsHeight = 0;
@@ -325,6 +314,7 @@ private:
 	Qt::CursorShape _cursor = style::cur_default;
 
 	base::unique_qptr<Ui::PopupMenu> _menu;
+	AntiSpamMenu::AntiSpamValidator _antiSpamValidator;
 
 	QPoint _trippleClickPoint;
 	base::Timer _trippleClickTimer;

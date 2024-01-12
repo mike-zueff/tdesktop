@@ -19,7 +19,7 @@ namespace Ui {
 class PopupMenu;
 } // namespace Ui
 
-class QSystemTrayIcon;
+class QPlatformSystemTrayIcon;
 
 namespace Platform {
 
@@ -57,10 +57,11 @@ public:
 	[[nodiscard]] static QPixmap IconWithCounter(
 		Window::CounterLayerArgs &&args,
 		bool smallIcon,
+		bool monochrome,
 		bool supportMode);
 
 private:
-	base::unique_qptr<QSystemTrayIcon> _icon;
+	base::unique_qptr<QPlatformSystemTrayIcon> _icon;
 	base::unique_qptr<Ui::PopupMenu> _menu;
 
 	rpl::event_stream<> _iconClicks;

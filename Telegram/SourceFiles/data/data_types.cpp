@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_types.h"
 
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "storage/cache/storage_cache_types.h"
 #include "base/openssl_help.h"
 
@@ -102,7 +102,7 @@ void MessageCursor::fillFrom(not_null<const Ui::InputField*> field) {
 	position = cursor.position();
 	anchor = cursor.anchor();
 	const auto top = field->scrollTop().current();
-	scroll = (top != field->scrollTopMax()) ? top : QFIXED_MAX;
+	scroll = (top != field->scrollTopMax()) ? top : Ui::kQFixedMax;
 }
 
 void MessageCursor::applyTo(not_null<Ui::InputField*> field) {

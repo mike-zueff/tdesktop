@@ -53,7 +53,9 @@ StickersSetFlags ParseStickersSetFlags(const MTPDstickerSet &data) {
 		| (data.is_masks() ? Flag::Masks : Flag())
 		| (data.is_emojis() ? Flag::Emoji : Flag())
 		| (data.vinstalled_date() ? Flag::Installed : Flag())
-		| (data.is_videos() ? Flag::Webm : Flag());
+		| (data.is_videos() ? Flag::Webm : Flag())
+		| (data.is_text_color() ? Flag::TextColor : Flag())
+		| (data.is_channel_emoji_status() ? Flag::ChannelStatus : Flag());
 }
 
 StickersSet::StickersSet(
@@ -76,6 +78,8 @@ StickersSet::StickersSet(
 , installDate(installDate)
 , _owner(owner) {
 }
+
+StickersSet::~StickersSet() = default;
 
 Data::Session &StickersSet::owner() const {
 	return *_owner;
@@ -104,6 +108,14 @@ StickersType StickersSet::type() const {
 		: (flags & StickersSetFlag::Masks)
 		? StickersType::Masks
 		: StickersType::Stickers;
+}
+
+bool StickersSet::textColor() const {
+	return flags & StickersSetFlag::TextColor;
+}
+
+bool StickersSet::channelStatus() const {
+	return flags & StickersSetFlag::ChannelStatus;
 }
 
 void StickersSet::setThumbnail(const ImageWithLocation &data) {

@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/flags.h"
 
 class ChannelData;
+enum class ChatRestriction;
 
 namespace style {
 struct ForumTopicIcon;
@@ -45,17 +46,27 @@ class Forum;
 	int32 colorId,
 	const QString &title,
 	const style::ForumTopicIcon &st);
+[[nodiscard]] QImage ForumTopicGeneralIconFrame(
+	int size,
+	const style::color &color);
 [[nodiscard]] TextWithEntities ForumTopicIconWithTitle(
+	MsgId rootId,
 	DocumentId iconId,
 	const QString &title);
 
 class ForumTopic final : public Thread {
 public:
+	static constexpr auto kGeneralId = 1;
+
 	ForumTopic(not_null<Forum*> forum, MsgId rootId);
 	~ForumTopic();
 
 	not_null<History*> owningHistory() override {
 		return history();
+	}
+
+	[[nodiscard]] bool isGeneral() const {
+		return (_rootId == kGeneralId);
 	}
 
 	[[nodiscard]] std::shared_ptr<RepliesList> replies() const;
@@ -70,8 +81,6 @@ public:
 	[[nodiscard]] not_null<HistoryView::ListMemento*> listMemento();
 
 	[[nodiscard]] bool my() const;
-	[[nodiscard]] bool canWrite() const;
-	[[nodiscard]] bool canSendPolls() const;
 	[[nodiscard]] bool canEdit() const;
 	[[nodiscard]] bool canToggleClosed() const;
 	[[nodiscard]] bool canTogglePinned() const;
@@ -81,11 +90,15 @@ public:
 	void setClosed(bool closed);
 	void setClosedAndSave(bool closed);
 
+	[[nodiscard]] bool hidden() const;
+	void setHidden(bool hidden);
+
 	[[nodiscard]] bool creating() const;
 	void discard();
 
 	void setRealRootId(MsgId realId);
 	void readTillEnd();
+	void requestChatListMessage();
 
 	void applyTopic(const MTPDforumTopic &data);
 
@@ -97,9 +110,9 @@ public:
 	Dialogs::BadgesState chatListBadgesState() const override;
 	HistoryItem *chatListMessage() const override;
 	bool chatListMessageKnown() const override;
-	void requestChatListMessage() override;
 	const QString &chatListName() const override;
 	const QString &chatListNameSortKey() const override;
+	int chatListNameVersion() const override;
 	const base::flat_set<QString> &chatListNameWords() const override;
 	const base::flat_set<QChar> &chatListFirstLetters() const override;
 
@@ -114,6 +127,7 @@ public:
 
 	[[nodiscard]] QString title() const;
 	[[nodiscard]] TextWithEntities titleWithIcon() const;
+	[[nodiscard]] int titleVersion() const;
 	void applyTitle(const QString &title);
 	[[nodiscard]] DocumentId iconId() const;
 	void applyIconId(DocumentId iconId);
@@ -133,10 +147,10 @@ public:
 		return _notify;
 	}
 
-	void loadUserpic() override;
+	void chatListPreloadData() override;
 	void paintUserpic(
 		Painter &p,
-		std::shared_ptr<CloudImageView> &view,
+		Ui::PeerUserpicView &view,
 		const Dialogs::Ui::PaintContext &context) const override;
 	void clearUserpicLoops();
 
@@ -151,23 +165,30 @@ public:
 private:
 	enum class Flag : uchar {
 		Closed = (1 << 0),
-		My = (1 << 1),
-		HasPinnedMessages = (1 << 2),
+		Hidden = (1 << 1),
+		My = (1 << 2),
+		HasPinnedMessages = (1 << 3),
+		GeneralIconActive = (1 << 4),
+		GeneralIconSelected = (1 << 5),
+		ResolveChatListMessage = (1 << 6),
 	};
 	friend inline constexpr bool is_flag_type(Flag) { return true; }
 	using Flags = base::flags<Flag>;
 
 	void indexTitleParts();
 	void validateDefaultIcon() const;
+	void validateGeneralIcon(const Dialogs::Ui::PaintContext &context) const;
 	void applyTopicTopMessage(MsgId topMessageId);
 	void growLastKnownServerMessageId(MsgId id);
+	void invalidateTitleWithIcon();
 
 	void setLastMessage(HistoryItem *item);
 	void setLastServerMessage(HistoryItem *item);
 	void setChatListMessage(HistoryItem *item);
+	void allowChatListMessageResolve();
+	void resolveChatListMessageGroup();
 
-	int chatListNameVersion() const override;
-
+	void subscribeToUnreadChanges();
 	[[nodiscard]] Dialogs::UnreadState unreadStateFor(
 		int count,
 		bool known) const;
@@ -190,7 +211,7 @@ private:
 	TimeId _creationDate = 0;
 	int _titleVersion = 0;
 	int32 _colorId = 0;
-	Flags _flags;
+	mutable Flags _flags;
 
 	std::unique_ptr<Ui::Text::CustomEmoji> _icon;
 	mutable QImage _defaultIcon; // on-demand

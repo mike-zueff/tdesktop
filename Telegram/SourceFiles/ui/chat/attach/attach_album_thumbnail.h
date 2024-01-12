@@ -14,17 +14,24 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/round_rect.h"
 #include "base/object_ptr.h"
 
+namespace style {
+struct ComposeControls;
+} // namespace style
+
 namespace Ui {
 
 struct PreparedFile;
 class IconButton;
+class SpoilerAnimation;
 
 class AlbumThumbnail final {
 public:
 	AlbumThumbnail(
+		const style::ComposeControls &st,
 		const PreparedFile &file,
 		const GroupMediaLayout &layout,
 		QWidget *parent,
+		Fn<void()> repaint,
 		Fn<void()> editCallback,
 		Fn<void()> deleteCallback);
 
@@ -32,7 +39,11 @@ public:
 	void animateLayoutToInitial();
 	void resetLayoutAnimation();
 
+	void setSpoiler(bool spoiler);
+	[[nodiscard]] bool hasSpoiler() const;
+
 	int photoHeight() const;
+	int fileHeight() const;
 
 	void paintInAlbum(
 		QPainter &p,
@@ -53,7 +64,10 @@ public:
 	void suggestMove(float64 delta, Fn<void()> callback);
 	void finishAnimations();
 
-	void updateFileRow(int row);
+	void setButtonVisible(bool value);
+	void moveButtons(int thumbTop);
+
+	bool isCompressedSticker() const;
 
 	static constexpr auto kShrinkDuration = crl::time(150);
 
@@ -64,10 +78,11 @@ private:
 	void drawSimpleFrame(QPainter &p, QRect to, QSize size) const;
 	QRect paintButtons(
 		QPainter &p,
-		QPoint point,
-		int outerWidth,
+		QRect geometry,
 		float64 shrinkProgress);
+	void paintPlayVideo(QPainter &p, QRect geometry);
 
+	const style::ComposeControls &_st;
 	GroupMediaLayout _layout;
 	std::optional<QRect> _animateFromGeometry;
 	const QImage _fullPreview;
@@ -75,10 +90,12 @@ private:
 	const bool _isPhoto;
 	const bool _isVideo;
 	QPixmap _albumImage;
+	QPixmap _albumImageBlurred;
 	QImage _albumCache;
 	QPoint _albumPosition;
 	RectParts _albumCorners = RectPart::None;
 	QPixmap _photo;
+	QPixmap _photoBlurred;
 	QPixmap _fileThumb;
 	QString _name;
 	QString _status;
@@ -88,6 +105,11 @@ private:
 	Animations::Simple _suggestedMoveAnimation;
 	int _lastShrinkValue = 0;
 	AttachControls _buttons;
+
+	bool _isCompressedSticker = false;
+	std::unique_ptr<SpoilerAnimation> _spoiler;
+	QImage _cornerCache;
+	Fn<void()> _repaint;
 
 	QRect _lastRectOfModify;
 	QRect _lastRectOfButtons;

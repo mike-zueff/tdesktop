@@ -46,7 +46,6 @@ public:
 	void activationFromTopPanel() override;
 
 	bool screenIsLocked() override;
-	QString timeFormat() override;
 
 	std::shared_ptr<ClickHandler> createLinkHandler(
 		const EntityLinkData &data,
@@ -54,6 +53,7 @@ public:
 	bool handleUrlClick(
 		const QString &url,
 		const QVariant &context) override;
+	bool copyPreOnClick(const QVariant &context) override;
 	rpl::producer<> forcePopupMenuHideRequests() override;
 	const Ui::Emoji::One *defaultEmojiVariant(
 		const Ui::Emoji::One *emoji) override;
@@ -61,6 +61,9 @@ public:
 		const QString &data,
 		const std::any &context) override;
 	Fn<void()> createSpoilerRepaint(const std::any &context) override;
+	bool allowClickHandlerActivation(
+		const std::shared_ptr<ClickHandler> &handler,
+		const ClickContext &context) override;
 
 	QString phraseContextCopyText() override;
 	QString phraseContextCopyEmail() override;
@@ -74,6 +77,7 @@ public:
 	QString phraseFormattingItalic() override;
 	QString phraseFormattingUnderline() override;
 	QString phraseFormattingStrikeOut() override;
+	QString phraseFormattingBlockquote() override;
 	QString phraseFormattingMonospace() override;
 	QString phraseFormattingSpoiler() override;
 	QString phraseButtonOk() override;
@@ -82,11 +86,13 @@ public:
 	QString phrasePanelCloseWarning() override;
 	QString phrasePanelCloseUnsaved() override;
 	QString phrasePanelCloseAnyway() override;
-#if 0 // disabled for now
 	QString phraseBotSharePhone() override;
 	QString phraseBotSharePhoneTitle() override;
 	QString phraseBotSharePhoneConfirm() override;
-#endif
+	QString phraseBotAllowWrite() override;
+	QString phraseBotAllowWriteTitle() override;
+	QString phraseBotAllowWriteConfirm() override;
+	QString phraseQuoteHeaderCopy() override;
 
 };
 

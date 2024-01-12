@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "info/profile/info_profile_values.h"
 
+#include "api/api_chat_participants.h"
+#include "apiwrap.h"
 #include "info/profile/info_profile_badge.h"
 #include "core/application.h"
 #include "core/click_handler_types.h"
@@ -18,6 +20,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "data/notify/data_notify_settings.h"
 #include "data/data_peer_values.h"
+#include "data/data_saved_messages.h"
+#include "data/data_saved_sublist.h"
 #include "data/data_shared_media.h"
 #include "data/data_message_reactions.h"
 #include "data/data_folder.h"
@@ -199,11 +203,6 @@ TextWithEntities AboutWithEntities(
 	const auto stripExternal = peer->isChat()
 		|| peer->isMegagroup()
 		|| (user && !isBot && !isPremium);
-	const auto limit = Data::PremiumLimits(&peer->session())
-		.aboutLengthDefault();
-	const auto used = (!user || isPremium || value.size() <= limit)
-		? value
-		: value.mid(0, limit) + "...";
 	auto result = TextWithEntities{ value };
 	TextUtilities::ParseEntities(result, flags);
 	if (stripExternal) {
@@ -336,7 +335,7 @@ rpl::producer<bool> CanShareContactValue(not_null<UserData*> user) {
 
 rpl::producer<bool> CanAddContactValue(not_null<UserData*> user) {
 	using namespace rpl::mappers;
-	if (user->isBot() || user->isSelf()) {
+	if (user->isBot() || user->isSelf() || user->isInaccessible()) {
 		return rpl::single(false);
 	}
 	return IsContactValue(
@@ -520,6 +519,31 @@ rpl::producer<int> CommonGroupsCountValue(not_null<UserData*> user) {
 	});
 }
 
+rpl::producer<int> SimilarChannelsCountValue(
+		not_null<ChannelData*> channel) {
+	const auto participants = &channel->session().api().chatParticipants();
+	participants->loadSimilarChannels(channel);
+	return rpl::single(channel) | rpl::then(
+		participants->similarLoaded()
+	) | rpl::filter(
+		rpl::mappers::_1 == channel
+	) | rpl::map([=] {
+		const auto &similar = participants->similar(channel);
+		return int(similar.list.size()) + similar.more;
+	});
+}
+
+rpl::producer<int> SavedSublistCountValue(
+		not_null<PeerData*> peer) {
+	const auto saved = &peer->owner().savedMessages();
+	const auto sublist = saved->sublist(peer);
+	if (!sublist->fullCount()) {
+		saved->loadMore(sublist);
+		return rpl::single(0) | rpl::then(sublist->fullCountValue());
+	}
+	return sublist->fullCountValue();
+}
+
 rpl::producer<bool> CanAddMemberValue(not_null<PeerData*> peer) {
 	if (const auto chat = peer->asChat()) {
 		return peer->session().changes().peerFlagsValue(
@@ -547,6 +571,20 @@ rpl::producer<int> FullReactionsCountValue(
 	) | rpl::map([=] {
 		return int(reactions->list(Data::Reactions::Type::Active).size());
 	}) | rpl::distinct_until_changed();
+}
+
+rpl::producer<bool> CanViewParticipantsValue(
+		not_null<ChannelData*> megagroup) {
+	if (megagroup->amCreator()) {
+		return rpl::single(true);
+	}
+	return rpl::combine(
+		megagroup->session().changes().peerFlagsValue(
+			megagroup,
+			UpdateFlag::Rights),
+		megagroup->flagsValue(),
+		[=] { return megagroup->canViewMembers(); }
+	) | rpl::distinct_until_changed();
 }
 
 template <typename Flag, typename Peer>
@@ -579,15 +617,14 @@ rpl::producer<BadgeType> BadgeValue(not_null<PeerData*> peer) {
 }
 
 rpl::producer<DocumentId> EmojiStatusIdValue(not_null<PeerData*> peer) {
-	if (const auto user = peer->asUser()) {
-		return user->session().changes().peerFlagsValue(
-			peer,
-			Data::PeerUpdate::Flag::EmojiStatus
-		) | rpl::map([=] { return user->emojiStatusId(); });
+	if (peer->isChat()) {
+		return rpl::single(DocumentId(0));
 	}
-	return rpl::single(DocumentId(0));
+	return peer->session().changes().peerFlagsValue(
+		peer,
+		Data::PeerUpdate::Flag::EmojiStatus
+	) | rpl::map([=] { return peer->emojiStatusId(); });
 }
-
 
 } // namespace Profile
 } // namespace Info

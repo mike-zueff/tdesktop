@@ -6,8 +6,81 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 using "ui/basic.style";
+using "boxes/boxes.style";
 using "ui/widgets/widgets.style";
-using "settings/settings.style";
+using "ui/layers/layers.style";
+
+PremiumLimits {
+	boxLabel: FlatLabel;
+	nonPremiumBg: color;
+	nonPremiumFg: color;
+	gradientFromLeft: bool;
+}
+PremiumBubble {
+	widthLimit: pixels;
+	height: pixels;
+	padding: margins;
+	skip: pixels;
+	penWidth: pixels;
+	textSkip: pixels;
+	tailSize: size;
+	font: font;
+}
+PremiumCover {
+	bg: color;
+	starSize: size;
+	starTopSkip: pixels;
+	titlePadding: margins;
+	titleFont: font;
+	about: FlatLabel;
+	additionalShadowForDarkThemes: bool;
+}
+
+premiumAboutTextStyle: TextStyle(defaultTextStyle) {
+	font: font(12px);
+	linkUnderline: kLinkUnderlineAlways;
+	lineHeight: 18px;
+}
+defaultPremiumCover: PremiumCover {
+	bg: boxBg;
+	starSize: size(84px, 81px);
+	starTopSkip: 37px;
+	titlePadding: margins(0px, 18px, 0px, 11px);
+	titleFont: boxTitleFont;
+	about: FlatLabel(defaultFlatLabel) {
+		style: premiumAboutTextStyle;
+		palette: TextPalette(defaultTextPalette) {
+			linkFg: premiumButtonFg;
+		}
+		align: align(top);
+		textFg: premiumButtonFg;
+		minWidth: 190px;
+	}
+	additionalShadowForDarkThemes: true;
+}
+userPremiumCoverAbout: FlatLabel(boxDividerLabel) {
+	style: premiumAboutTextStyle;
+	minWidth: 315px;
+	maxHeight: 0px;
+	align: align(top);
+}
+userPremiumCover: PremiumCover(defaultPremiumCover) {
+	about: userPremiumCoverAbout;
+}
+
+defaultPremiumBoxLabel: FlatLabel(defaultFlatLabel) {
+	minWidth: 220px;
+	align: align(topleft);
+	style: TextStyle(boxTextStyle) {
+		lineHeight: 22px;
+	}
+}
+defaultPremiumLimits: PremiumLimits {
+	boxLabel: defaultPremiumBoxLabel;
+	nonPremiumBg: windowBgOver;
+	nonPremiumFg: windowFg;
+	gradientFromLeft: false;
+}
 
 // Preview.
 premiumPreviewBox: Box(defaultBox) {
@@ -29,8 +102,6 @@ premiumPreviewAboutTitle: FlatLabel(defaultFlatLabel) {
 	align: align(top);
 	style: TextStyle(defaultTextStyle) {
 		font: font(17px semibold);
-		linkFont: font(17px semibold);
-		linkFontOver: font(17px semibold);
 	}
 }
 premiumPreviewAbout: FlatLabel(defaultFlatLabel) {
@@ -48,14 +119,6 @@ premiumVideoStarSize: size(77px, 73px);
 
 premiumPreviewHeight: 312px;
 
-premiumReactionWidthSkip: 64px;
-premiumReactionHeightSkip: 75px;
-premiumReactionSize: 108px;
-premiumReactionAround: 164px;
-premiumReactionsMiddle: 148px;
-premiumReactionScale: 0.70;
-premiumReactionInfoTop: 260px;
-
 premiumDot: 6px;
 premiumDotPadding: margins(4px, 4px, 4px, 4px);
 premiumDotsMargin: margins(0px, 5px, 0px, 6px);
@@ -63,15 +126,17 @@ premiumVideoWidth: 182px;
 
 // Graphics.
 
-premiumBubblePadding: margins(14px, 0px, 14px, 0px);
-premiumBubblePenWidth: 6;
-premiumBubbleHeight: 40px;
-premiumBubbleSkip: 8px;
-premiumBubbleWidthLimit: 80px;
-premiumBubbleTextSkip: 3px;
-premiumBubbleSlideDuration: 1000;
-premiumBubbleTailSize: size(21px, 7px);
-premiumBubbleFont: font(19px);
+defaultPremiumBubble: PremiumBubble {
+	widthLimit: 80px;
+	height: 40px;
+	padding: margins(14px, 0px, 14px, 0px);
+	skip: 8px;
+	penWidth: 6px;
+	textSkip: 3px;
+	tailSize: size(21px, 7px);
+	font: font(19px);
+}
+premiumLineRadius: 5px;
 premiumLineTextSkip: 11px;
 premiumInfographicPadding: margins(0px, 10px, 0px, 15px);
 
@@ -82,6 +147,7 @@ premiumIconGroups: icon {{ "limits/groups", settingsIconFg }};
 premiumIconLinks: icon {{ "limits/links", settingsIconFg }};
 premiumIconPins: icon {{ "limits/pins", settingsIconFg }};
 premiumIconAccounts: icon {{ "limits/accounts", settingsIconFg }};
+premiumIconBoost: icon {{ "limits/boost", settingsIconFg }};
 
 premiumAccountsCheckbox: RoundImageCheckbox(defaultPeerListCheckbox) {
 	imageRadius: 27px;
@@ -152,14 +218,88 @@ premiumGiftUserpicPadding: margins(10px, 27px, 18px, 13px);
 premiumGiftTitlePadding: margins(18px, 0px, 18px, 0px);
 premiumGiftAboutPadding: margins(18px, 5px, 18px, 23px);
 premiumGiftTermsPadding: margins(18px, 27px, 18px, 0px);
-
-premiumGiftTerms: FlatLabel(settingLocalPasscodeDescription) {
+premiumGiftTerms: FlatLabel(defaultFlatLabel) {
+	minWidth: 256px;
+	align: align(top);
+	textFg: windowSubTextFg;
 	style: TextStyle(defaultTextStyle) {
 		font: font(11px);
-		linkFont: font(11px);
-		linkFontOver: font(11px underline);
 	}
 }
 premiumGiftBox: Box(premiumPreviewBox) {
 	buttonPadding: margins(12px, 12px, 12px, 12px);
 }
+
+premiumGiftsUserpicButton: UserpicButton(defaultUserpicButton) {
+	size: size(66px, 66px);
+	photoSize: 66px;
+	photoPosition: point(-1px, -1px);
+}
+premiumGiftsUserpicBadgeSize: size(26px, 26px);
+premiumGiftsUserpicBadgeInner: 2px;
+premiumGiftsUserpicBadgeFont: font(14px bold);
+premiumGiftsBoostIcon: icon{{ "stories/boost_mini", windowBgActive }};
+
+boostSkipTop: 37px;
+boostLimits: PremiumLimits(defaultPremiumLimits) {
+	gradientFromLeft: true;
+	nonPremiumBg: windowBgRipple;
+}
+boostBubble: PremiumBubble(defaultPremiumBubble) {
+	height: 32px;
+	padding: margins(7px, 0px, 11px, 0px);
+	skip: 5px;
+	textSkip: 2px;
+	tailSize: size(14px, 6px);
+	font: font(16px);
+}
+boostTitleSkip: 32px;
+boostTitle: FlatLabel(defaultFlatLabel) {
+	minWidth: 40px;
+	textFg: windowBoldFg;
+	maxHeight: 24px;
+	style: TextStyle(boxTextStyle) {
+		font: font(17px semibold);
+	}
+}
+boostTitleBadge: FlatLabel(defaultFlatLabel) {
+	margin: margins(4px, 2px, 4px, 2px);
+	style: semiboldTextStyle;
+	textFg: premiumButtonFg;
+}
+boostTitleBadgeSkip: 6px;
+boostCenteredTitle: FlatLabel(boostTitle) {
+	align: align(top);
+}
+boostTextSkip: 5px;
+boostText: FlatLabel(defaultFlatLabel) {
+	minWidth: 40px;
+	align: align(top);
+}
+boostReassignText: FlatLabel(defaultFlatLabel) {
+	minWidth: 40px;
+	align: align(top);
+}
+boostBottomSkip: 6px;
+boostBox: Box(premiumPreviewDoubledLimitsBox) {
+	buttonPadding: margins(22px, 22px, 22px, 22px);
+	buttonHeight: 42px;
+	button: RoundButton(defaultActiveButton) {
+		height: 42px;
+		textTop: 12px;
+		font: font(13px semibold);
+	}
+}
+
+boostReplaceUserpicsPadding: margins(0px, 18px, 0px, 20px);
+boostReplaceUserpicsSkip: 42px;
+boostReplaceUserpicsShift: 24px;
+boostReplaceUserpic: UserpicButton(defaultUserpicButton) {
+	size: size(60px, 60px);
+	photoSize: 60px;
+}
+boostReplaceIcon: icon{{ "stories/boost_mini", premiumButtonFg }};
+boostReplaceIconSkip: 3px;
+boostReplaceIconOutline: 2px;
+boostReplaceIconAdd: point(4px, 2px);
+boostReplaceArrow: icon{{ "mediaview/next", windowSubTextFg }};

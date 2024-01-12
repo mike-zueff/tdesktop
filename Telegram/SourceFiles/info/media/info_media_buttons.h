@@ -10,15 +10,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <rpl/mappers.h>
 #include <rpl/map.h>
 #include "lang/lang_keys.h"
+#include "data/data_saved_messages.h"
+#include "data/data_session.h"
+#include "data/data_stories_ids.h"
 #include "storage/storage_shared_media.h"
+#include "history/view/history_view_sublist_section.h"
 #include "info/info_memento.h"
 #include "info/info_controller.h"
 #include "info/profile/info_profile_values.h"
+#include "info/stories/info_stories_widget.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/widgets/buttons.h"
-#include "settings/settings_common.h"
 #include "window/window_session_controller.h"
+#include "data/data_channel.h"
 #include "data/data_user.h"
 #include "styles/style_info.h"
 
@@ -63,9 +68,9 @@ inline auto AddCountedButton(
 			? textFromCount(count)
 			: QString();
 	});
-	auto button = parent->add(object_ptr<Ui::SlideWrap<Button>>(
+	auto button = parent->add(object_ptr<Ui::SlideWrap<Ui::SettingsButton>>(
 		parent,
-		CreateButton(
+		object_ptr<Ui::SettingsButton>(
 			parent,
 			std::move(text),
 			st::infoSharedMediaButton))
@@ -119,9 +124,83 @@ inline auto AddCommonGroupsButton(
 		tracker)->entity();
 	result->addClickHandler([=] {
 		navigation->showSection(
-			std::make_shared<Info::Memento>(user, Section::Type::CommonGroups));
+			std::make_shared<Info::Memento>(
+				user,
+				Section::Type::CommonGroups));
 	});
 	return result;
-};
+}
+
+inline auto AddSimilarChannelsButton(
+		Ui::VerticalLayout *parent,
+		not_null<Window::SessionNavigation*> navigation,
+		not_null<ChannelData*> channel,
+		Ui::MultiSlideTracker &tracker) {
+	auto result = AddCountedButton(
+		parent,
+		Profile::SimilarChannelsCountValue(channel),
+		[](int count) {
+			return tr::lng_profile_similar_channels(
+				tr::now,
+				lt_count,
+				count);
+		},
+		tracker)->entity();
+	result->addClickHandler([=] {
+		navigation->showSection(
+			std::make_shared<Info::Memento>(
+				channel,
+				Section::Type::SimilarChannels));
+	});
+	return result;
+}
+
+inline auto AddStoriesButton(
+		Ui::VerticalLayout *parent,
+		not_null<Window::SessionNavigation*> navigation,
+		not_null<PeerData*> peer,
+		Ui::MultiSlideTracker &tracker) {
+	auto count = rpl::single(0) | rpl::then(Data::SavedStoriesIds(
+		peer,
+		ServerMaxStoryId - 1,
+		0
+	) | rpl::map([](const Data::StoriesIdsSlice &slice) {
+		return slice.fullCount().value_or(0);
+	}));
+	const auto phrase = peer->isChannel() ? (+[](int count) {
+		return tr::lng_profile_posts(tr::now, lt_count, count);
+	}) : (+[](int count) {
+		return tr::lng_profile_saved_stories(tr::now, lt_count, count);
+	});
+	auto result = AddCountedButton(
+		parent,
+		std::move(count),
+		phrase,
+		tracker)->entity();
+	result->addClickHandler([=] {
+		navigation->showSection(Info::Stories::Make(peer));
+	});
+	return result;
+}
+
+inline auto AddSavedSublistButton(
+		Ui::VerticalLayout *parent,
+		not_null<Window::SessionNavigation*> navigation,
+		not_null<PeerData*> peer,
+		Ui::MultiSlideTracker &tracker) {
+	auto result = AddCountedButton(
+		parent,
+		Profile::SavedSublistCountValue(peer),
+		[](int count) {
+			return tr::lng_profile_saved_messages(tr::now, lt_count, count);
+		},
+		tracker)->entity();
+	result->addClickHandler([=] {
+		navigation->showSection(
+			std::make_shared<HistoryView::SublistMemento>(
+				peer->owner().savedMessages().sublist(peer)));
+	});
+	return result;
+}
 
 } // namespace Info::Media

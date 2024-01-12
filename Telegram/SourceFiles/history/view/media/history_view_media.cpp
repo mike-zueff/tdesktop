@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_cursor_state.h"
 #include "history/view/history_view_spoiler_click_handler.h"
 #include "history/view/media/history_view_sticker.h"
+#include "history/view/media/history_view_media_spoiler.h"
 #include "storage/storage_shared_media.h"
 #include "data/data_document.h"
 #include "data/data_session.h"
@@ -20,7 +21,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/item_text_options.h"
 #include "ui/chat/chat_style.h"
 #include "ui/chat/message_bubble.h"
+#include "ui/effects/spoiler_mess.h"
 #include "ui/image/image_prepare.h"
+#include "ui/power_saving.h"
 #include "core/ui_integration.h"
 #include "styles/style_chat.h"
 
@@ -54,7 +57,7 @@ TimeId DurationForTimestampLinks(not_null<DocumentData*> document) {
 		&& !document->isVoiceMessage()) {
 		return TimeId(0);
 	}
-	return std::max(document->getDuration(), TimeId(0));
+	return std::max(document->duration(), crl::time(0)) / 1000;
 }
 
 QString TimestampLinkBase(
@@ -71,7 +74,7 @@ TimeId DurationForTimestampLinks(not_null<WebPageData*> webpage) {
 	} else if (const auto document = webpage->document) {
 		return DurationForTimestampLinks(document);
 	} else if (webpage->type != WebPageType::Video
-		|| webpage->siteName != qstr("YouTube")) {
+		|| webpage->siteName != u"YouTube"_q) {
 		return TimeId(0);
 	} else if (webpage->duration > 0) {
 		return webpage->duration;
@@ -120,7 +123,9 @@ TextWithEntities AddTimestampLinks(
 		return text;
 	}
 	static const auto expression = QRegularExpression(
-		"(?<![^\\s\\(\\)\"\\,\\.\\-])(?:(?:(\\d{1,2}):)?(\\d))?(\\d):(\\d\\d)(?![^\\s\\(\\)\",\\.\\-])");
+		"(?<![^\\s\\(\\)\"\\,\\.\\-])"
+		"(?:(?:(\\d{1,2}):)?(\\d))?(\\d):(\\d\\d)"
+		"(?![^\\s\\(\\)\",\\.\\-\\+])");
 	const auto &string = text.text;
 	auto offset = 0;
 	while (true) {
@@ -176,12 +181,21 @@ Storage::SharedMediaTypesMask Media::sharedMediaTypes() const {
 	return {};
 }
 
+bool Media::allowTextSelectionByHandler(
+		const ClickHandlerPtr &handler) const {
+	return false;
+}
+
+not_null<Element*> Media::parent() const {
+	return _parent;
+}
+
 not_null<History*> Media::history() const {
 	return _parent->history();
 }
 
-bool Media::isDisplayed() const {
-	return true;
+SelectedQuote Media::selectedQuote(TextSelection selection) const {
+	return {};
 }
 
 QSize Media::countCurrentSize(int newWidth) {
@@ -242,8 +256,50 @@ void Media::fillImageOverlay(
 	Ui::FillComplexOverlayRect(p, rect, st->msgSelectOverlay(), corners);
 }
 
+void Media::fillImageSpoiler(
+		QPainter &p,
+		not_null<MediaSpoiler*> spoiler,
+		QRect rect,
+		const PaintContext &context) const {
+	if (!spoiler->animation) {
+		spoiler->animation = std::make_unique<Ui::SpoilerAnimation>([=] {
+			_parent->customEmojiRepaint();
+		});
+		history()->owner().registerHeavyViewPart(_parent);
+	}
+	_parent->clearCustomEmojiRepaint();
+	const auto pausedSpoiler = context.paused
+		|| On(PowerSaving::kChatSpoiler);
+	Ui::FillSpoilerRect(
+		p,
+		rect,
+		MediaRoundingMask(spoiler->backgroundRounding),
+		Ui::DefaultImageSpoiler().frame(
+			spoiler->animation->index(context.now, pausedSpoiler)),
+		spoiler->cornerCache);
+}
+
+void Media::createSpoilerLink(not_null<MediaSpoiler*> spoiler) {
+	const auto weak = base::make_weak(this);
+	spoiler->link = std::make_shared<LambdaClickHandler>([weak, spoiler](
+			const ClickContext &context) {
+		const auto button = context.button;
+		const auto media = weak.get();
+		if (button != Qt::LeftButton || !media || spoiler->revealed) {
+			return;
+		}
+		const auto view = media->parent();
+		spoiler->revealed = true;
+		spoiler->revealAnimation.start([=] {
+			view->repaint();
+		}, 0., 1., st::fadeWrapDuration);
+		view->repaint();
+		media->history()->owner().registerShownSpoiler(view);
+	});
+}
+
 void Media::repaint() const {
-	history()->owner().requestViewRepaint(_parent);
+	_parent->repaint();
 }
 
 Ui::Text::String Media::createCaption(not_null<HistoryItem*> item) const {
@@ -260,7 +316,7 @@ Ui::Text::String Media::createCaption(not_null<HistoryItem*> item) const {
 	};
 	result.setMarkedText(
 		st::messageTextStyle,
-		item->originalTextWithLocalEntities(),
+		item->translatedTextWithLocalEntities(),
 		Ui::ItemTextOptions(item),
 		context);
 	FillTextWithAnimatedSpoilers(_parent, result);
@@ -285,11 +341,7 @@ auto Media::getBubbleSelectionIntervals(
 }
 
 bool Media::usesBubblePattern(const PaintContext &context) const {
-	return (context.selection != FullSelection)
-		&& _parent->hasOutLayout()
-		&& context.bubblesPattern
-		&& !context.viewport.isEmpty()
-		&& !context.bubblesPattern->pixmap.size().isEmpty();
+	return _parent->usesBubblePattern(context);
 }
 
 PointState Media::pointState(QPoint point) const {

@@ -11,7 +11,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_message_reaction_id.h"
 
 namespace Data {
-class CloudImageView;
 class Reactions;
 } // namespace Data
 
@@ -20,6 +19,10 @@ struct ChatPaintContext;
 struct ReactionFlyAnimationArgs;
 class ReactionFlyAnimation;
 } // namespace Ui
+
+namespace Ui::Text {
+class CustomEmoji;
+} // namespace Ui::Text
 
 namespace HistoryView {
 using PaintContext = Ui::ChatPaintContext;
@@ -110,8 +113,8 @@ private:
 		Painter &p,
 		not_null<Ui::Text::CustomEmoji*> emoji,
 		QPoint innerTopLeft,
-		crl::time now,
-		const QColor &preview) const;
+		const PaintContext &context,
+		const QColor &textColor) const;
 
 	QSize countOptimalSize() override;
 

@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "calls/calls_instance.h"
 #include "core/application.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 
 namespace HistoryView {
 
@@ -70,8 +71,10 @@ rpl::producer<Ui::GroupCallBarContent> GroupCallBarContentByCall(
 		std::vector<UserpicInRow> userpics;
 		Ui::GroupCallBarContent current;
 		base::has_weak_ptr guard;
+		uint64 ownerId = 0;
 		bool someUserpicsNotLoaded = false;
 		bool pushScheduled = false;
+		bool noUserpics = false;
 	};
 
 	// speaking DESC, std::max(date, lastActive) DESC
@@ -139,12 +142,12 @@ rpl::producer<Ui::GroupCallBarContent> GroupCallBarContentByCall(
 		state->someUserpicsNotLoaded = false;
 		for (auto &userpic : state->userpics) {
 			userpic.peer->loadUserpic();
-			const auto pic = userpic.peer->genUserpic(
+			auto image = userpic.peer->generateUserpicImage(
 				userpic.view,
-				userpicSize);
+				userpicSize * style::DevicePixelRatio());
 			userpic.uniqueKey = userpic.peer->userpicUniqueKey(userpic.view);
 			state->current.users.push_back({
-				.userpic = pic.toImage(),
+				.userpic = std::move(image),
 				.userpicKey = userpic.uniqueKey,
 				.id = userpic.peer->id.value,
 				.speaking = userpic.speaking,
@@ -244,6 +247,8 @@ rpl::producer<Ui::GroupCallBarContent> GroupCallBarContentByCall(
 	return [=](auto consumer) {
 		auto lifetime = rpl::lifetime();
 		auto state = lifetime.make_state<State>();
+		state->noUserpics = call->listenersHidden();
+		state->ownerId = call->peer()->id.value;
 		state->current.shown = true;
 		state->current.livestream = call->peer()->isBroadcast();
 
@@ -254,7 +259,18 @@ rpl::producer<Ui::GroupCallBarContent> GroupCallBarContentByCall(
 			state->pushScheduled = true;
 			crl::on_main(&state->guard, [=] {
 				state->pushScheduled = false;
-				consumer.put_next_copy(state->current);
+				auto copy = state->current;
+				if (state->noUserpics && copy.count > 0) {
+					const auto i = ranges::find(
+						copy.users,
+						state->ownerId,
+						&Ui::GroupCallUser::id);
+					if (i != end(copy.users)) {
+						copy.users.erase(i);
+						--copy.count;
+					}
+				}
+				consumer.put_next(std::move(copy));
 			});
 		};
 

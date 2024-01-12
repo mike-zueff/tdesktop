@@ -15,7 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "lang/lang_keys.h"
 #include "history/history_item_components.h"
-#include "history/history_message.h"
+#include "history/history_item.h"
 #include "history/history.h"
 #include "history/view/history_view_message.h"
 #include "history/view/history_view_cursor_state.h"
@@ -445,11 +445,14 @@ QSize BottomInfo::countCurrentSize(int newWidth) {
 	if (newWidth >= maxWidth()) {
 		return optimalSize();
 	}
+	const auto dateHeight = (_data.flags & Data::Flag::Sponsored)
+		? 0
+		: st::msgDateFont->height;
 	const auto noReactionsWidth = maxWidth() - _reactionsMaxWidth;
 	accumulate_min(newWidth, std::max(noReactionsWidth, _reactionsMaxWidth));
 	return QSize(
 		newWidth,
-		st::msgDateFont->height + countReactionsHeight(newWidth));
+		dateHeight + countReactionsHeight(newWidth));
 }
 
 void BottomInfo::layout() {
@@ -465,8 +468,10 @@ void BottomInfo::layoutDateText() {
 		? (tr::lng_edited(tr::now) + ' ')
 		: QString();
 	const auto author = _data.author;
-	const auto prefix = !author.isEmpty() ? qsl(", ") : QString();
-	const auto date = edited + QLocale().toString(_data.date, cTimeFormat());
+	const auto prefix = !author.isEmpty() ? u", "_q : QString();
+	const auto date = edited + QLocale().toString(
+		_data.date.time(),
+		QLocale::ShortFormat);
 	const auto afterAuthor = prefix + date;
 	const auto afterAuthorWidth = st::msgDateFont->width(afterAuthor);
 	const auto authorWidth = st::msgDateFont->width(author);
@@ -476,10 +481,8 @@ void BottomInfo::layoutDateText() {
 	const auto name = _authorElided
 		? st::msgDateFont->elided(author, maxWidth - afterAuthorWidth)
 		: author;
-	const auto full = (_data.flags & Data::Flag::Recommended)
-		? tr::lng_recommended(tr::now)
-		: (_data.flags & Data::Flag::Sponsored)
-		? tr::lng_sponsored(tr::now)
+	const auto full = (_data.flags & Data::Flag::Sponsored)
+		? QString()
 		: (_data.flags & Data::Flag::Imported)
 		? (date + ' ' + tr::lng_imported(tr::now))
 		: name.isEmpty()
@@ -521,9 +524,9 @@ void BottomInfo::layoutReactionsText() {
 		_reactions.clear();
 		return;
 	}
-	auto sorted = ranges::view::all(
+	auto sorted = ranges::views::all(
 		_data.reactions
-	) | ranges::view::transform([](const MessageReaction &reaction) {
+	) | ranges::views::transform([](const MessageReaction &reaction) {
 		return not_null{ &reaction };
 	}) | ranges::to_vector;
 	ranges::sort(
@@ -566,7 +569,10 @@ QSize BottomInfo::countOptimalSize() {
 	}
 	_reactionsMaxWidth = countReactionsMaxWidth();
 	width += _reactionsMaxWidth;
-	return QSize(width, st::msgDateFont->height);
+	const auto dateHeight = (_data.flags & Data::Flag::Sponsored)
+		? 0
+		: st::msgDateFont->height;
+	return QSize(width, dateHeight);
 }
 
 BottomInfo::Reaction BottomInfo::prepareReactionWithId(
@@ -629,7 +635,7 @@ void BottomInfo::continueReactionAnimations(base::flat_map<
 
 BottomInfo::Data BottomInfoDataFromMessage(not_null<Message*> message) {
 	using Flag = BottomInfo::Data::Flag;
-	const auto item = message->message();
+	const auto item = message->data();
 
 	auto result = BottomInfo::Data();
 	result.date = message->dateTime();
@@ -642,10 +648,7 @@ BottomInfo::Data BottomInfoDataFromMessage(not_null<Message*> message) {
 	if (message->context() == Context::Replies) {
 		result.flags |= Flag::RepliesContext;
 	}
-	if (const auto sponsored = item->Get<HistoryMessageSponsored>()) {
-		if (sponsored->recommended) {
-			result.flags |= Flag::Recommended;
-		}
+	if (item->isSponsored()) {
 		result.flags |= Flag::Sponsored;
 	}
 	if (item->isPinned() && message->context() != Context::Pinned) {
@@ -653,7 +656,7 @@ BottomInfo::Data BottomInfoDataFromMessage(not_null<Message*> message) {
 	}
 	if (const auto msgsigned = item->Get<HistoryMessageSigned>()) {
 		 if (!msgsigned->isAnonymousRank) {
-			result.author = msgsigned->author;
+			result.author = msgsigned->postAuthor;
 		 }
 	}
 	if (message->displayedEditDate()) {

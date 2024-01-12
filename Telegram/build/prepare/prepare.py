@@ -12,8 +12,15 @@ def error(text):
     print('[ERROR] ' + text)
     finish(1)
 
+def nativeToolsError():
+    error('Make sure to run from Native Tools Command Prompt.')
+
 win = (sys.platform == 'win32')
 mac = (sys.platform == 'darwin')
+
+if win and not 'Platform' in os.environ:
+    nativeToolsError()
+
 win32 = win and (os.environ['Platform'] == 'x86')
 win64 = win and (os.environ['Platform'] == 'x64')
 
@@ -21,7 +28,7 @@ if win and not 'COMSPEC' in os.environ:
     error('COMSPEC environment variable is not set.')
 
 if win and not win32 and not win64:
-    error('Make sure to run from Native Tools Command Prompt.')
+    nativeToolsError()
 
 os.chdir(scriptPath + '/../../../..')
 
@@ -75,19 +82,33 @@ for singlePrefix in pathPrefixes:
     pathPrefix = pathPrefix + os.path.join(rootDir, singlePrefix) + pathSep
 
 environment = {
-    'MAKE_THREADS_CNT': '-j8',
-    'MACOSX_DEPLOYMENT_TARGET': '10.12',
-    'UNGUARDED': '-Werror=unguarded-availability-new',
-    'MIN_VER': '-mmacosx-version-min=10.12',
     'USED_PREFIX': usedPrefix,
     'ROOT_DIR': rootDir,
     'LIBS_DIR': libsDir,
     'THIRDPARTY_DIR': thirdPartyDir,
-    'SPECIAL_TARGET': 'win' if win32 else 'win64' if win64 else 'mac',
-    'X8664': 'x86' if win32 else 'x64',
-    'WIN32X64': 'Win32' if win32 else 'x64',
     'PATH_PREFIX': pathPrefix,
 }
+if (win32):
+    environment.update({
+        'SPECIAL_TARGET': 'win',
+        'X8664': 'x86',
+        'WIN32X64': 'Win32',
+    })
+elif (win64):
+    environment.update({
+        'SPECIAL_TARGET': 'win64',
+        'X8664': 'x64',
+        'WIN32X64': 'x64',
+    })
+elif (mac):
+    environment.update({
+        'SPECIAL_TARGET': 'mac',
+        'MAKE_THREADS_CNT': '-j8',
+        'MACOSX_DEPLOYMENT_TARGET': '10.13',
+        'UNGUARDED': '-Werror=unguarded-availability-new',
+        'MIN_VER': '-mmacosx-version-min=10.13',
+    })
+
 ignoreInCacheForThirdParty = [
     'USED_PREFIX',
     'LIBS_DIR',
@@ -244,7 +265,7 @@ def winFailOnEach(command):
     startingCommand = True
     for command in commands:
         command = re.sub(r'\$([A-Za-z0-9_]+)', r'%\1%', command)
-        if re.search(r'\$', command):
+        if re.search(r'\$[^<]', command):
             error('Bad command: ' + command)
         appendCall = startingCommand and not re.match(r'(if|for) ', command)
         called = 'call ' + command if appendCall else command
@@ -338,7 +359,7 @@ def runStages():
             continue
         index = index + 1
         version = ('#' + str(stage['version'])) if (stage['version'] != '0') else ''
-        prefix = '[' + os.path.join(str(index), str(count)) + '](' + os.path.join(stage['location'], stage['name']) + version + ')'
+        prefix = '[' + str(index) + '/' + str(count) + '](' + stage['location'] + '/' + stage['name'] + version + ')'
         print(prefix + ': ', end = '', flush=True)
         stage['key'] = computeCacheKey(stage)
         commands = removeDir(stage['name']) + '\n' + stage['commands']
@@ -397,7 +418,7 @@ if customRunCommand:
 stage('patches', """
     git clone https://github.com/desktop-app/patches.git
     cd patches
-    git checkout b14854c6f6
+    git checkout 58c8cd0c0f
 """)
 
 stage('msys64', """
@@ -408,25 +429,34 @@ win:
     SET CHERE_INVOKING=enabled_from_arguments
     SET MSYS2_PATH_TYPE=inherit
 
-    powershell -Command "Invoke-WebRequest -OutFile ./msys64.exe https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20220603.sfx.exe"
+    powershell -Command "iwr -OutFile ./msys64.exe https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20221028.sfx.exe"
     msys64.exe
     del msys64.exe
 
     bash -c "pacman-key --init; pacman-key --populate; pacman -Syu --noconfirm"
-    pacman -S --noconfirm mingw-w64-x86_64-perl mingw-w64-x86_64-nasm mingw-w64-x86_64-yasm mingw-w64-x86_64-ninja
+    pacman -Syu --noconfirm mingw-w64-x86_64-perl mingw-w64-x86_64-nasm mingw-w64-x86_64-yasm mingw-w64-x86_64-ninja
 
     SET PATH=%PATH_BACKUP_%
+""", 'ThirdParty')
+
+stage('python', """
+version: """ + (subprocess.run(['python', '-V'], capture_output=True, text=True, env=modifiedEnv).stdout.strip().split()[-1] if win else '0') + """
+win:
+    python -m venv python
+    python\\Scripts\\activate.bat
+    pip install pywin32 six meson
+    deactivate
 """, 'ThirdParty')
 
 stage('NuGet', """
 win:
     mkdir NuGet
-    powershell -Command "Invoke-WebRequest -OutFile ./NuGet/nuget.exe https://dist.nuget.org/win-x86-commandline/latest/nuget.exe"
+    powershell -Command "iwr -OutFile ./NuGet/nuget.exe https://dist.nuget.org/win-x86-commandline/latest/nuget.exe"
 """, 'ThirdParty')
 
 stage('jom', """
 win:
-    powershell -Command "Invoke-WebRequest -OutFile ./jom.zip https://master.qt.io/official_releases/jom/jom_1_1_3.zip"
+    powershell -Command "iwr -OutFile ./jom.zip https://master.qt.io/official_releases/jom/jom_1_1_3.zip"
     powershell -Command "Expand-Archive ./jom.zip"
     del jom.zip
 """, 'ThirdParty')
@@ -444,12 +474,10 @@ win:
     git clone https://chromium.googlesource.com/external/gyp
     cd gyp
     git checkout 9d09418933
-depends:patches/gyp.diff
-    git apply $LIBS_DIR/patches/gyp.diff
 mac:
-    python3 -m pip install ^
-        --ignore-installed ^
-        --target=$THIRDPARTY_DIR/gyp ^
+    python3 -m pip install \\
+        --ignore-installed \\
+        --target=$THIRDPARTY_DIR/gyp \\
         git+https://chromium.googlesource.com/external/gyp@master
 """, 'ThirdParty')
 
@@ -473,7 +501,7 @@ release:
 
 stage('xz', """
 !win:
-    git clone -b v5.2.5 https://git.tukaani.org/xz.git
+    git clone -b v5.4.5 https://git.tukaani.org/xz.git
     cd xz
     sed -i '' '\\@check_symbol_exists(futimens "sys/types.h;sys/stat.h" HAVE_FUTIMENS)@d' CMakeLists.txt
     CFLAGS="$UNGUARDED" CPPFLAGS="$UNGUARDED" cmake -B build . \\
@@ -485,11 +513,12 @@ stage('xz', """
 """)
 
 stage('zlib', """
-    git clone -b v1.2.11 https://github.com/madler/zlib.git
+    git clone -b v1.3 https://github.com/madler/zlib.git
     cd zlib
 win:
     cmake . ^
         -A %WIN32X64% ^
+        -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>" ^
         -DCMAKE_C_FLAGS_DEBUG="/MTd /Zi /Ob0 /Od /RTC1" ^
         -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" ^
         -DCMAKE_C_FLAGS="/DZLIB_WINAPI"
@@ -506,7 +535,7 @@ mac:
 """)
 
 stage('mozjpeg', """
-    git clone -b v4.0.3 https://github.com/mozilla/mozjpeg.git
+    git clone -b v4.1.5 https://github.com/mozilla/mozjpeg.git
     cd mozjpeg
 win:
     cmake . ^
@@ -593,6 +622,7 @@ win:
     cmake -B out . ^
         -A %WIN32X64% ^
         -DCMAKE_INSTALL_PREFIX=%LIBS_DIR%/local ^
+        -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>" ^
         -DCMAKE_C_FLAGS_DEBUG="/MTd /Zi /Ob0 /Od /RTC1" ^
         -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG"
     cmake --build out --config Debug
@@ -610,6 +640,7 @@ mac:
 stage('rnnoise', """
     git clone https://github.com/desktop-app/rnnoise.git
     cd rnnoise
+    git checkout fe37e57d09
     mkdir out
     cd out
 win:
@@ -636,9 +667,9 @@ release:
 
 stage('libiconv', """
 mac:
-    VERSION=1.16
+    VERSION=1.17
     rm -f libiconv.tar.gz
-    wget -O libiconv.tar.gz https://ftp.gnu.org/pub/gnu/libiconv/libiconv-$VERSION.tar.gz
+    wget -O libiconv.tar.gz ftp://ftp.gnu.org/gnu/libiconv/libiconv-$VERSION.tar.gz
     rm -rf libiconv-$VERSION
     tar -xvzf libiconv.tar.gz
     rm libiconv.tar.gz
@@ -657,11 +688,162 @@ mac:
     make install
 """)
 
+stage('dav1d', """
+win:
+    git clone -b 1.2.1 --depth 1 https://code.videolan.org/videolan/dav1d.git
+    cd dav1d
+
+    if "%X8664%" equ "x64" (
+        SET "TARGET=x86_64"
+    ) else (
+        SET "TARGET=x86"
+    )
+    set FILE=cross-file.txt
+    echo [binaries] > %FILE%
+    echo c = 'cl' >> %FILE%
+    echo cpp = 'cl' >> %FILE%
+    echo ar = 'lib' >> %FILE%
+    echo windres = 'rc' >> %FILE%
+    echo [host_machine] >> %FILE%
+    echo system = 'windows' >> %FILE%
+    echo cpu_family = '%TARGET%' >> %FILE%
+    echo cpu = '%TARGET%' >> %FILE%
+    echo endian = 'little'>> %FILE%
+
+depends:python/Scripts/activate.bat
+    %THIRDPARTY_DIR%\\python\\Scripts\\activate.bat
+    meson setup --cross-file %FILE% --prefix %LIBS_DIR%/local --default-library=static --buildtype=debug -Denable_tools=false -Denable_tests=false -Db_vscrt=mtd builddir-debug
+    meson compile -C builddir-debug
+    meson install -C builddir-debug
+release:
+    meson setup --cross-file %FILE% --prefix %LIBS_DIR%/local --default-library=static --buildtype=release -Denable_tools=false -Denable_tests=false -Db_vscrt=mt builddir-release
+    meson compile -C builddir-release
+    meson install -C builddir-release
+win:
+    copy %LIBS_DIR%\\local\\lib\\libdav1d.a %LIBS_DIR%\\local\\lib\\dav1d.lib
+    deactivate
+""")
+
+stage('libavif', """
+win:
+    git clone -b v0.11.1 --depth 1 https://github.com/AOMediaCodec/libavif.git
+    cd libavif
+    cmake . ^
+        -A %WIN32X64% ^
+        -DCMAKE_INSTALL_PREFIX=%LIBS_DIR%/local ^
+        -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>" ^
+        -DCMAKE_C_FLAGS_DEBUG="/MTd /Zi /Ob0 /Od /RTC1" ^
+        -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" ^
+        -DBUILD_SHARED_LIBS=OFF ^
+        -DAVIF_ENABLE_WERROR=OFF ^
+        -DAVIF_CODEC_DAV1D=ON
+    cmake --build . --config Debug
+    cmake --install . --config Debug
+release:
+    cmake --build . --config Release
+    cmake --install . --config Release
+""")
+
+stage('libde265', """
+win:
+    git clone --depth 1 -b v1.0.12 https://github.com/strukturag/libde265.git
+    cd libde265
+    cmake . ^
+        -A %WIN32X64% ^
+        -DCMAKE_INSTALL_PREFIX=%LIBS_DIR%/local ^
+        -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>" ^
+        -DCMAKE_C_FLAGS="/DLIBDE265_STATIC_BUILD" ^
+        -DCMAKE_CXX_FLAGS="/DLIBDE265_STATIC_BUILD" ^
+        -DCMAKE_C_FLAGS_DEBUG="/MTd /Zi /Ob0 /Od /RTC1" ^
+        -DCMAKE_CXX_FLAGS_DEBUG="/MTd /Zi /Ob0 /Od /RTC1" ^
+        -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" ^
+        -DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" ^
+        -DENABLE_SDL=OFF ^
+        -DBUILD_SHARED_LIBS=OFF ^
+        -DENABLE_DECODER=OFF ^
+        -DENABLE_ENCODER=OFF
+    cmake --build . --config Debug
+    cmake --install . --config Debug
+release:
+    cmake --build . --config Release
+    cmake --install . --config Release
+""")
+
+stage('libheif', """
+win:
+    git clone --depth 1 -b v1.16.2 https://github.com/strukturag/libheif.git
+    cd libheif
+    %THIRDPARTY_DIR%\\msys64\\usr\\bin\\sed.exe -i 's/LIBHEIF_EXPORTS/LIBDE265_STATIC_BUILD/g' libheif/CMakeLists.txt
+    %THIRDPARTY_DIR%\\msys64\\usr\\bin\\sed.exe -i 's/HAVE_VISIBILITY/LIBHEIF_STATIC_BUILD/g' libheif/CMakeLists.txt
+    cmake . ^
+        -A %WIN32X64% ^
+        -DCMAKE_INSTALL_PREFIX=%LIBS_DIR%/local ^
+        -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>" ^
+        -DCMAKE_C_FLAGS_DEBUG="/MTd /Zi /Ob0 /Od /RTC1" ^
+        -DCMAKE_CXX_FLAGS_DEBUG="/MTd /Zi /Ob0 /Od /RTC1" ^
+        -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" ^
+        -DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" ^
+        -DBUILD_SHARED_LIBS=OFF ^
+        -DENABLE_PLUGIN_LOADING=OFF ^
+        -DWITH_LIBDE265=ON ^
+        -DWITH_SvtEnc=OFF ^
+        -DWITH_SvtEnc_PLUGIN=OFF ^
+        -DWITH_RAV1E=OFF ^
+        -DWITH_RAV1E_PLUGIN=OFF ^
+        -DWITH_EXAMPLES=OFF
+    cmake --build . --config Debug
+    cmake --install . --config Debug
+release:
+    cmake --build . --config Release
+    cmake --install . --config Release
+""")
+
+stage('libjxl', """
+win:
+    git clone -b v0.8.2 --depth 1 --recursive --shallow-submodules https://github.com/libjxl/libjxl.git
+    cd libjxl
+    cmake . ^
+        -A %WIN32X64% ^
+        -DCMAKE_INSTALL_PREFIX=%LIBS_DIR%/local ^
+        -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>" ^
+        -DCMAKE_C_FLAGS="/DJXL_STATIC_DEFINE /DJXL_THREADS_STATIC_DEFINE" ^
+        -DCMAKE_CXX_FLAGS="/DJXL_STATIC_DEFINE /DJXL_THREADS_STATIC_DEFINE" ^
+        -DCMAKE_C_FLAGS_DEBUG="/MTd /Zi /Ob0 /Od /RTC1" ^
+        -DCMAKE_CXX_FLAGS_DEBUG="/MTd /Zi /Ob0 /Od /RTC1" ^
+        -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" ^
+        -DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" ^
+        -DBUILD_SHARED_LIBS=OFF ^
+        -DBUILD_TESTING=OFF ^
+        -DJPEGXL_ENABLE_FUZZERS=OFF ^
+        -DJPEGXL_ENABLE_DEVTOOLS=OFF ^
+        -DJPEGXL_ENABLE_TOOLS=OFF ^
+        -DJPEGXL_ENABLE_DOXYGEN=OFF ^
+        -DJPEGXL_ENABLE_MANPAGES=OFF ^
+        -DJPEGXL_ENABLE_EXAMPLES=OFF ^
+        -DJPEGXL_ENABLE_JNI=OFF ^
+        -DJPEGXL_ENABLE_JPEGLI_LIBJPEG=OFF ^
+        -DJPEGXL_ENABLE_SJPEG=OFF ^
+        -DJPEGXL_ENABLE_OPENEXR=OFF ^
+        -DJPEGXL_ENABLE_SKCMS=ON ^
+        -DJPEGXL_BUNDLE_SKCMS=ON ^
+        -DJPEGXL_ENABLE_VIEWERS=OFF ^
+        -DJPEGXL_ENABLE_TCMALLOC=OFF ^
+        -DJPEGXL_ENABLE_PLUGINS=OFF ^
+        -DJPEGXL_ENABLE_COVERAGE=OFF ^
+        -DJPEGXL_ENABLE_PROFILER=OFF ^
+        -DJPEGXL_WARNINGS_AS_ERRORS=OFF
+    cmake --build . --config Debug
+    cmake --install . --config Debug
+release:
+    cmake --build . --config Release
+    cmake --install . --config Release
+""")
+
 stage('libvpx', """
     git clone https://github.com/webmproject/libvpx.git
 depends:patches/libvpx/*.patch
     cd libvpx
-    git checkout v1.11.0
+    git checkout 51057f4ba8
 win:
     for /r %%i in (..\\patches\\libvpx\\*) do git apply %%i
 
@@ -693,7 +875,8 @@ depends:yasm/yasm
     --disable-docs \
     --enable-vp8 \
     --enable-vp9 \
-    --enable-webm-io
+    --enable-webm-io \
+    --size-limit=4096x4096
 
     make $MAKE_THREADS_CNT
 
@@ -722,6 +905,46 @@ depends:yasm/yasm
     make install
 """)
 
+stage('libwebp', """
+    git clone -b v1.3.2 https://github.com/webmproject/libwebp.git
+    cd libwebp
+win:
+    nmake /f Makefile.vc CFG=debug-static OBJDIR=out RTLIBCFG=static all
+    nmake /f Makefile.vc CFG=release-static OBJDIR=out RTLIBCFG=static all
+    copy out\\release-static\\$X8664\\lib\\libwebp.lib out\\release-static\\$X8664\\lib\\webp.lib
+    copy out\\release-static\\$X8664\\lib\\libwebpdemux.lib out\\release-static\\$X8664\\lib\\webpdemux.lib
+    copy out\\release-static\\$X8664\\lib\\libwebpmux.lib out\\release-static\\$X8664\\lib\\webpmux.lib
+mac:
+    buildOneArch() {
+        arch=$1
+        folder=$2
+
+        CFLAGS=$UNGUARDED cmake -B $folder -G Ninja . \\
+            -D CMAKE_BUILD_TYPE=Release \\
+            -D CMAKE_INSTALL_PREFIX=$USED_PREFIX \\
+            -D CMAKE_OSX_DEPLOYMENT_TARGET:STRING=$MACOSX_DEPLOYMENT_TARGET \\
+            -D CMAKE_OSX_ARCHITECTURES=$arch \\
+            -D WEBP_BUILD_ANIM_UTILS=OFF \\
+            -D WEBP_BUILD_CWEBP=OFF \\
+            -D WEBP_BUILD_DWEBP=OFF \\
+            -D WEBP_BUILD_GIF2WEBP=OFF \\
+            -D WEBP_BUILD_IMG2WEBP=OFF \\
+            -D WEBP_BUILD_VWEBP=OFF \\
+            -D WEBP_BUILD_WEBPMUX=OFF \\
+            -D WEBP_BUILD_WEBPINFO=OFF \\
+            -D WEBP_BUILD_EXTRAS=OFF
+        cmake --build $folder $MAKE_THREADS_CNT
+    }
+    buildOneArch arm64 build.arm64
+    buildOneArch x86_64 build
+
+    lipo -create build.arm64/libsharpyuv.a build/libsharpyuv.a -output build/libsharpyuv.a
+    lipo -create build.arm64/libwebp.a build/libwebp.a -output build/libwebp.a
+    lipo -create build.arm64/libwebpdemux.a build/libwebpdemux.a -output build/libwebpdemux.a
+    lipo -create build.arm64/libwebpmux.a build/libwebpmux.a -output build/libwebpmux.a
+    cmake --install build
+""")
+
 stage('nv-codec-headers', """
 win:
     git clone https://github.com/FFmpeg/nv-codec-headers.git
@@ -729,10 +952,14 @@ win:
     git checkout n11.1.5.1
 """)
 
+stage('regex', """
+    git clone -b boost-1.83.0 https://github.com/boostorg/regex.git
+""")
+
 stage('ffmpeg', """
     git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg
     cd ffmpeg
-    git checkout cc33e73618
+    git checkout 7268323193
 win:
     SET PATH_BACKUP_=%PATH%
     SET PATH=%ROOT_DIR%\\ThirdParty\\msys64\\usr\\bin;%PATH%
@@ -747,121 +974,129 @@ depends:patches/build_ffmpeg_win.sh
 mac:
     export PKG_CONFIG_PATH=$USED_PREFIX/lib/pkgconfig
 depends:yasm/yasm
-    ./configure --prefix=$USED_PREFIX \
-    --enable-cross-compile \
-    --target-os=darwin \
-    --arch="arm64" \
-    --extra-cflags="$MIN_VER -arch arm64 $UNGUARDED -DCONFIG_SAFE_BITSTREAM_READER=1 -I$USED_PREFIX/include" \
-    --extra-cxxflags="$MIN_VER -arch arm64 $UNGUARDED -DCONFIG_SAFE_BITSTREAM_READER=1 -I$USED_PREFIX/include" \
-    --extra-ldflags="$MIN_VER -arch arm64 $USED_PREFIX/lib/libopus.a" \
-    --disable-programs \
-    --disable-doc \
-    --disable-network \
-    --disable-everything \
-    --enable-protocol=file \
-    --enable-libopus \
-    --enable-libvpx \
-    --enable-hwaccel=h264_videotoolbox \
-    --enable-hwaccel=hevc_videotoolbox \
-    --enable-hwaccel=mpeg1_videotoolbox \
-    --enable-hwaccel=mpeg2_videotoolbox \
-    --enable-hwaccel=mpeg4_videotoolbox \
-    --enable-decoder=aac \
-    --enable-decoder=aac_at \
-    --enable-decoder=aac_fixed \
-    --enable-decoder=aac_latm \
-    --enable-decoder=aasc \
-    --enable-decoder=ac3 \
-    --enable-decoder=alac \
-    --enable-decoder=alac_at \
-    --enable-decoder=av1 \
-    --enable-decoder=eac3 \
-    --enable-decoder=flac \
-    --enable-decoder=gif \
-    --enable-decoder=h264 \
-    --enable-decoder=hevc \
-    --enable-decoder=libvpx_vp8 \
-    --enable-decoder=libvpx_vp9 \
-    --enable-decoder=mp1 \
-    --enable-decoder=mp1float \
-    --enable-decoder=mp2 \
-    --enable-decoder=mp2float \
-    --enable-decoder=mp3 \
-    --enable-decoder=mp3adu \
-    --enable-decoder=mp3adufloat \
-    --enable-decoder=mp3float \
-    --enable-decoder=mp3on4 \
-    --enable-decoder=mp3on4float \
-    --enable-decoder=mpeg4 \
-    --enable-decoder=msmpeg4v2 \
-    --enable-decoder=msmpeg4v3 \
-    --enable-decoder=opus \
-    --enable-decoder=pcm_alaw \
-    --enable-decoder=pcm_alaw_at \
-    --enable-decoder=pcm_f32be \
-    --enable-decoder=pcm_f32le \
-    --enable-decoder=pcm_f64be \
-    --enable-decoder=pcm_f64le \
-    --enable-decoder=pcm_lxf \
-    --enable-decoder=pcm_mulaw \
-    --enable-decoder=pcm_mulaw_at \
-    --enable-decoder=pcm_s16be \
-    --enable-decoder=pcm_s16be_planar \
-    --enable-decoder=pcm_s16le \
-    --enable-decoder=pcm_s16le_planar \
-    --enable-decoder=pcm_s24be \
-    --enable-decoder=pcm_s24daud \
-    --enable-decoder=pcm_s24le \
-    --enable-decoder=pcm_s24le_planar \
-    --enable-decoder=pcm_s32be \
-    --enable-decoder=pcm_s32le \
-    --enable-decoder=pcm_s32le_planar \
-    --enable-decoder=pcm_s64be \
-    --enable-decoder=pcm_s64le \
-    --enable-decoder=pcm_s8 \
-    --enable-decoder=pcm_s8_planar \
-    --enable-decoder=pcm_u16be \
-    --enable-decoder=pcm_u16le \
-    --enable-decoder=pcm_u24be \
-    --enable-decoder=pcm_u24le \
-    --enable-decoder=pcm_u32be \
-    --enable-decoder=pcm_u32le \
-    --enable-decoder=pcm_u8 \
-    --enable-decoder=vorbis \
-    --enable-decoder=vp8 \
-    --enable-decoder=wavpack \
-    --enable-decoder=wmalossless \
-    --enable-decoder=wmapro \
-    --enable-decoder=wmav1 \
-    --enable-decoder=wmav2 \
-    --enable-decoder=wmavoice \
-    --enable-encoder=libopus \
-    --enable-parser=aac \
-    --enable-parser=aac_latm \
-    --enable-parser=flac \
-    --enable-parser=h264 \
-    --enable-parser=hevc \
-    --enable-parser=mpeg4video \
-    --enable-parser=mpegaudio \
-    --enable-parser=opus \
-    --enable-parser=vorbis \
-    --enable-demuxer=aac \
-    --enable-demuxer=flac \
-    --enable-demuxer=gif \
-    --enable-demuxer=h264 \
-    --enable-demuxer=hevc \
-    --enable-demuxer=matroska \
-    --enable-demuxer=m4v \
-    --enable-demuxer=mov \
-    --enable-demuxer=mp3 \
-    --enable-demuxer=ogg \
-    --enable-demuxer=wav \
-    --enable-muxer=ogg \
-    --enable-muxer=opus
 
+    configureFFmpeg() {
+        arch=$1
+
+        ./configure --prefix=$USED_PREFIX \
+        --enable-cross-compile \
+        --target-os=darwin \
+        --arch="$arch" \
+        --extra-cflags="$MIN_VER -arch $arch $UNGUARDED -DCONFIG_SAFE_BITSTREAM_READER=1 -I$USED_PREFIX/include" \
+        --extra-cxxflags="$MIN_VER -arch $arch $UNGUARDED -DCONFIG_SAFE_BITSTREAM_READER=1 -I$USED_PREFIX/include" \
+        --extra-ldflags="$MIN_VER -arch $arch $USED_PREFIX/lib/libopus.a" \
+        --disable-programs \
+        --disable-doc \
+        --disable-network \
+        --disable-everything \
+        --enable-protocol=file \
+        --enable-libopus \
+        --enable-libvpx \
+        --enable-hwaccel=h264_videotoolbox \
+        --enable-hwaccel=hevc_videotoolbox \
+        --enable-hwaccel=mpeg1_videotoolbox \
+        --enable-hwaccel=mpeg2_videotoolbox \
+        --enable-hwaccel=mpeg4_videotoolbox \
+        --enable-decoder=aac \
+        --enable-decoder=aac_at \
+        --enable-decoder=aac_fixed \
+        --enable-decoder=aac_latm \
+        --enable-decoder=aasc \
+        --enable-decoder=ac3 \
+        --enable-decoder=alac \
+        --enable-decoder=alac_at \
+        --enable-decoder=av1 \
+        --enable-decoder=eac3 \
+        --enable-decoder=flac \
+        --enable-decoder=gif \
+        --enable-decoder=h264 \
+        --enable-decoder=hevc \
+        --enable-decoder=libvpx_vp8 \
+        --enable-decoder=libvpx_vp9 \
+        --enable-decoder=mp1 \
+        --enable-decoder=mp1float \
+        --enable-decoder=mp2 \
+        --enable-decoder=mp2float \
+        --enable-decoder=mp3 \
+        --enable-decoder=mp3adu \
+        --enable-decoder=mp3adufloat \
+        --enable-decoder=mp3float \
+        --enable-decoder=mp3on4 \
+        --enable-decoder=mp3on4float \
+        --enable-decoder=mpeg4 \
+        --enable-decoder=msmpeg4v2 \
+        --enable-decoder=msmpeg4v3 \
+        --enable-decoder=opus \
+        --enable-decoder=pcm_alaw \
+        --enable-decoder=pcm_alaw_at \
+        --enable-decoder=pcm_f32be \
+        --enable-decoder=pcm_f32le \
+        --enable-decoder=pcm_f64be \
+        --enable-decoder=pcm_f64le \
+        --enable-decoder=pcm_lxf \
+        --enable-decoder=pcm_mulaw \
+        --enable-decoder=pcm_mulaw_at \
+        --enable-decoder=pcm_s16be \
+        --enable-decoder=pcm_s16be_planar \
+        --enable-decoder=pcm_s16le \
+        --enable-decoder=pcm_s16le_planar \
+        --enable-decoder=pcm_s24be \
+        --enable-decoder=pcm_s24daud \
+        --enable-decoder=pcm_s24le \
+        --enable-decoder=pcm_s24le_planar \
+        --enable-decoder=pcm_s32be \
+        --enable-decoder=pcm_s32le \
+        --enable-decoder=pcm_s32le_planar \
+        --enable-decoder=pcm_s64be \
+        --enable-decoder=pcm_s64le \
+        --enable-decoder=pcm_s8 \
+        --enable-decoder=pcm_s8_planar \
+        --enable-decoder=pcm_u16be \
+        --enable-decoder=pcm_u16le \
+        --enable-decoder=pcm_u24be \
+        --enable-decoder=pcm_u24le \
+        --enable-decoder=pcm_u32be \
+        --enable-decoder=pcm_u32le \
+        --enable-decoder=pcm_u8 \
+        --enable-decoder=vorbis \
+        --enable-decoder=vp8 \
+        --enable-decoder=wavpack \
+        --enable-decoder=wmalossless \
+        --enable-decoder=wmapro \
+        --enable-decoder=wmav1 \
+        --enable-decoder=wmav2 \
+        --enable-decoder=wmavoice \
+        --enable-encoder=libopus \
+        --enable-filter=atempo \
+        --enable-parser=aac \
+        --enable-parser=aac_latm \
+        --enable-parser=flac \
+        --enable-parser=h264 \
+        --enable-parser=hevc \
+        --enable-parser=mpeg4video \
+        --enable-parser=mpegaudio \
+        --enable-parser=opus \
+        --enable-parser=vorbis \
+        --enable-demuxer=aac \
+        --enable-demuxer=flac \
+        --enable-demuxer=gif \
+        --enable-demuxer=h264 \
+        --enable-demuxer=hevc \
+        --enable-demuxer=matroska \
+        --enable-demuxer=m4v \
+        --enable-demuxer=mov \
+        --enable-demuxer=mp3 \
+        --enable-demuxer=ogg \
+        --enable-demuxer=wav \
+        --enable-muxer=ogg \
+        --enable-muxer=opus
+    }
+
+    configureFFmpeg arm64
     make $MAKE_THREADS_CNT
 
     mkdir out.arm64
+    mv libavfilter/libavfilter.a out.arm64
     mv libavformat/libavformat.a out.arm64
     mv libavcodec/libavcodec.a out.arm64
     mv libswresample/libswresample.a out.arm64
@@ -870,123 +1105,18 @@ depends:yasm/yasm
 
     make clean
 
-    ./configure --prefix=$USED_PREFIX \
-    --enable-cross-compile \
-    --target-os=darwin \
-    --arch="x86_64" \
-    --extra-cflags="$MIN_VER -arch x86_64 $UNGUARDED -DCONFIG_SAFE_BITSTREAM_READER=1 -I$USED_PREFIX/include" \
-    --extra-cxxflags="$MIN_VER -arch x86_64 $UNGUARDED -DCONFIG_SAFE_BITSTREAM_READER=1 -I$USED_PREFIX/include" \
-    --extra-ldflags="$MIN_VER -arch x86_64 $USED_PREFIX/lib/libopus.a" \
-    --disable-programs \
-    --disable-doc \
-    --disable-network \
-    --disable-everything \
-    --enable-protocol=file \
-    --enable-libopus \
-    --enable-libvpx \
-    --enable-hwaccel=h264_videotoolbox \
-    --enable-hwaccel=hevc_videotoolbox \
-    --enable-hwaccel=mpeg1_videotoolbox \
-    --enable-hwaccel=mpeg2_videotoolbox \
-    --enable-hwaccel=mpeg4_videotoolbox \
-    --enable-decoder=aac \
-    --enable-decoder=aac_at \
-    --enable-decoder=aac_fixed \
-    --enable-decoder=aac_latm \
-    --enable-decoder=aasc \
-    --enable-decoder=alac \
-    --enable-decoder=alac_at \
-    --enable-decoder=flac \
-    --enable-decoder=gif \
-    --enable-decoder=h264 \
-    --enable-decoder=hevc \
-    --enable-decoder=libvpx_vp8 \
-    --enable-decoder=libvpx_vp9 \
-    --enable-decoder=mp1 \
-    --enable-decoder=mp1float \
-    --enable-decoder=mp2 \
-    --enable-decoder=mp2float \
-    --enable-decoder=mp3 \
-    --enable-decoder=mp3adu \
-    --enable-decoder=mp3adufloat \
-    --enable-decoder=mp3float \
-    --enable-decoder=mp3on4 \
-    --enable-decoder=mp3on4float \
-    --enable-decoder=mpeg4 \
-    --enable-decoder=msmpeg4v2 \
-    --enable-decoder=msmpeg4v3 \
-    --enable-decoder=opus \
-    --enable-decoder=pcm_alaw \
-    --enable-decoder=pcm_alaw_at \
-    --enable-decoder=pcm_f32be \
-    --enable-decoder=pcm_f32le \
-    --enable-decoder=pcm_f64be \
-    --enable-decoder=pcm_f64le \
-    --enable-decoder=pcm_lxf \
-    --enable-decoder=pcm_mulaw \
-    --enable-decoder=pcm_mulaw_at \
-    --enable-decoder=pcm_s16be \
-    --enable-decoder=pcm_s16be_planar \
-    --enable-decoder=pcm_s16le \
-    --enable-decoder=pcm_s16le_planar \
-    --enable-decoder=pcm_s24be \
-    --enable-decoder=pcm_s24daud \
-    --enable-decoder=pcm_s24le \
-    --enable-decoder=pcm_s24le_planar \
-    --enable-decoder=pcm_s32be \
-    --enable-decoder=pcm_s32le \
-    --enable-decoder=pcm_s32le_planar \
-    --enable-decoder=pcm_s64be \
-    --enable-decoder=pcm_s64le \
-    --enable-decoder=pcm_s8 \
-    --enable-decoder=pcm_s8_planar \
-    --enable-decoder=pcm_u16be \
-    --enable-decoder=pcm_u16le \
-    --enable-decoder=pcm_u24be \
-    --enable-decoder=pcm_u24le \
-    --enable-decoder=pcm_u32be \
-    --enable-decoder=pcm_u32le \
-    --enable-decoder=pcm_u8 \
-    --enable-decoder=vorbis \
-    --enable-decoder=wavpack \
-    --enable-decoder=wmalossless \
-    --enable-decoder=wmapro \
-    --enable-decoder=wmav1 \
-    --enable-decoder=wmav2 \
-    --enable-decoder=wmavoice \
-    --enable-encoder=libopus \
-    --enable-parser=aac \
-    --enable-parser=aac_latm \
-    --enable-parser=flac \
-    --enable-parser=h264 \
-    --enable-parser=hevc \
-    --enable-demuxer=matroska \
-    --enable-parser=mpeg4video \
-    --enable-parser=mpegaudio \
-    --enable-parser=opus \
-    --enable-parser=vorbis \
-    --enable-demuxer=aac \
-    --enable-demuxer=flac \
-    --enable-demuxer=gif \
-    --enable-demuxer=h264 \
-    --enable-demuxer=hevc \
-    --enable-demuxer=m4v \
-    --enable-demuxer=mov \
-    --enable-demuxer=mp3 \
-    --enable-demuxer=ogg \
-    --enable-demuxer=wav \
-    --enable-muxer=ogg \
-    --enable-muxer=opus
-
+    configureFFmpeg x86_64
     make $MAKE_THREADS_CNT
 
     mkdir out.x86_64
+    mv libavfilter/libavfilter.a out.x86_64
     mv libavformat/libavformat.a out.x86_64
     mv libavcodec/libavcodec.a out.x86_64
     mv libswresample/libswresample.a out.x86_64
     mv libswscale/libswscale.a out.x86_64
     mv libavutil/libavutil.a out.x86_64
 
+    lipo -create out.arm64/libavfilter.a out.x86_64/libavfilter.a -output libavfilter/libavfilter.a
     lipo -create out.arm64/libavformat.a out.x86_64/libavformat.a -output libavformat/libavformat.a
     lipo -create out.arm64/libavcodec.a out.x86_64/libavcodec.a -output libavcodec/libavcodec.a
     lipo -create out.arm64/libswresample.a out.x86_64/libswresample.a -output libswresample/libswresample.a
@@ -1011,8 +1141,9 @@ release:
 mac:
     git clone https://github.com/kcat/openal-soft.git
     cd openal-soft
-    git checkout 1.22.2
+    git checkout 1.23.1
     CFLAGS=$UNGUARDED CPPFLAGS=$UNGUARDED cmake -B build . \\
+        -D CMAKE_BUILD_TYPE=RelWithDebInfo \\
         -D CMAKE_INSTALL_PREFIX:PATH=$USED_PREFIX \\
         -D ALSOFT_EXAMPLES=OFF \\
         -D ALSOFT_UTILS=OFF \\
@@ -1036,8 +1167,7 @@ depends:patches/breakpad.diff
     cd src/third_party/lss
     git checkout e1e7b0ad8e
     cd ../../build
-    PYTHONPATH=$THIRDPARTY_DIR/gyp
-    python3 gyp_breakpad
+    PYTHONPATH=$THIRDPARTY_DIR/gyp python3 gyp_breakpad
     cd ../processor
     xcodebuild -project processor.xcodeproj -target minidump_stackwalk -configuration Release build
 """)
@@ -1056,6 +1186,8 @@ win:
     ) else (
         SET "FolderPostfix="
     )
+depends:python/Scripts/activate.bat
+    %THIRDPARTY_DIR%\\python\\Scripts\\activate.bat
     cd src\\client\\windows
     gyp --no-circular-check breakpad_client.gyp --format=ninja
     cd ..\\..
@@ -1063,9 +1195,10 @@ win:
 release:
     ninja -C out/Release%FolderPostfix% common crash_generation_client exception_handler
     cd tools\\windows\\dump_syms
-    gyp dump_syms.gyp --format=ninja
-    cd ..\\..\\..
-    ninja -C out/Release%FolderPostfix% dump_syms
+    gyp dump_syms.gyp --format=msvs
+    msbuild dump_syms.vcxproj /property:Configuration=Release /property:Platform="x64"
+win:
+    deactivate
 mac:
     git clone https://chromium.googlesource.com/linux-syscall-support src/third_party/lss
     cd src/third_party/lss
@@ -1083,7 +1216,7 @@ stage('crashpad', """
 mac:
     git clone https://github.com/desktop-app/crashpad.git
     cd crashpad
-    git checkout c1b7afa2fd
+    git checkout 3279fae3f0
     git submodule init
     git submodule update third_party/mini_chromium
     ZLIB_PATH=$USED_PREFIX/include
@@ -1143,7 +1276,7 @@ stage('tg_angle', """
 win:
     git clone https://github.com/desktop-app/tg_angle.git
     cd tg_angle
-    git checkout 0bb011f9e4
+    git checkout e3f59e8d0c
     mkdir out
     cd out
     mkdir Debug
@@ -1166,30 +1299,31 @@ release:
 """)
 
 if buildQt5:
-    stage('qt_5_15_4', """
-    git clone https://code.qt.io/qt/qt5.git qt_5_15_4
-    cd qt_5_15_4
+    stage('qt_5_15_11', """
+    git clone https://github.com/qt/qt5.git qt_5_15_11
+    cd qt_5_15_11
     perl init-repository --module-subset=qtbase,qtimageformats,qtsvg
-    git checkout v5.15.4-lts-lgpl
+    git checkout v5.15.11-lts-lgpl
     git submodule update qtbase qtimageformats qtsvg
-depends:patches/qtbase_5_15_4/*.patch
+depends:patches/qtbase_5.15.11/*.patch
     cd qtbase
 win:
-    for /r %%i in (..\\..\\patches\\qtbase_5_15_4\\*) do git apply %%i
+    for /r %%i in (..\\..\\patches\\qtbase_5.15.11\\*) do git apply %%i -v
     cd ..
 
     SET CONFIGURATIONS=-debug
 release:
     SET CONFIGURATIONS=-debug-and-release
 win:
-    """ + removeDir("\"%LIBS_DIR%\\Qt-5.15.4\"") + """
+    """ + removeDir("\"%LIBS_DIR%\\Qt-5.15.11\"") + """
     SET ANGLE_DIR=%LIBS_DIR%\\tg_angle
     SET ANGLE_LIBS_DIR=%ANGLE_DIR%\\out
     SET MOZJPEG_DIR=%LIBS_DIR%\\mozjpeg
     SET OPENSSL_DIR=%LIBS_DIR%\\openssl
     SET OPENSSL_LIBS_DIR=%OPENSSL_DIR%\\out
     SET ZLIB_LIBS_DIR=%LIBS_DIR%\\zlib
-    configure -prefix "%LIBS_DIR%\\Qt-5.15.4" ^
+    SET WEBP_DIR=%LIBS_DIR%\\libwebp
+    configure -prefix "%LIBS_DIR%\\Qt-5.15.11" ^
         %CONFIGURATIONS% ^
         -force-debug-info ^
         -opensource ^
@@ -1200,19 +1334,23 @@ win:
         -I "%ANGLE_DIR%\\include" ^
         -D "KHRONOS_STATIC=" ^
         -D "DESKTOP_APP_QT_STATIC_ANGLE=" ^
-        QMAKE_LIBS_OPENGL_ES2_DEBUG="%ANGLE_LIBS_DIR%\\Debug\\tg_angle.lib %ZLIB_LIBS_DIR%\Debug\zlibstaticd.lib d3d9.lib dxgi.lib dxguid.lib" ^
-        QMAKE_LIBS_OPENGL_ES2_RELEASE="%ANGLE_LIBS_DIR%\\Release\\tg_angle.lib %ZLIB_LIBS_DIR%\Release\zlibstatic.lib d3d9.lib dxgi.lib dxguid.lib" ^
+        QMAKE_LIBS_OPENGL_ES2_DEBUG="%ANGLE_LIBS_DIR%\\Debug\\tg_angle.lib %ZLIB_LIBS_DIR%\\Debug\\zlibstaticd.lib d3d9.lib dxgi.lib dxguid.lib" ^
+        QMAKE_LIBS_OPENGL_ES2_RELEASE="%ANGLE_LIBS_DIR%\\Release\\tg_angle.lib %ZLIB_LIBS_DIR%\\Release\\zlibstatic.lib d3d9.lib dxgi.lib dxguid.lib" ^
         -egl ^
-        QMAKE_LIBS_EGL_DEBUG="%ANGLE_LIBS_DIR%\\Debug\\tg_angle.lib %ZLIB_LIBS_DIR%\Debug\zlibstaticd.lib d3d9.lib dxgi.lib dxguid.lib Gdi32.lib User32.lib" ^
-        QMAKE_LIBS_EGL_RELEASE="%ANGLE_LIBS_DIR%\\Release\\tg_angle.lib %ZLIB_LIBS_DIR%\Release\zlibstatic.lib d3d9.lib dxgi.lib dxguid.lib Gdi32.lib User32.lib" ^
+        QMAKE_LIBS_EGL_DEBUG="%ANGLE_LIBS_DIR%\\Debug\\tg_angle.lib %ZLIB_LIBS_DIR%\\Debug\\zlibstaticd.lib d3d9.lib dxgi.lib dxguid.lib Gdi32.lib User32.lib" ^
+        QMAKE_LIBS_EGL_RELEASE="%ANGLE_LIBS_DIR%\\Release\\tg_angle.lib %ZLIB_LIBS_DIR%\\Release\\zlibstatic.lib d3d9.lib dxgi.lib dxguid.lib Gdi32.lib User32.lib" ^
         -openssl-linked ^
-        -I "%OPENSSL_DIR%\include" ^
-        OPENSSL_LIBS_DEBUG="%OPENSSL_LIBS_DIR%.dbg\libssl.lib %OPENSSL_LIBS_DIR%.dbg\libcrypto.lib Ws2_32.lib Gdi32.lib Advapi32.lib Crypt32.lib User32.lib" ^
-        OPENSSL_LIBS_RELEASE="%OPENSSL_LIBS_DIR%\libssl.lib %OPENSSL_LIBS_DIR%\libcrypto.lib Ws2_32.lib Gdi32.lib Advapi32.lib Crypt32.lib User32.lib" ^
+        -I "%OPENSSL_DIR%\\include" ^
+        OPENSSL_LIBS_DEBUG="%OPENSSL_LIBS_DIR%.dbg\\libssl.lib %OPENSSL_LIBS_DIR%.dbg\\libcrypto.lib Ws2_32.lib Gdi32.lib Advapi32.lib Crypt32.lib User32.lib" ^
+        OPENSSL_LIBS_RELEASE="%OPENSSL_LIBS_DIR%\\libssl.lib %OPENSSL_LIBS_DIR%\\libcrypto.lib Ws2_32.lib Gdi32.lib Advapi32.lib Crypt32.lib User32.lib" ^
         -I "%MOZJPEG_DIR%" ^
-        LIBJPEG_LIBS_DEBUG="%MOZJPEG_DIR%\Debug\jpeg-static.lib" ^
-        LIBJPEG_LIBS_RELEASE="%MOZJPEG_DIR%\Release\jpeg-static.lib" ^
+        LIBJPEG_LIBS_DEBUG="%MOZJPEG_DIR%\\Debug\\jpeg-static.lib" ^
+        LIBJPEG_LIBS_RELEASE="%MOZJPEG_DIR%\\Release\\jpeg-static.lib" ^
+        -system-webp ^
+        -I "%WEBP_DIR%\\src" ^
+        -L "%WEBP_DIR%\\out\\release-static\\$X8664\\lib" ^
         -mp ^
+        -no-feature-netlistmgr ^
         -nomake examples ^
         -nomake tests ^
         -platform win32-msvc
@@ -1220,14 +1358,14 @@ win:
     jom -j16
     jom -j16 install
 mac:
-    find ../../patches/qtbase_5_15_4 -type f -print0 | sort -z | xargs -0 git apply
+    find ../../patches/qtbase_5.15.11 -type f -print0 | sort -z | xargs -0 git apply
     cd ..
 
     CONFIGURATIONS=-debug
 release:
     CONFIGURATIONS=-debug-and-release
 mac:
-    ./configure -prefix "$USED_PREFIX/Qt-5.15.4" \
+    ./configure -prefix "$USED_PREFIX/Qt-5.15.11" \
         $CONFIGURATIONS \
         -force-debug-info \
         -opensource \
@@ -1248,22 +1386,22 @@ mac:
 """)
 
 if buildQt6:
-    stage('qt_6_3_1', """
+    stage('qt_6_2_6', """
 mac:
-    git clone -b v6.3.1 https://code.qt.io/qt/qt5.git qt_6_3_1
-    cd qt_6_3_1
-    perl init-repository --module-subset=qtbase,qtimageformats,qtsvg,qt5compat
-depends:patches/qtbase_6_3_1/*.patch
+    git clone -b v6.2.6-lts-lgpl https://github.com/qt/qt5.git qt_6_2_6
+    cd qt_6_2_6
+    perl init-repository --module-subset=qtbase,qtimageformats,qtsvg
+depends:patches/qtbase_6.2.6/*.patch
     cd qtbase
-
-    find ../../patches/qtbase_6_3_1 -type f -print0 | sort -z | xargs -0 git apply
+    find ../../patches/qtbase_6.2.6 -type f -print0 | sort -z | xargs -0 git apply -v
     cd ..
+    sed -i.bak 's/tqtc-//' {qtimageformats,qtsvg}/dependencies.yaml
 
     CONFIGURATIONS=-debug
 release:
     CONFIGURATIONS=-debug-and-release
 mac:
-    ./configure -prefix "$USED_PREFIX/Qt-6.3.1" \
+    ./configure -prefix "$USED_PREFIX/Qt-6.2.6" \
         $CONFIGURATIONS \
         -force-debug-info \
         -opensource \
@@ -1272,11 +1410,14 @@ mac:
         -opengl desktop \
         -no-openssl \
         -securetransport \
+        -system-webp \
         -I "$USED_PREFIX/include" \
         -no-feature-futimens \
         -nomake examples \
         -nomake tests \
-        -platform macx-clang -- -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+        -platform macx-clang -- \
+        -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+        -DCMAKE_PREFIX_PATH="$USED_PREFIX"
 
     ninja
     ninja install
@@ -1285,9 +1426,9 @@ mac:
 stage('tg_owt', """
     git clone https://github.com/desktop-app/tg_owt.git
     cd tg_owt
-    git checkout bab760d7bd
+    git checkout afd9d5d317
     git submodule init
-    git submodule update src/third_party/libyuv src/third_party/crc32c/src
+    git submodule update
 win:
     SET MOZJPEG_PATH=$LIBS_DIR/mozjpeg
     SET OPUS_PATH=$USED_PREFIX/include/opus
@@ -1390,4 +1531,47 @@ release:
     lipo -create Release.arm64/libtg_owt.a Release.x86_64/libtg_owt.a -output Release/libtg_owt.a
 """)
 
-runStages()
+stage('protobuf', """
+win:
+    git clone --recursive -b v21.9 https://github.com/protocolbuffers/protobuf
+    cd protobuf
+    git clone https://github.com/abseil/abseil-cpp third_party/abseil-cpp
+    cd third_party/abseil-cpp
+    git checkout 273292d1cf
+    cd ../..
+    mkdir build
+    cd build
+    cmake .. ^
+        -A %WIN32X64% ^
+        -Dprotobuf_BUILD_TESTS=OFF ^
+        -Dprotobuf_BUILD_PROTOBUF_BINARIES=ON ^
+        -Dprotobuf_BUILD_LIBPROTOC=ON ^
+        -Dprotobuf_WITH_ZLIB_DEFAULT=OFF ^
+        -Dprotobuf_DEBUG_POSTFIX=""
+    cmake --build . --config Release --parallel
+    cmake --build . --config Debug --parallel
+""")
+# mac:
+#     git clone --recursive -b v21.9 https://github.com/protocolbuffers/protobuf
+#     cd protobuf
+#     git clone https://github.com/abseil/abseil-cpp third_party/abseil-cpp
+#     cd third_party/abseil-cpp
+#     git checkout 273292d1cf
+#     cd ../..
+#     mkdir build
+#     cd build
+#     CFLAGS="$UNGUARDED" CPPFLAGS="$UNGUARDED" cmake .. \
+#         -DCMAKE_OSX_DEPLOYMENT_TARGET:STRING=$MACOSX_DEPLOYMENT_TARGET \
+#         -Dprotobuf_BUILD_TESTS=OFF \
+#         -Dprotobuf_BUILD_PROTOBUF_BINARIES=ON \
+#         -Dprotobuf_BUILD_LIBPROTOC=ON \
+#         -Dprotobuf_WITH_ZLIB_DEFAULT=OFF
+#     cmake --build . $MAKE_THREADS_CNT
+
+if win:
+    currentCodePage = subprocess.run('chcp', capture_output=True, shell=True, text=True, env=modifiedEnv).stdout.strip().split()[-1]
+    subprocess.run('chcp 65001 > nul', shell=True, env=modifiedEnv)
+    runStages()
+    subprocess.run('chcp ' + currentCodePage + ' > nul', shell=True, env=modifiedEnv)
+else:
+    runStages()

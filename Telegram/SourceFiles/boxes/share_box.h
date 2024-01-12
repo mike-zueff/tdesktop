@@ -7,13 +7,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "boxes/abstract_box.h"
+#include "ui/layers/box_content.h"
 #include "base/timer.h"
 #include "history/view/history_view_schedule_box.h"
 #include "ui/chat/forward_options_box.h"
 #include "ui/effects/animations.h"
 #include "ui/effects/round_checkbox.h"
 #include "mtproto/sender.h"
+
+class History;
 
 namespace style {
 struct MultiSelect;
@@ -74,8 +76,13 @@ public:
 		std::vector<not_null<Data::Thread*>>&&,
 		TextWithTags&&,
 		Api::SendOptions,
-		Data::ForwardOptions option)>;
+		Data::ForwardOptions)>;
 	using FilterCallback = Fn<bool(not_null<Data::Thread*>)>;
+
+	[[nodiscard]] static SubmitCallback DefaultForwardCallback(
+		std::shared_ptr<Ui::Show> show,
+		not_null<History*> history,
+		MessageIdsList msgIds);
 
 	struct Descriptor {
 		not_null<Main::Session*> session;
@@ -111,7 +118,8 @@ private:
 	void submit(Api::SendOptions options);
 	void submitSilent();
 	void submitScheduled();
-	void copyLink();
+	void submitWhenOnline();
+	void copyLink() const;
 	bool searchByUsername(bool useCache = false);
 
 	SendMenu::Type sendMenuType() const;
@@ -138,8 +146,6 @@ private:
 
 	Descriptor _descriptor;
 	MTP::Sender _api;
-
-	std::shared_ptr<Ui::BoxShow> _show;
 
 	object_ptr<Ui::MultiSelect> _select;
 	object_ptr<Ui::SlideWrap<Ui::InputField>> _comment;

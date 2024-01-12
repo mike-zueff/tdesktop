@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "payments/ui/payments_field.h"
 
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/boxes/country_select_box.h"
 #include "ui/text/format_values.h"
 #include "ui/ui_utility.h"
@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_payments.h"
 
 #include <QtCore/QRegularExpression>
+#include <QtWidgets/QTextEdit>
 
 namespace Payments::Ui {
 namespace {
@@ -35,7 +36,8 @@ struct SimpleFieldState {
 }
 
 [[nodiscard]] QString RemoveNonNumbers(QString value) {
-	return value.replace(QRegularExpression("[^0-9]"), QString());
+	static const auto RegExp = QRegularExpression("[^0-9]");
+	return value.replace(RegExp, QString());
 }
 
 [[nodiscard]] SimpleFieldState CleanMoneyState(
@@ -215,6 +217,7 @@ struct SimpleFieldState {
 		const FieldConfig &config,
 		const QString &parsed,
 		const QString &countryIso2) {
+	static const auto RegExp = QRegularExpression("[^0-9]\\.");
 	if (config.type == FieldType::Country) {
 		return countryIso2;
 	} else if (config.type == FieldType::Money) {
@@ -226,16 +229,14 @@ struct SimpleFieldState {
 			QChar(','),
 			QChar('.')
 		).replace(
-			QRegularExpression("[^0-9\\.]"),
+			RegExp,
 			QString()
 		).toDouble();
 		return QString::number(
 			int64(base::SafeRound(real * std::pow(10., rule.exponent))));
 	} else if (config.type == FieldType::CardNumber
 		|| config.type == FieldType::CardCVC) {
-		return QString(parsed).replace(
-			QRegularExpression("[^0-9\\.]"),
-			QString());
+		return QString(parsed).replace(RegExp, QString());
 	}
 	return parsed;
 }
@@ -322,7 +323,7 @@ struct SimpleFieldState {
 		QString(),
 		st::paymentsFieldAdditional);
 	const auto leftSkip = state->left
-		? (state->left->naturalWidth() + state->currencySkip)
+		? (state->left->textMaxWidth() + state->currencySkip)
 		: 0;
 	const auto rightSkip = st::paymentsFieldAdditional.style.font->width(
 		QString(QChar(rule.decimal))
@@ -610,7 +611,8 @@ void Field::setupValidator(Fn<ValidateResult(ValidateRequest)> validator) {
 	} else {
 		const auto raw = _input->rawTextEdit();
 		QObject::connect(raw, &QTextEdit::cursorPositionChanged, save);
-		QObject::connect(_input, &InputField::changed, validate);
+		_input->changes(
+		) | rpl::start_with_next(validate, _input->lifetime());
 	}
 }
 
@@ -648,7 +650,8 @@ void Field::setupSubmit() {
 	if (_masked) {
 		QObject::connect(_masked, &MaskedInputField::submitted, submitted);
 	} else {
-		QObject::connect(_input, &InputField::submitted, submitted);
+		_input->submits(
+		) | rpl::start_with_next(submitted, _input->lifetime());
 	}
 }
 

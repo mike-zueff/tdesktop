@@ -15,7 +15,6 @@ enum class SharedMediaType : signed char;
 } // namespace Storage
 
 namespace Ui {
-class SettingsSlider;
 class FadeShadow;
 class PlainShadow;
 class PopupMenu;
@@ -58,6 +57,7 @@ struct SelectedItem {
 	GlobalMsgId globalId;
 	bool canDelete = false;
 	bool canForward = false;
+	bool canToggleStoryPin = false;
 };
 
 struct SelectedItems {
@@ -73,6 +73,7 @@ enum class SelectionAction {
 	Clear,
 	Forward,
 	Delete,
+	ToggleStoryPin,
 };
 
 class WrapWidget final : public Window::SectionWidget {
@@ -111,8 +112,6 @@ public:
 	std::shared_ptr<Window::SectionMemento> createMemento() override;
 
 	rpl::producer<int> desiredHeightValue() const override;
-
-	void updateInternalState(not_null<Memento*> memento);
 
 	// Float player interface.
 	bool floatPlayerHandleWheelEvent(QEvent *e) override;
@@ -177,6 +176,8 @@ private:
 	void setupShortcuts();
 
 	[[nodiscard]] bool hasBackButton() const;
+	[[nodiscard]] bool willHaveBackButton(
+		const Window::SectionShow &params) const;
 
 	not_null<RpWidget*> topWidget() const;
 

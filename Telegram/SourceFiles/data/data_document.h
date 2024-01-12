@@ -12,8 +12,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_types.h"
 #include "data/data_cloud_file.h"
 #include "core/file_location.h"
-#include "ui/image/image.h"
 
+enum class ChatRestriction;
 class mtpFileLoader;
 
 namespace Images {
@@ -78,14 +78,12 @@ struct StickerData : public DocumentAdditionalData {
 };
 
 struct SongData : public DocumentAdditionalData {
-	int32 duration = 0;
 	QString title, performer;
 };
 
 struct VoiceData : public DocumentAdditionalData {
 	~VoiceData();
 
-	int duration = 0;
 	VoiceWaveform waveform;
 	char wavemax = 0;
 };
@@ -126,6 +124,8 @@ public:
 	[[nodiscard]] bool loadedInMediaCache() const;
 	void setLoadedInMediaCache(bool loaded);
 
+	[[nodiscard]] ChatRestriction requiredSendRight() const;
+
 	void setWaitingForAlbum();
 	[[nodiscard]] bool waitingForAlbum() const;
 
@@ -142,9 +142,10 @@ public:
 
 	[[nodiscard]] Image *getReplyPreview(
 		Data::FileOrigin origin,
-		not_null<PeerData*> context);
+		not_null<PeerData*> context,
+		bool spoiler);
 	[[nodiscard]] Image *getReplyPreview(not_null<HistoryItem*> item);
-	[[nodiscard]] bool replyPreviewLoaded() const;
+	[[nodiscard]] bool replyPreviewLoaded(bool spoiler) const;
 
 	[[nodiscard]] StickerData *sticker() const;
 	[[nodiscard]] Data::FileOrigin stickerSetOrigin() const;
@@ -164,11 +165,13 @@ public:
 	[[nodiscard]] bool isSongWithCover() const;
 	[[nodiscard]] bool isAudioFile() const;
 	[[nodiscard]] bool isVideoFile() const;
+	[[nodiscard]] bool isSilentVideo() const;
 	[[nodiscard]] bool isAnimation() const;
 	[[nodiscard]] bool isGifv() const;
 	[[nodiscard]] bool isTheme() const;
 	[[nodiscard]] bool isSharedMediaMusic() const;
-	[[nodiscard]] TimeId getDuration() const;
+	[[nodiscard]] crl::time duration() const;
+	[[nodiscard]] bool hasDuration() const;
 	[[nodiscard]] bool isImage() const;
 	void recountIsImage();
 	[[nodiscard]] bool supportsStreaming() const;
@@ -181,6 +184,7 @@ public:
 	[[nodiscard]] bool isPatternWallPaperSVG() const;
 	[[nodiscard]] bool isPremiumSticker() const;
 	[[nodiscard]] bool isPremiumEmoji() const;
+	[[nodiscard]] bool emojiUsesTextColor() const;
 
 	[[nodiscard]] bool hasThumbnail() const;
 	[[nodiscard]] bool thumbnailLoading() const;
@@ -228,6 +232,9 @@ public:
 
 	[[nodiscard]] Storage::Cache::Key bigFileBaseCacheKey() const;
 
+	void setStoryMedia(bool value);
+	[[nodiscard]] bool storyMedia() const;
+
 	void setRemoteLocation(
 		int32 dc,
 		uint64 access,
@@ -249,7 +256,7 @@ public:
 
 	[[nodiscard]] QString filename() const;
 	[[nodiscard]] QString mimeString() const;
-	[[nodiscard]] bool hasMimeType(QLatin1String mime) const;
+	[[nodiscard]] bool hasMimeType(const QString &mime) const;
 	void setMimeString(const QString &mime);
 
 	[[nodiscard]] bool hasAttachedStickers() const;
@@ -267,6 +274,8 @@ public:
 
 	void setInappPlaybackFailed();
 	[[nodiscard]] bool inappPlaybackFailed() const;
+	[[nodiscard]] int videoPreloadPrefix() const;
+	[[nodiscard]] StorageFileLocation videoPreloadLocation() const;
 
 	DocumentId id = 0;
 	int64 size = 0;
@@ -279,17 +288,20 @@ public:
 
 private:
 	enum class Flag : ushort {
-		StreamingMaybeYes = 0x001,
-		StreamingMaybeNo = 0x002,
-		StreamingPlaybackFailed = 0x004,
-		ImageType = 0x008,
-		DownloadCancelled = 0x010,
-		LoadedInMediaCache = 0x020,
-		HasAttachedStickers = 0x040,
-		InlineThumbnailIsPath = 0x080,
-		ForceToCache = 0x100,
-		PremiumSticker = 0x200,
-		PossibleCoverThumbnail = 0x400,
+		StreamingMaybeYes = 0x0001,
+		StreamingMaybeNo = 0x0002,
+		StreamingPlaybackFailed = 0x0004,
+		ImageType = 0x0008,
+		DownloadCancelled = 0x0010,
+		LoadedInMediaCache = 0x0020,
+		HasAttachedStickers = 0x0040,
+		InlineThumbnailIsPath = 0x0080,
+		ForceToCache = 0x0100,
+		PremiumSticker = 0x0200,
+		PossibleCoverThumbnail = 0x0400,
+		UseTextColor = 0x0800,
+		StoryDocument = 0x1000,
+		SilentVideo = 0x2000,
 	};
 	using Flags = base::flags<Flag>;
 	friend constexpr bool is_flag_type(Flag) { return true; };
@@ -335,6 +347,7 @@ private:
 
 	const not_null<Data::Session*> _owner;
 
+	int _videoPreloadPrefix = 0;
 	// Two types of location: from MTProto by dc+access or from web by url
 	int32 _dc = 0;
 	uint64 _access = 0;
@@ -350,10 +363,10 @@ private:
 	std::unique_ptr<Data::ReplyPreview> _replyPreview;
 	std::weak_ptr<Data::DocumentMedia> _media;
 	PhotoData *_goodThumbnailPhoto = nullptr;
+	crl::time _duration = -1;
 
 	Core::FileLocation _location;
 	std::unique_ptr<DocumentAdditionalData> _additional;
-	int32 _duration = -1;
 	mutable Flags _flags = kStreamingSupportedUnknown;
 	GoodThumbnailState _goodThumbnailState = GoodThumbnailState();
 	std::unique_ptr<FileLoader> _loader;

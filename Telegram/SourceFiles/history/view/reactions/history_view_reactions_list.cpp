@@ -158,7 +158,7 @@ void Row::rightActionPaint(
 	const auto size = Ui::Emoji::GetSizeNormal() / style::DevicePixelRatio();
 	const auto skip = (size - Ui::Text::AdjustCustomEmojiSize(size)) / 2;
 	_custom->paint(p, {
-		.preview = st::windowBgRipple->c,
+		.textColor = st::windowFg->c,
 		.now = crl::now(),
 		.position = { x + skip, y + skip },
 		.paused = _paused(),
@@ -220,9 +220,9 @@ void Controller::showReaction(const ReactionId &reaction) {
 			appendRow(peer, reaction);
 		}
 	} else {
-		_filtered = _all | ranges::view::filter([&](const AllEntry &entry) {
+		_filtered = _all | ranges::views::filter([&](const AllEntry &entry) {
 			return (entry.second == reaction);
-		}) | ranges::view::transform(
+		}) | ranges::views::transform(
 			&AllEntry::first
 		) | ranges::to_vector;
 		for (const auto peer : _filtered) {
@@ -250,8 +250,8 @@ uint64 Controller::id(
 void Controller::fillWhoRead() {
 	if (_whoReadIds && !_whoReadIds->list.empty() && _whoRead.empty()) {
 		auto &owner = _window->session().data();
-		for (const auto &peerId : _whoReadIds->list) {
-			if (const auto peer = owner.peerLoaded(peerId)) {
+		for (const auto &peerWithDate : _whoReadIds->list) {
+			if (const auto peer = owner.peerLoaded(peerWithDate.peer)) {
 				_whoRead.push_back(peer);
 			}
 		}

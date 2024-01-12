@@ -7,7 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include <rpl/event_stream.h>
 #include <rpl/filter.h>
 #include <rpl/variable.h>
 #include "base/timer.h"
@@ -32,7 +31,6 @@ class Templates;
 namespace Data {
 class Session;
 class Changes;
-class CloudImageView;
 } // namespace Data
 
 namespace Storage {
@@ -57,6 +55,10 @@ class GiftBoxPack;
 namespace InlineBots {
 class AttachWebView;
 } // namespace InlineBots
+
+namespace Ui {
+struct ColorIndicesCompressed;
+} // namespace Ui
 
 namespace Main {
 
@@ -85,6 +87,7 @@ public:
 	[[nodiscard]] bool premiumPossible() const;
 	[[nodiscard]] rpl::producer<bool> premiumPossibleValue() const;
 	[[nodiscard]] bool premiumBadgesShown() const;
+	[[nodiscard]] bool premiumCanBuy() const;
 
 	[[nodiscard]] bool isTestMode() const;
 	[[nodiscard]] uint64 uniqueId() const; // userId() with TestDC shift.
@@ -188,8 +191,13 @@ public:
 	[[nodiscard]] Support::Helper &supportHelper() const;
 	[[nodiscard]] Support::Templates &supportTemplates() const;
 
+	[[nodiscard]] auto colorIndicesValue()
+		-> rpl::producer<Ui::ColorIndicesCompressed>;
+
 private:
 	static constexpr auto kDefaultSaveDelay = crl::time(1000);
+
+	void parseColorIndices(const MTPDhelp_peerColors &data);
 
 	const not_null<Account*> _account;
 
@@ -216,7 +224,7 @@ private:
 
 	const std::unique_ptr<Support::Helper> _supportHelper;
 
-	std::shared_ptr<Data::CloudImageView> _selfUserpicView;
+	std::shared_ptr<QImage> _selfUserpicView;
 	rpl::variable<bool> _premiumPossible = false;
 
 	rpl::event_stream<bool> _termsLockChanges;

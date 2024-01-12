@@ -321,9 +321,6 @@ void Viewport::RendererGL::init(
 	_frameBuffer->bind();
 	_frameBuffer->allocate(kValues * sizeof(GLfloat));
 	_downscaleProgram.yuv420.emplace();
-	const auto downscaleVertexSource = VertexShader({
-		VertexPassTextureCoord(),
-	});
 	_downscaleVertexShader = LinkProgram(
 		&*_downscaleProgram.yuv420,
 		VertexShader({
@@ -414,16 +411,20 @@ void Viewport::RendererGL::deinit(
 }
 
 void Viewport::RendererGL::setDefaultViewport(QOpenGLFunctions &f) {
-	const auto size = _viewport * _factor;
-	f.glViewport(0, 0, size.width(), size.height());
+	f.glViewport(
+		0,
+		0,
+		_viewport.width() * _factor,
+		_viewport.height() * _factor);
 }
 
 void Viewport::RendererGL::paint(
 		not_null<QOpenGLWidget*> widget,
 		QOpenGLFunctions &f) {
-	const auto factor = widget->devicePixelRatio();
+	const auto factor = widget->devicePixelRatioF();
 	if (_factor != factor) {
 		_factor = factor;
+		_ifactor = int(std::ceil(_factor));
 		_buttons.invalidate();
 	}
 	_viewport = widget->size();
@@ -462,7 +463,7 @@ void Viewport::RendererGL::validateUserpicFrame(
 	tileData.userpicFrame = tile->row()->peer()->generateUserpicImage(
 		tile->row()->ensureUserpicView(),
 		size.width(),
-		ImageRoundRadius::None);
+		0);
 }
 
 void Viewport::RendererGL::paintTile(
@@ -773,7 +774,7 @@ void Viewport::RendererGL::paintTile(
 	const auto program = _rgbaFrame
 		? &*_frameProgram.argb32
 		: &*_frameProgram.yuv420;
-	const auto uniformViewport = QSizeF(_viewport * _factor);
+	const auto uniformViewport = QSizeF(_viewport) * _factor;
 
 	program->setUniformValue("viewport", uniformViewport);
 	program->setUniformValue(
@@ -1122,18 +1123,18 @@ void Viewport::RendererGL::ensureButtonsImage() {
 			+ backSize.height()
 			+ muteSize.height()
 			+ pausedSize.height()));
-	const auto imageSize = fullSize * _factor;
+	const auto imageSize = fullSize * _ifactor;
 	auto image = _buttons.takeImage();
 	if (image.size() != imageSize) {
 		image = QImage(imageSize, QImage::Format_ARGB32_Premultiplied);
 	}
 	image.fill(Qt::transparent);
-	image.setDevicePixelRatio(_factor);
+	image.setDevicePixelRatio(_ifactor);
 	{
 		auto p = Painter(&image);
 		auto hq = PainterHighQualityEnabler(p);
 
-		_pinOn = QRect(QPoint(), pinOnSize * _factor);
+		_pinOn = QRect(QPoint(), pinOnSize * _ifactor);
 		VideoTile::PaintPinButton(
 			p,
 			true,
@@ -1145,8 +1146,8 @@ void Viewport::RendererGL::ensureButtonsImage() {
 
 		const auto pinOffTop = pinOnSize.height();
 		_pinOff = QRect(
-			QPoint(0, pinOffTop) * _factor,
-			pinOffSize * _factor);
+			QPoint(0, pinOffTop) * _ifactor,
+			pinOffSize * _ifactor);
 		VideoTile::PaintPinButton(
 			p,
 			false,
@@ -1157,7 +1158,7 @@ void Viewport::RendererGL::ensureButtonsImage() {
 			&_pinIcon);
 
 		const auto backTop = pinOffTop + pinOffSize.height();
-		_back = QRect(QPoint(0, backTop) * _factor, backSize * _factor);
+		_back = QRect(QPoint(0, backTop) * _ifactor, backSize * _ifactor);
 		VideoTile::PaintBackButton(
 			p,
 			0,
@@ -1166,18 +1167,18 @@ void Viewport::RendererGL::ensureButtonsImage() {
 			&_pinBackground);
 
 		const auto muteTop = backTop + backSize.height();
-		_muteOn = QRect(QPoint(0, muteTop) * _factor, muteSize * _factor);
+		_muteOn = QRect(QPoint(0, muteTop) * _ifactor, muteSize * _ifactor);
 		_muteIcon.paint(p, { 0, muteTop }, 1.);
 
 		_muteOff = QRect(
-			QPoint(muteSize.width(), muteTop) * _factor,
-			muteSize * _factor);
+			QPoint(muteSize.width(), muteTop) * _ifactor,
+			muteSize * _ifactor);
 		_muteIcon.paint(p, { muteSize.width(), muteTop }, 0.);
 
 		const auto pausedTop = muteTop + muteSize.height();
 		_paused = QRect(
-			QPoint(0, pausedTop) * _factor,
-			pausedSize * _factor);
+			QPoint(0, pausedTop) * _ifactor,
+			pausedSize * _ifactor);
 		st::groupCallPaused.paint(p, 0, pausedTop, fullSize.width());
 	}
 	_buttons.setImage(std::move(image));

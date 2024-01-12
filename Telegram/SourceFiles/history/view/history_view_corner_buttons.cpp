@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/widgets/scroll_area.h"
 #include "ui/chat/chat_style.h"
-#include "ui/special_buttons.h"
+#include "ui/controls/jump_down_button.h"
 #include "base/qt/qt_key_modifiers.h"
 #include "history/history.h"
 #include "history/history_item.h"
@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "ui/toast/toast.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 
 namespace HistoryView {
 

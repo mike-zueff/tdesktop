@@ -21,16 +21,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_group_call.h"
 #include "data/data_peer_values.h" // Data::CanWriteValue.
 #include "data/data_session.h" // Data::Session::invitedToCallUsers.
-#include "settings/settings_common.h" // Settings::CreateButton.
+#include "settings/settings_common.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/effects/ripple_animation.h"
 #include "ui/effects/cross_line.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "core/application.h" // Core::App().domain, .activeWindow.
 #include "main/main_domain.h" // Core::App().domain().activate.
 #include "main/main_session.h"
+#include "lang/lang_keys.h"
 #include "info/profile/info_profile_values.h" // Info::Profile::NameValue.
 #include "boxes/peers/edit_participants_box.h" // SubscribeToMigration.
 #include "boxes/peers/prepare_short_info_box.h" // PrepareShortInfo...
@@ -234,10 +236,10 @@ Members::Controller::Controller(
 	}, _lifetime);
 
 	rpl::combine(
-		rpl::single(anim::Disabled()) | rpl::then(anim::Disables()),
+		PowerSaving::OnValue(PowerSaving::kCalls),
 		Core::App().appDeactivatedValue()
-	) | rpl::start_with_next([=](bool animDisabled, bool deactivated) {
-		const auto hide = !(!animDisabled && !deactivated);
+	) | rpl::start_with_next([=](bool disabled, bool deactivated) {
+		const auto hide = disabled || deactivated;
 
 		if (!(hide && _soundingAnimationHideLastTime)) {
 			_soundingAnimationHideLastTime = hide ? crl::now() : 0;
@@ -1194,10 +1196,7 @@ base::unique_qptr<Ui::PopupMenu> Members::Controller::createRowContextMenu(
 	const auto admin = IsGroupCallAdmin(_peer, participantPeer);
 	const auto session = &_peer->session();
 	const auto getCurrentWindow = [=]() -> Window::SessionController* {
-		if (const auto window = Core::App().separateWindowForPeer(
-				participantPeer)) {
-			return window->sessionController();
-		} else if (const auto window = Core::App().primaryWindow()) {
+		if (const auto window = Core::App().windowFor(participantPeer)) {
 			if (const auto controller = window->sessionController()) {
 				if (&controller->session() == session) {
 					return controller;
@@ -1642,7 +1641,7 @@ void Members::setupAddMember(not_null<GroupCall*> call) {
 			return rpl::single(false) | rpl::type_erased();
 		}
 		return rpl::combine(
-			Data::CanWriteValue(peer, false),
+			Data::CanSendValue(peer, ChatRestriction::SendOther, false),
 			_call->joinAsValue()
 		) | rpl::map([=](bool can, not_null<PeerData*> joinAs) {
 			return can && joinAs->isSelf();
@@ -1685,7 +1684,7 @@ void Members::setupAddMember(not_null<GroupCall*> call) {
 			}
 			return;
 		}
-		auto addMember = Settings::CreateButton(
+		auto addMember = Settings::CreateButtonWithIcon(
 			_layout.get(),
 			tr::lng_group_call_invite(),
 			st::groupCallAddMember,
@@ -1977,16 +1976,8 @@ void Members::peerListSetDescription(
 	description.destroy();
 }
 
-void Members::peerListShowBox(
-	object_ptr<Ui::BoxContent> content,
-	Ui::LayerOptions options) {
-}
-
-void Members::peerListHideLayer() {
-}
-
-not_null<QWidget*> Members::peerListToastParent() {
-	Unexpected("...Members::peerListToastParent");
+std::shared_ptr<Main::SessionShow> Members::peerListUiShow() {
+	Unexpected("...Members::peerListUiShow");
 }
 
 } // namespace Calls::Group

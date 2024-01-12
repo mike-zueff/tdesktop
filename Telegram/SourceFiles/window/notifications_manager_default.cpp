@@ -14,13 +14,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "chat_helpers/message_field.h"
 #include "lang/lang_keys.h"
 #include "ui/widgets/buttons.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/platform/ui_platform_utility.h"
 #include "ui/text/text_options.h"
 #include "ui/text/text_utilities.h"
 #include "ui/emoji_config.h"
 #include "ui/empty_userpic.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "ui/ui_utility.h"
 #include "data/data_session.h"
 #include "data/data_forum_topic.h"
@@ -35,7 +36,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_item_preview.h"
 #include "base/platform/base_platform_last_input.h"
 #include "base/call_delayed.h"
-#include "facades.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_layers.h"
 #include "styles/style_window.h"
@@ -48,15 +48,17 @@ namespace Notifications {
 namespace Default {
 namespace {
 
-QPoint notificationStartPosition() {
+[[nodiscard]] QPoint notificationStartPosition() {
 	const auto corner = Core::App().settings().notificationsCorner();
-	const auto window = Core::App().primaryWindow();
+	const auto window = Core::App().activePrimaryWindow();
 	const auto r = window
 		? window->widget()->desktopRect()
 		: QGuiApplication::primaryScreen()->availableGeometry();
 	const auto isLeft = Core::Settings::IsLeftCorner(corner);
 	const auto isTop = Core::Settings::IsTopCorner(corner);
-	const auto x = (isLeft == rtl()) ? (r.x() + r.width() - st::notifyWidth - st::notifyDeltaX) : (r.x() + st::notifyDeltaX);
+	const auto x = (isLeft == rtl())
+		? (r.x() + r.width() - st::notifyWidth - st::notifyDeltaX)
+		: (r.x() + st::notifyDeltaX);
 	const auto y = isTop ? r.y() : (r.y() + r.height());
 	return QPoint(x, y);
 }
@@ -99,13 +101,14 @@ Manager::QueuedNotification::QueuedNotification(NotificationFields &&fields)
 
 QPixmap Manager::hiddenUserpicPlaceholder() const {
 	if (_hiddenUserpicPlaceholder.isNull()) {
+		const auto ratio = style::DevicePixelRatio();
 		_hiddenUserpicPlaceholder = Ui::PixmapFromImage(
 			LogoNoMargin().scaled(
-				st::notifyPhotoSize,
-				st::notifyPhotoSize,
+				st::notifyPhotoSize * ratio,
+				st::notifyPhotoSize * ratio,
 				Qt::IgnoreAspectRatio,
 				Qt::SmoothTransformation));
-		_hiddenUserpicPlaceholder.setDevicePixelRatio(cRetinaFactor());
+		_hiddenUserpicPlaceholder.setDevicePixelRatio(ratio);
 	}
 	return _hiddenUserpicPlaceholder;
 }
@@ -442,16 +445,16 @@ void Manager::doClearFromItem(not_null<HistoryItem*> item) {
 	}
 }
 
-bool Manager::doSkipAudio() const {
-	return Platform::Notifications::SkipAudioForCustom();
-}
-
 bool Manager::doSkipToast() const {
 	return Platform::Notifications::SkipToastForCustom();
 }
 
-bool Manager::doSkipFlashBounce() const {
-	return Platform::Notifications::SkipFlashBounceForCustom();
+void Manager::doMaybePlaySound(Fn<void()> playSound) {
+	Platform::Notifications::MaybePlaySoundForCustom(std::move(playSound));
+}
+
+void Manager::doMaybeFlashBounce(Fn<void()> flashBounce) {
+	Platform::Notifications::MaybeFlashBounceForCustom(std::move(flashBounce));
 }
 
 void Manager::doUpdateAll() {
@@ -579,13 +582,12 @@ void Widget::addToHeight(int add) {
 	auto newHeight = height() + add;
 	auto newPosition = computePosition(newHeight);
 	updateGeometry(newPosition.x(), newPosition.y(), width(), newHeight);
-	Ui::Platform::UpdateOverlayed(this);
+	Ui::ForceFullRepaintSync(this);
 }
 
 void Widget::updateGeometry(int x, int y, int width, int height) {
-	setGeometry(x, y, width, height);
-	setMinimumSize(QSize(width, height));
-	setMaximumSize(QSize(width, height));
+	move(x, y);
+	setFixedSize(width, height);
 	update();
 }
 
@@ -661,7 +663,7 @@ Notification::Notification(
 	auto position = computePosition(st::notifyMinHeight);
 	updateGeometry(position.x(), position.y(), st::notifyWidth, st::notifyMinHeight);
 
-	_userpicLoaded = !_userpicView || (_userpicView->image() != nullptr);
+	_userpicLoaded = !Ui::PeerUserpicLoading(_userpicView);
 	updateNotifyDisplay();
 
 	_hideTimer.setSingleShot(true);
@@ -730,7 +732,9 @@ bool Notification::checkLastInput(
 		std::optional<crl::time> lastInputTime) {
 	if (!_waitingForInput) return true;
 
-	const auto waitForUserInput = lastInputTime.has_value()
+	using namespace Platform::Notifications;
+	const auto waitForUserInput = WaitForInputForCustom()
+		&& lastInputTime.has_value()
 		&& (*lastInputTime <= _started);
 
 	if (!waitForUserInput) {
@@ -821,6 +825,8 @@ void Notification::paintTitle(Painter &p) {
 		.availableWidth = _titleRect.width(),
 		.palette = &st::dialogsTextPalette,
 		.spoiler = Ui::Text::DefaultSpoilerCache(),
+		.pausedEmoji = On(PowerSaving::kEmojiChat),
+		.pausedSpoiler = On(PowerSaving::kChatSpoiler),
 		.elisionLines = 1,
 	});
 }
@@ -833,7 +839,9 @@ void Notification::paintText(Painter &p) {
 		.availableWidth = _textRect.width(),
 		.palette = &st::dialogsTextPalette,
 		.spoiler = Ui::Text::DefaultSpoilerCache(),
-		.elisionLines = _textRect.height() / st::dialogsTextFont->height,
+		.pausedEmoji = On(PowerSaving::kEmojiChat),
+		.pausedSpoiler = On(PowerSaving::kChatSpoiler),
+		.elisionHeight = _textRect.height(),
 	});
 }
 
@@ -913,7 +921,7 @@ void Notification::updateNotifyDisplay() {
 				2 * st::dialogsTextFont->height);
 			const auto text = !_reaction.empty()
 				? (!_author.isEmpty()
-					? Ui::Text::PlainLink(_author).append(' ')
+					? Ui::Text::Colorized(_author).append(' ')
 					: TextWithEntities()
 				).append(Manager::ComposeReactionNotification(
 					_item,
@@ -923,9 +931,10 @@ void Notification::updateNotifyDisplay() {
 				? _item->toPreview({
 					.hideSender = reminder,
 					.generateImages = false,
+					.spoilerLoginCode = options.spoilerLoginCode,
 				}).text
 				: ((!_author.isEmpty()
-						? Ui::Text::PlainLink(_author)
+						? Ui::Text::Colorized(_author)
 						: TextWithEntities()
 					).append(_forwardedCount > 1
 						? ('\n' + tr::lng_forward_messages(
@@ -934,7 +943,7 @@ void Notification::updateNotifyDisplay() {
 							_forwardedCount))
 						: QString()));
 			const auto options = TextParseOptions{
-				(TextParsePlainLinks
+				(TextParseColorized
 					| TextParseMarkdown
 					| (_forwardedCount > 1 ? TextParseMultiline : 0)),
 				0,
@@ -952,7 +961,7 @@ void Notification::updateNotifyDisplay() {
 				context);
 			_textRect = r;
 			paintText(p);
-			if (!_textCache.hasPersistentAnimation()) {
+			if (!_textCache.hasPersistentAnimation() && !_topic) {
 				_textCache = Ui::Text::String();
 			}
 		} else {
@@ -1005,7 +1014,7 @@ void Notification::updatePeerPhoto() {
 		return;
 	}
 	_userpicView = _peer->createUserpicView();
-	if (_userpicView && !_userpicView->image()) {
+	if (Ui::PeerUserpicLoading(_userpicView)) {
 		return;
 	}
 	_userpicLoaded = true;
@@ -1025,7 +1034,7 @@ void Notification::updatePeerPhoto() {
 		st::notifyPhotoPos.y(),
 		width(),
 		st::notifyPhotoSize);
-	_userpicView = nullptr;
+	_userpicView = {};
 	update();
 }
 
@@ -1095,9 +1104,16 @@ void Notification::showReplyField() {
 
 	// Catch mouse press event to activate the window.
 	QCoreApplication::instance()->installEventFilter(this);
-	connect(_replyArea, &Ui::InputField::resized, [=] { replyResized(); });
-	connect(_replyArea, &Ui::InputField::submitted, [=] { sendReply(); });
-	connect(_replyArea, &Ui::InputField::cancelled, [=] { replyCancel(); });
+	_replyArea->heightChanges(
+	) | rpl::start_with_next([=] {
+		replyResized();
+	}, _replyArea->lifetime());
+	_replyArea->submits(
+	) | rpl::start_with_next([=] { sendReply(); }, _replyArea->lifetime());
+	_replyArea->cancelled(
+	) | rpl::start_with_next([=] {
+		replyCancel();
+	}, _replyArea->lifetime());
 
 	_replySend.create(this, st::notifySendReply);
 	_replySend->moveToRight(st::notifyBorderWidth, st::notifyMinHeight);

@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/platform/base_platform_info.h"
 #include "core/application.h"
-#include "core/shortcuts.h"
 #include "storage/storage_account.h"
 #include "storage/storage_domain.h" // Storage::StartResult.
 #include "storage/serialize_common.h"
@@ -21,9 +20,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_controller.h"
 #include "media/audio/media_audio.h"
 #include "mtproto/mtproto_config.h"
-#include "mtproto/mtproto_dc_options.h"
-#include "mtproto/mtp_instance.h"
-#include "ui/image/image.h"
 #include "mainwidget.h"
 #include "api/api_updates.h"
 #include "main/main_app_config.h"
@@ -171,7 +167,10 @@ void Account::createSession(
 			MTPstring(), // bot_inline_placeholder
 			MTPstring(), // lang_code
 			MTPEmojiStatus(),
-			MTPVector<MTPUsername>()),
+			MTPVector<MTPUsername>(),
+			MTPint(), // stories_max_id
+			MTPPeerColor(), // color
+			MTPPeerColor()), // profile_color
 		serialized,
 		streamVersion,
 		std::move(settings));
@@ -599,6 +598,16 @@ void Account::destroyStaleAuthorizationKeys() {
 			resetAuthorizationKeys();
 			return;
 		}
+	}
+}
+
+void Account::setHandleLoginCode(Fn<void(QString)> callback) {
+	_handleLoginCode = std::move(callback);
+}
+
+void Account::handleLoginCode(const QString &code) const {
+	if (_handleLoginCode) {
+		_handleLoginCode(code);
 	}
 }
 

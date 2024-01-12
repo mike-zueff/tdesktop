@@ -7,28 +7,25 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_channel.h"
 
-#include "data/data_peer_values.h"
 #include "data/data_changes.h"
 #include "data/data_channel_admins.h"
 #include "data/data_user.h"
 #include "data/data_chat.h"
 #include "data/data_session.h"
+#include "data/data_stories.h"
 #include "data/data_folder.h"
 #include "data/data_forum.h"
 #include "data/data_forum_icons.h"
-#include "data/data_location.h"
 #include "data/data_histories.h"
 #include "data/data_group_call.h"
 #include "data/data_message_reactions.h"
-#include "data/data_peer_bot_command.h"
-#include "data/data_user_names.h"
+#include "data/data_wall_paper.h"
 #include "data/notify/data_notify_settings.h"
 #include "main/main_session.h"
 #include "main/session/send_as_peers.h"
 #include "base/unixtime.h"
 #include "core/application.h"
 #include "history/history.h"
-#include "main/main_session.h"
 #include "api/api_chat_invite.h"
 #include "api/api_invite_links.h"
 #include "apiwrap.h"
@@ -83,7 +80,6 @@ std::unique_ptr<Data::Forum> MegagroupInfo::takeForumData() {
 		return result;
 	}
 	return nullptr;
-
 }
 
 ChannelData::ChannelData(not_null<Data::Session*> owner, PeerId id)
@@ -165,9 +161,7 @@ void ChannelData::setFlags(ChannelDataFlags which) {
 	const auto taken = ((diff & Flag::Forum) && !(which & Flag::Forum))
 		? mgInfo->takeForumData()
 		: nullptr;
-	if (const auto raw = taken.get()) {
-		owner().forumIcons().clearUserpicsReset(taken.get());
-	} else if ((diff & Flag::Forum) && (which & Flag::Forum)) {
+	if ((diff & Flag::Forum) && (which & Flag::Forum)) {
 		mgInfo->ensureForum(this);
 	}
 	_flags.set(which);
@@ -177,15 +171,29 @@ void ChannelData::setFlags(ChannelDataFlags which) {
 			session().changes().peerUpdated(this, UpdateFlag::Migration);
 		}
 	}
-	if (diff & (Flag::Forum | Flag::CallNotEmpty)) {
+	if (diff & (Flag::Forum | Flag::CallNotEmpty | Flag::SimilarExpanded)) {
 		if (const auto history = this->owner().historyLoaded(this)) {
 			if (diff & Flag::CallNotEmpty) {
 				history->updateChatListEntry();
 			}
 			if (diff & Flag::Forum) {
 				Core::App().notifications().clearFromHistory(history);
+				history->updateChatListEntryHeight();
+				if (history->inChatList()) {
+					if (const auto forum = this->forum()) {
+						forum->preloadTopics();
+					}
+				}
+			}
+			if (diff & Flag::SimilarExpanded) {
+				if (const auto item = history->joinedMessageInstance()) {
+					history->owner().requestItemResize(item);
+				}
 			}
 		}
+	}
+	if (const auto raw = taken.get()) {
+		owner().forumIcons().clearUserpicsReset(raw);
 	}
 }
 
@@ -257,8 +265,11 @@ bool ChannelData::linkedChatKnown() const {
 
 void ChannelData::setMembersCount(int newMembersCount) {
 	if (_membersCount != newMembersCount) {
-		if (isMegagroup() && !mgInfo->lastParticipants.empty()) {
-			mgInfo->lastParticipantsStatus |= MegagroupInfo::LastParticipantsCountOutdated;
+		if (isMegagroup()
+			&& canViewMembers()
+			&& !mgInfo->lastParticipants.empty()) {
+			mgInfo->lastParticipantsStatus
+				|= MegagroupInfo::LastParticipantsCountOutdated;
 			mgInfo->lastParticipantsCount = membersCount();
 		}
 		_membersCount = newMembersCount;
@@ -312,13 +323,18 @@ ChatRestrictionsInfo ChannelData::KickedRestrictedRights(
 		not_null<PeerData*> participant) {
 	using Flag = ChatRestriction;
 	const auto flags = Flag::ViewMessages
-		| Flag::SendMessages
-		| Flag::SendMedia
-		| Flag::EmbedLinks
 		| Flag::SendStickers
 		| Flag::SendGifs
 		| Flag::SendGames
-		| Flag::SendInline;
+		| Flag::SendInline
+		| Flag::SendPhotos
+		| Flag::SendVideos
+		| Flag::SendVideoMessages
+		| Flag::SendMusic
+		| Flag::SendVoiceMessages
+		| Flag::SendFiles
+		| Flag::SendOther
+		| Flag::EmbedLinks;
 	return ChatRestrictionsInfo(
 		(participant->isUser() ? flags : Flag::ViewMessages),
 		std::numeric_limits<int32>::max());
@@ -460,6 +476,14 @@ void ChannelData::applyEditBanned(
 	session().changes().peerUpdated(this, flags);
 }
 
+void ChannelData::setViewAsMessagesFlag(bool enabled) {
+	if (viewForumAsMessages() == enabled) {
+		return;
+	}
+	setFlags((flags() & ~Flag::ViewAsMessages)
+		| (enabled ? Flag::ViewAsMessages : Flag()));
+}
+
 void ChannelData::markForbidden() {
 	owner().processChat(MTP_channelForbidden(
 		MTP_flags(isMegagroup()
@@ -479,7 +503,7 @@ bool ChannelData::isGroupAdmin(not_null<UserData*> user) const {
 }
 
 bool ChannelData::lastParticipantsRequestNeeded() const {
-	if (!mgInfo) {
+	if (!mgInfo || !canViewMembers()) {
 		return false;
 	} else if (mgInfo->lastParticipantsCount == membersCount()) {
 		mgInfo->lastParticipantsStatus
@@ -516,6 +540,11 @@ bool ChannelData::canBanMembers() const {
 		|| (adminRights() & AdminRight::BanUsers);
 }
 
+bool ChannelData::canPostMessages() const {
+	return amCreator()
+		|| (adminRights() & AdminRight::PostMessages);
+}
+
 bool ChannelData::canEditMessages() const {
 	return amCreator()
 		|| (adminRights() & AdminRight::EditMessages);
@@ -524,6 +553,30 @@ bool ChannelData::canEditMessages() const {
 bool ChannelData::canDeleteMessages() const {
 	return amCreator()
 		|| (adminRights() & AdminRight::DeleteMessages);
+}
+
+bool ChannelData::canPostStories() const {
+	if (!isBroadcast()) {
+		return false;
+	}
+	return amCreator()
+		|| (adminRights() & AdminRight::PostStories);
+}
+
+bool ChannelData::canEditStories() const {
+	if (!isBroadcast()) {
+		return false;
+	}
+	return amCreator()
+		|| (adminRights() & AdminRight::EditStories);
+}
+
+bool ChannelData::canDeleteStories() const {
+	if (!isBroadcast()) {
+		return false;
+	}
+	return amCreator()
+		|| (adminRights() & AdminRight::DeleteStories);
 }
 
 bool ChannelData::anyoneCanAddMembers() const {
@@ -540,30 +593,9 @@ bool ChannelData::canAddMembers() const {
 		: ((adminRights() & AdminRight::InviteByLinkOrAdd) || amCreator());
 }
 
-bool ChannelData::canSendPolls() const {
-	return canWrite() && !amRestricted(ChatRestriction::SendPolls);
-}
-
 bool ChannelData::canAddAdmins() const {
 	return amCreator()
 		|| (adminRights() & AdminRight::AddAdmins);
-}
-
-bool ChannelData::canPublish() const {
-	return amCreator()
-		|| (adminRights() & AdminRight::PostMessages);
-}
-
-bool ChannelData::canWrite(bool checkForForum) const {
-	// Duplicated in Data::CanWriteValue().
-	const auto allowed = amIn()
-		|| ((flags() & Flag::HasLink) && !(flags() & Flag::JoinToWrite));
-	const auto forumRestriction = checkForForum && isForum();
-	return allowed
-		&& !forumRestriction
-		&& (canPublish()
-			|| (!isBroadcast()
-				&& !amRestricted(Restriction::SendMessages)));
 }
 
 bool ChannelData::allowsForwarding() const {
@@ -571,7 +603,10 @@ bool ChannelData::allowsForwarding() const {
 }
 
 bool ChannelData::canViewMembers() const {
-	return flags() & Flag::CanViewParticipants;
+	return (flags() & Flag::CanViewParticipants)
+		&& (!(flags() & Flag::ParticipantsHidden)
+			|| amCreator()
+			|| hasAdminRights());
 }
 
 bool ChannelData::canViewAdmins() const {
@@ -876,6 +911,52 @@ const Data::AllowedReactions &ChannelData::allowedReactions() const {
 	return _allowedReactions;
 }
 
+bool ChannelData::hasActiveStories() const {
+	return flags() & Flag::HasActiveStories;
+}
+
+bool ChannelData::hasUnreadStories() const {
+	return flags() & Flag::HasUnreadStories;
+}
+
+void ChannelData::setStoriesState(StoriesState state) {
+	Expects(state != StoriesState::Unknown);
+
+	const auto was = flags();
+	switch (state) {
+	case StoriesState::None:
+		_flags.remove(Flag::HasActiveStories | Flag::HasUnreadStories);
+		break;
+	case StoriesState::HasRead:
+		_flags.set(
+			(flags() & ~Flag::HasUnreadStories) | Flag::HasActiveStories);
+		break;
+	case StoriesState::HasUnread:
+		_flags.add(Flag::HasActiveStories | Flag::HasUnreadStories);
+		break;
+	}
+	if (flags() != was) {
+		if (const auto history = owner().historyLoaded(this)) {
+			history->updateChatListEntryPostponed();
+		}
+		session().changes().peerUpdated(this, UpdateFlag::StoriesState);
+	}
+}
+
+void ChannelData::processTopics(const MTPVector<MTPForumTopic> &topics) {
+	if (const auto forum = this->forum()) {
+		forum->applyReceivedTopics(topics);
+	}
+}
+
+int ChannelData::levelHint() const {
+	return _levelHint;
+}
+
+void ChannelData::updateLevelHint(int levelHint) {
+	_levelHint = levelHint;
+}
+
 namespace Data {
 
 void ApplyMigration(
@@ -931,13 +1012,27 @@ void ApplyChannelUpdate(
 		| Flag::CanViewParticipants
 		| Flag::CanSetStickers
 		| Flag::PreHistoryHidden
-		| Flag::Location;
+		| Flag::AntiSpam
+		| Flag::Location
+		| Flag::ParticipantsHidden
+		| Flag::CanGetStatistics
+		| Flag::ViewAsMessages;
 	channel->setFlags((channel->flags() & ~mask)
 		| (update.is_can_set_username() ? Flag::CanSetUsername : Flag())
-		| (update.is_can_view_participants() ? Flag::CanViewParticipants : Flag())
+		| (update.is_can_view_participants()
+			? Flag::CanViewParticipants
+			: Flag())
 		| (update.is_can_set_stickers() ? Flag::CanSetStickers : Flag())
 		| (update.is_hidden_prehistory() ? Flag::PreHistoryHidden : Flag())
-		| (update.vlocation() ? Flag::Location : Flag()));
+		| (update.is_antispam() ? Flag::AntiSpam : Flag())
+		| (update.vlocation() ? Flag::Location : Flag())
+		| (update.is_participants_hidden()
+			? Flag::ParticipantsHidden
+			: Flag())
+		| (update.is_can_view_stats() ? Flag::CanGetStatistics : Flag())
+		| (update.is_view_forum_as_messages()
+			? Flag::ViewAsMessages
+			: Flag()));
 	channel->setUserpicPhoto(update.vchat_photo());
 	if (const auto migratedFrom = update.vmigrated_from_chat_id()) {
 		channel->addFlags(Flag::Megagroup);
@@ -1025,11 +1120,13 @@ void ApplyChannelUpdate(
 		}
 	}
 	channel->setThemeEmoji(qs(update.vtheme_emoticon().value_or_empty()));
+	channel->setTranslationDisabled(update.is_translations_disabled());
 	if (const auto allowed = update.vavailable_reactions()) {
 		channel->setAllowedReactions(Data::Parse(*allowed));
 	} else {
 		channel->setAllowedReactions({});
 	}
+	channel->owner().stories().apply(channel, update.vstories());
 	channel->fullUpdated();
 	channel->setPendingRequestsCount(
 		update.vrequests_pending().value_or_empty(),
@@ -1044,10 +1141,21 @@ void ApplyChannelUpdate(
 		channel,
 		update.vnotify_settings());
 
+	if (update.vstats_dc()) {
+		channel->owner().applyStatsDcId(channel, update.vstats_dc()->v);
+	}
+
 	if (const auto sendAs = update.vdefault_send_as()) {
 		session->sendAsPeers().setChosen(channel, peerFromMTP(*sendAs));
 	} else {
 		session->sendAsPeers().setChosen(channel, PeerId());
+	}
+
+	if (const auto paper = update.vwallpaper()) {
+		channel->setWallPaper(
+			Data::WallPaper::Create(&channel->session(), *paper));
+	} else {
+		channel->setWallPaper({});
 	}
 
 	// For clearUpTill() call.

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "info/profile/info_profile_widget.h"
 
+#include "dialogs/ui/dialogs_stories_content.h"
 #include "info/profile/info_profile_inner_widget.h"
 #include "info/profile/info_profile_members.h"
 #include "ui/widgets/scroll_area.h"
@@ -105,7 +106,14 @@ rpl::producer<QString> Widget::title() {
 		return tr::lng_info_group_title();
 	}
 	Unexpected("Bad peer type in Info::TitleValue()");
+}
 
+rpl::producer<Dialogs::Stories::Content> Widget::titleStories() {
+	const auto peer = controller()->key().peer();
+	if (peer && !peer->isChat()) {
+		return Dialogs::Stories::LastForPeer(peer);
+	}
+	return nullptr;
 }
 
 bool Widget::showInternal(not_null<ContentMemento*> memento) {

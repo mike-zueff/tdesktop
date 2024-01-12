@@ -77,6 +77,7 @@ public:
 	void doneForDownloader(int64 offset);
 	void cancelForDownloader(
 		not_null<Storage::StreamedFileDownloader*> downloader);
+	void continueDownloaderFromMainThread();
 
 	~Reader();
 
@@ -275,6 +276,9 @@ private:
 	rpl::lifetime _lifetime;
 
 };
+
+[[nodiscard]] QByteArray SerializeComplexPartsMap(
+	const base::flat_map<uint32, QByteArray> &parts);
 
 } // namespace Streaming
 } // namespace Media

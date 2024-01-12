@@ -16,7 +16,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_poll.h"
 #include "data/data_session.h"
 #include "history/history.h"
-#include "history/history_message.h" // ShouldSendSilent
+#include "history/history_item.h"
+#include "history/history_item_helpers.h" // ShouldSendSilent
 #include "main/main_session.h"
 
 namespace Api {
@@ -42,13 +43,12 @@ void Polls::create(
 
 	const auto history = action.history;
 	const auto peer = history->peer;
-	const auto topicRootId = action.replyTo ? action.topicRootId : 0;
+	const auto topicRootId = action.replyTo.messageId
+		? action.replyTo.topicRootId
+		: 0;
 	auto sendFlags = MTPmessages_SendMedia::Flags(0);
 	if (action.replyTo) {
-		sendFlags |= MTPmessages_SendMedia::Flag::f_reply_to_msg_id;
-		if (topicRootId) {
-			sendFlags |= MTPmessages_SendMedia::Flag::f_top_msg_id;
-		}
+		sendFlags |= MTPmessages_SendMedia::Flag::f_reply_to;
 	}
 	const auto clearCloudDraft = action.clearDraft;
 	if (clearCloudDraft) {
@@ -73,13 +73,11 @@ void Polls::create(
 	histories.sendPreparedMessage(
 		history,
 		action.replyTo,
-		topicRootId,
 		randomId,
 		Data::Histories::PrepareMessage<MTPmessages_SendMedia>(
 			MTP_flags(sendFlags),
 			peer->input,
 			Data::Histories::ReplyToPlaceholder(),
-			Data::Histories::TopicRootPlaceholder(),
 			PollDataToInputMedia(&data),
 			MTP_string(),
 			MTP_long(randomId),

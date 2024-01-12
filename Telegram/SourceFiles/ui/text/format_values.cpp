@@ -10,7 +10,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "countries/countries_instance.h"
 
-#include <QRegularExpression>
 #include <QtCore/QLocale>
 #include <locale>
 #include <sstream>
@@ -79,28 +78,25 @@ QString FormatProgressText(qint64 ready, qint64 total) {
 		total);
 }
 
-QString FormatDateTime(
-		QDateTime date,
-		QString dateFormat,
-		QString timeFormat) {
+QString FormatDateTime(QDateTime date) {
 	const auto now = QDateTime::currentDateTime();
 	if (date.date() == now.date()) {
 		return tr::lng_mediaview_today(
 			tr::now,
 			lt_time,
-			QLocale().toString(date.time(), timeFormat));
+			QLocale().toString(date.time(), QLocale::ShortFormat));
 	} else if (date.date().addDays(1) == now.date()) {
 		return tr::lng_mediaview_yesterday(
 			tr::now,
 			lt_time,
-			QLocale().toString(date.time(), timeFormat));
+			QLocale().toString(date.time(), QLocale::ShortFormat));
 	} else {
 		return tr::lng_mediaview_date_time(
 			tr::now,
 			lt_date,
-			QLocale().toString(date.date(), dateFormat),
+			QLocale().toString(date.date(), QLocale::ShortFormat),
 			lt_time,
-			QLocale().toString(date.time(), timeFormat));
+			QLocale().toString(date.time(), QLocale::ShortFormat));
 	}
 }
 
@@ -396,15 +392,48 @@ QString FormatPhone(const QString &phone) {
 }
 
 QString FormatTTL(float64 ttl) {
+	if (ttl < 86400) {
+		return tr::lng_hours(tr::now, lt_count, int(ttl / 3600));
+	} else if (ttl < 86400 * 7) {
+		return tr::lng_days(tr::now, lt_count, int(ttl / (86400)));
+	} else if (ttl < 86400 * 31) {
+		const auto days = int(ttl / 86400);
+		if ((int(ttl) % 7) == 0) {
+			return tr::lng_weeks(tr::now, lt_count, int(days / 7));
+		} else {
+			return tr::lng_weeks(tr::now, lt_count, int(days / 7))
+				+ ' '
+				+ tr::lng_days(tr::now, lt_count, int(days % 7));
+		}
+	} else if (ttl < (86400 * 31) * 12) {
+		return tr::lng_months(tr::now, lt_count, int(ttl / (86400 * 31)));
+	} else {
+		return tr::lng_years({}, lt_count, std::round(ttl / (86400 * 365)));
+	}
+}
+
+QString FormatTTLAfter(float64 ttl) {
 	return (ttl <= 3600 * 23)
-		? tr::lng_hours(tr::now, lt_count, int(ttl / 3600))
+		? tr::lng_settings_ttl_after_hours(tr::now, lt_count, int(ttl / 3600))
 		: (ttl <= (86400) * 6)
-		? tr::lng_days(tr::now, lt_count, int(ttl / (86400)))
+		? tr::lng_settings_ttl_after_days(
+			tr::now,
+			lt_count,
+			int(ttl / (86400)))
 		: (ttl <= (86400 * 7) * 3)
-		? tr::lng_weeks(tr::now, lt_count, int(ttl / (86400 * 7)))
+		? tr::lng_settings_ttl_after_weeks(
+			tr::now,
+			lt_count,
+			int(ttl / (86400 * 7)))
 		: (ttl <= (86400 * 31) * 11)
-		? tr::lng_months({}, lt_count, int(ttl / (86400 * 31)))
-		: tr::lng_years({}, lt_count, std::round(ttl / (86400 * 365)));
+		? tr::lng_settings_ttl_after_months(
+			tr::now,
+			lt_count,
+			int(ttl / (86400 * 31)))
+		: tr::lng_settings_ttl_after_years(
+			tr::now,
+			lt_count,
+			std::round(ttl / (86400 * 365)));
 }
 
 QString FormatTTLTiny(float64 ttl) {

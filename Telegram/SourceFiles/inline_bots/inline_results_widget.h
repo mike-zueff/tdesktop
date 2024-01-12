@@ -76,7 +76,6 @@ public:
 
 	void setResultSelectedCallback(Fn<void(ResultSelected)> callback);
 	void setSendMenuType(Fn<SendMenu::Type()> &&callback);
-	void setCurrentDialogsEntryState(Dialogs::EntryState state);
 
 	[[nodiscard]] rpl::producer<bool> requesting() const {
 		return _requesting.events();
@@ -129,7 +128,6 @@ private:
 
 	int _contentMaxHeight = 0;
 	int _contentHeight = 0;
-	bool _horizontal = false;
 
 	int _width = 0;
 	int _height = 0;

@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/notifications_utilities.h"
 #include "window/window_session_controller.h"
 #include "base/platform/win/base_windows_co_task_mem.h"
+#include "base/platform/win/base_windows_rpcndr_h.h"
 #include "base/platform/win/base_windows_winrt.h"
 #include "base/platform/base_platform_info.h"
 #include "base/platform/win/wrl/wrl_module_h.h"
@@ -23,10 +24,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item.h"
 #include "core/application.h"
 #include "core/core_settings.h"
+#include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "mainwindow.h"
 #include "windows_quiethours_h.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 
 #include <QtCore/QOperatingSystemVersion>
 
@@ -52,6 +55,19 @@ namespace Notifications {
 
 #ifndef __MINGW32__
 namespace {
+
+constexpr auto kQuerySettingsEachMs = 1000;
+
+crl::time LastSettingsQueryMs/* = 0*/;
+
+[[nodiscard]] bool ShouldQuerySettings() {
+	const auto now = crl::now();
+	if (LastSettingsQueryMs > 0 && now <= LastSettingsQueryMs + kQuerySettingsEachMs) {
+		return false;
+	}
+	LastSettingsQueryMs = now;
+	return true;
+}
 
 [[nodiscard]] std::wstring NotificationTemplate(
 		QString id,
@@ -93,11 +109,7 @@ namespace {
 }
 
 bool init() {
-	if (!IsWindows8OrGreater()) {
-		return false;
-	}
-	if ((Dlls::SetCurrentProcessExplicitAppUserModelID == nullptr)
-		|| !base::WinRT::Supported()) {
+	if (!IsWindows8OrGreater() || !base::WinRT::Supported()) {
 		return false;
 	}
 
@@ -108,13 +120,21 @@ bool init() {
 			LOG(("App Error: Object registration failed."));
 		}
 	}
-	if (!AppUserModelId::validateShortcut()) {
+	if (!AppUserModelId::ValidateShortcut()) {
 		LOG(("App Error: Shortcut validation failed."));
 		return false;
 	}
 
-	auto appUserModelId = AppUserModelId::getId();
-	if (!SUCCEEDED(Dlls::SetCurrentProcessExplicitAppUserModelID(appUserModelId))) {
+	PWSTR appUserModelId = {};
+	if (!SUCCEEDED(GetCurrentProcessExplicitAppUserModelID(&appUserModelId))) {
+		return false;
+	}
+
+	const auto appUserModelIdGuard = gsl::finally([&] {
+		CoTaskMemFree(appUserModelId);
+	});
+
+	if (AppUserModelId::Id() != appUserModelId) {
 		return false;
 	}
 	return true;
@@ -290,7 +310,7 @@ void QueryFocusAssist() {
 		}
 		return;
 	}
-	const auto appUserModelId = std::wstring(AppUserModelId::getId());
+	const auto appUserModelId = AppUserModelId::Id();
 	auto blocked = true;
 	const auto guard = gsl::finally([&] {
 		if (FocusAssistBlocks != blocked) {
@@ -333,29 +353,34 @@ void QueryUserNotificationState() {
 	}
 }
 
-static constexpr auto kQuerySettingsEachMs = 1000;
-crl::time LastSettingsQueryMs = 0;
-
 void QuerySystemNotificationSettings() {
-	auto ms = crl::now();
-	if (LastSettingsQueryMs > 0 && ms <= LastSettingsQueryMs + kQuerySettingsEachMs) {
+	if (!ShouldQuerySettings()) {
 		return;
 	}
-	LastSettingsQueryMs = ms;
 	QueryQuietHours();
 	QueryFocusAssist();
 	QueryUserNotificationState();
 }
 
-} // namespace
-#endif // !__MINGW32__
-
-bool SkipAudioForCustom() {
+bool SkipSoundForCustom() {
 	QuerySystemNotificationSettings();
 
 	return (UserNotificationState == QUNS_NOT_PRESENT)
 		|| (UserNotificationState == QUNS_PRESENTATION_MODE)
 		|| Core::App().screenIsLocked();
+}
+
+bool SkipFlashBounceForCustom() {
+	return SkipToastForCustom();
+}
+
+} // namespace
+#endif // !__MINGW32__
+
+void MaybePlaySoundForCustom(Fn<void()> playSound) {
+	if (!SkipSoundForCustom()) {
+		playSound();
+	}
 }
 
 bool SkipToastForCustom() {
@@ -365,8 +390,16 @@ bool SkipToastForCustom() {
 		|| (UserNotificationState == QUNS_RUNNING_D3D_FULL_SCREEN);
 }
 
-bool SkipFlashBounceForCustom() {
-	return SkipToastForCustom();
+void MaybeFlashBounceForCustom(Fn<void()> flashBounce) {
+	if (!SkipFlashBounceForCustom()) {
+		flashBounce();
+	}
+}
+
+bool WaitForInputForCustom() {
+	QuerySystemNotificationSettings();
+
+	return UserNotificationState != QUNS_BUSY;
 }
 
 bool Supported() {
@@ -405,15 +438,13 @@ void Create(Window::Notifications::System *system) {
 #ifndef __MINGW32__
 class Manager::Private {
 public:
-	using Type = Window::Notifications::CachedUserpics::Type;
-
-	explicit Private(Manager *instance, Type type);
+	explicit Private(Manager *instance);
 	bool init();
 
 	bool showNotification(
 		not_null<PeerData*> peer,
 		MsgId topicRootId,
-		std::shared_ptr<Data::CloudImageView> &userpicView,
+		Ui::PeerUserpicView &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
@@ -438,7 +469,7 @@ private:
 	bool showNotificationInTryCatch(
 		not_null<PeerData*> peer,
 		MsgId topicRootId,
-		std::shared_ptr<Data::CloudImageView> &userpicView,
+		Ui::PeerUserpicView &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
@@ -460,9 +491,8 @@ private:
 
 };
 
-Manager::Private::Private(Manager *instance, Type type)
-: _cachedUserpics(type)
-, _guarded(std::make_shared<Manager*>(instance)) {
+Manager::Private::Private(Manager *instance)
+: _guarded(std::make_shared<Manager*>(instance)) {
 	ToastActivations(
 	) | rpl::start_with_next([=](const ToastActivation &activation) {
 		handleActivation(activation);
@@ -472,7 +502,7 @@ Manager::Private::Private(Manager *instance, Type type)
 bool Manager::Private::init() {
 	return base::WinRT::Try([&] {
 		_notifier = ToastNotificationManager::CreateToastNotifier(
-			AppUserModelId::getId());
+			AppUserModelId::Id());
 	});
 }
 
@@ -612,7 +642,9 @@ void Manager::Private::handleActivation(const ToastActivation &activation) {
 			).arg(activation.args
 			).arg(my
 			).arg(pid));
-		psActivateProcess(pid);
+		const auto processId = pid;
+		const auto windowId = 0; // Activate some window.
+		Platform::ActivateOtherProcess(processId, windowId);
 		return;
 	}
 	const auto action = parsed.value("action");
@@ -657,7 +689,7 @@ void Manager::Private::handleActivation(const ToastActivation &activation) {
 bool Manager::Private::showNotification(
 		not_null<PeerData*> peer,
 		MsgId topicRootId,
-		std::shared_ptr<Data::CloudImageView> &userpicView,
+		Ui::PeerUserpicView &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
@@ -692,7 +724,7 @@ std::wstring Manager::Private::ensureSendButtonIcon() {
 bool Manager::Private::showNotificationInTryCatch(
 		not_null<PeerData*> peer,
 		MsgId topicRootId,
-		std::shared_ptr<Data::CloudImageView> &userpicView,
+		Ui::PeerUserpicView &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
@@ -870,7 +902,7 @@ void Manager::Private::tryHide(const ToastNotification &notification) {
 
 Manager::Manager(Window::Notifications::System *system)
 : NativeManager(system)
-, _private(std::make_unique<Private>(this, Private::Type::Rounded)) {
+, _private(std::make_unique<Private>(this)) {
 }
 
 bool Manager::init() {
@@ -890,7 +922,7 @@ Manager::~Manager() = default;
 void Manager::doShowNativeNotification(
 		not_null<PeerData*> peer,
 		MsgId topicRootId,
-		std::shared_ptr<Data::CloudImageView> &userpicView,
+		Ui::PeerUserpicView &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
@@ -937,20 +969,26 @@ void Manager::onAfterNotificationActivated(
 	_private->afterNotificationActivated(id, window);
 }
 
-bool Manager::doSkipAudio() const {
-	return SkipAudioForCustom()
-		|| QuietHoursEnabled
-		|| FocusAssistBlocks;
-}
-
 bool Manager::doSkipToast() const {
 	return false;
 }
 
-bool Manager::doSkipFlashBounce() const {
-	return SkipFlashBounceForCustom()
+void Manager::doMaybePlaySound(Fn<void()> playSound) {
+	const auto skip = SkipSoundForCustom()
 		|| QuietHoursEnabled
 		|| FocusAssistBlocks;
+	if (!skip) {
+		playSound();
+	}
+}
+
+void Manager::doMaybeFlashBounce(Fn<void()> flashBounce) {
+	const auto skip = SkipFlashBounceForCustom()
+		|| QuietHoursEnabled
+		|| FocusAssistBlocks;
+	if (!skip) {
+		flashBounce();
+	}
 }
 #endif // !__MINGW32__
 

@@ -19,7 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/menu/menu_action.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/checkbox.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/effects/ripple_animation.h"
 #include "ui/layers/generic_box.h"
 #include "ui/painter.h"
@@ -59,7 +59,7 @@ private:
 	const not_null<QAction*> _dummyAction;
 	const style::Menu &_st;
 	const not_null<PeerData*> _peer;
-	std::shared_ptr<Data::CloudImageView> _userpicView;
+	Ui::PeerUserpicView _userpicView;
 
 	Ui::Text::String _text;
 	Ui::Text::String _name;

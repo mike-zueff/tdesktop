@@ -32,6 +32,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/padding_wrap.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/painter.h"
+#include "ui/vertical_list.h"
 #include "settings/settings_premium.h"
 #include "lottie/lottie_single_player.h"
 #include "history/view/media/history_view_sticker.h"
@@ -50,9 +51,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace {
 
 constexpr auto kPremiumShift = 21. / 240;
-constexpr auto kReactionsPerRow = 5;
-constexpr auto kDisabledOpacity = 0.5;
-constexpr auto kPreviewsCount = int(PremiumPreview::kCount);
 constexpr auto kToggleStickerTimeout = 2 * crl::time(1000);
 constexpr auto kStarOpacityOff = 0.1;
 constexpr auto kStarOpacityOn = 1.;
@@ -66,6 +64,7 @@ struct Descriptor {
 	bool fromSettings = false;
 	Fn<void()> hiddenCallback;
 	Fn<void(not_null<Ui::BoxContent*>)> shownCallback;
+	bool hideSubscriptionButton = false;
 };
 
 bool operator==(const Descriptor &a, const Descriptor &b) {
@@ -77,7 +76,7 @@ bool operator==(const Descriptor &a, const Descriptor &b) {
 struct Preload {
 	Descriptor descriptor;
 	std::shared_ptr<Data::DocumentMedia> media;
-	base::weak_ptr<Window::SessionController> controller;
+	std::weak_ptr<ChatHelpers::Show> show;
 };
 
 [[nodiscard]] std::vector<Preload> &Preloads() {
@@ -93,6 +92,12 @@ void PreloadSticker(const std::shared_ptr<Data::DocumentMedia> &media) {
 
 [[nodiscard]] rpl::producer<QString> SectionTitle(PremiumPreview section) {
 	switch (section) {
+	case PremiumPreview::Wallpapers:
+		return tr::lng_premium_summary_subtitle_wallpapers();
+	case PremiumPreview::Stories:
+		return tr::lng_premium_summary_subtitle_stories();
+	case PremiumPreview::DoubleLimits:
+		return tr::lng_premium_summary_subtitle_double_limits();
 	case PremiumPreview::MoreUpload:
 		return tr::lng_premium_summary_subtitle_more_upload();
 	case PremiumPreview::FasterDownload:
@@ -115,12 +120,20 @@ void PreloadSticker(const std::shared_ptr<Data::DocumentMedia> &media) {
 		return tr::lng_premium_summary_subtitle_profile_badge();
 	case PremiumPreview::AnimatedUserpics:
 		return tr::lng_premium_summary_subtitle_animated_userpics();
+	case PremiumPreview::RealTimeTranslation:
+		return tr::lng_premium_summary_subtitle_translation();
 	}
 	Unexpected("PremiumPreview in SectionTitle.");
 }
 
 [[nodiscard]] rpl::producer<QString> SectionAbout(PremiumPreview section) {
 	switch (section) {
+	case PremiumPreview::Wallpapers:
+		return tr::lng_premium_summary_about_wallpapers();
+	case PremiumPreview::Stories:
+		return tr::lng_premium_summary_about_stories();
+	case PremiumPreview::DoubleLimits:
+		return tr::lng_premium_summary_about_double_limits();
 	case PremiumPreview::MoreUpload:
 		return tr::lng_premium_summary_about_more_upload();
 	case PremiumPreview::FasterDownload:
@@ -143,6 +156,8 @@ void PreloadSticker(const std::shared_ptr<Data::DocumentMedia> &media) {
 		return tr::lng_premium_summary_about_profile_badge();
 	case PremiumPreview::AnimatedUserpics:
 		return tr::lng_premium_summary_about_animated_userpics();
+	case PremiumPreview::RealTimeTranslation:
+		return tr::lng_premium_summary_about_translation();
 	}
 	Unexpected("PremiumPreview in SectionTitle.");
 }
@@ -165,7 +180,7 @@ void PreloadSticker(const std::shared_ptr<Data::DocumentMedia> &media) {
 
 [[nodiscard]] not_null<Ui::RpWidget*> StickerPreview(
 		not_null<Ui::RpWidget*> parent,
-		not_null<Window::SessionController*> controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		const std::shared_ptr<Data::DocumentMedia> &media,
 		Fn<void()> readyCallback = nullptr) {
 	using namespace HistoryView;
@@ -191,6 +206,8 @@ void PreloadSticker(const std::shared_ptr<Data::DocumentMedia> &media) {
 	struct State {
 		std::unique_ptr<Lottie::SinglePlayer> lottie;
 		std::unique_ptr<Lottie::SinglePlayer> effect;
+		style::owned_color pathFg = style::owned_color(
+			QColor(255, 255, 255, 64));
 		std::unique_ptr<Ui::PathShiftGradient> pathGradient;
 		bool readyInvoked = false;
 	};
@@ -236,15 +253,17 @@ void PreloadSticker(const std::shared_ptr<Data::DocumentMedia> &media) {
 	};
 	createLottieIfReady();
 	if (!state->lottie || !state->effect) {
-		controller->session().downloaderTaskFinished(
+		show->session().downloaderTaskFinished(
 		) | rpl::take_while([=] {
 			createLottieIfReady();
 			return !state->lottie || !state->effect;
 		}) | rpl::start(result->lifetime());
 	}
-	state->pathGradient = MakePathShiftGradient(
-		controller->chatStyle(),
-		[=] { result->update(); });
+	state->pathGradient = std::make_unique<Ui::PathShiftGradient>(
+		st::shadowFg,
+		state->pathFg.color(),
+		[=] { result->update(); },
+		rpl::never<>());
 
 	result->paintRequest(
 	) | rpl::start_with_next([=] {
@@ -259,7 +278,7 @@ void PreloadSticker(const std::shared_ptr<Data::DocumentMedia> &media) {
 		if (!state->lottie
 			|| !state->lottie->ready()
 			|| !state->effect->ready()) {
-			p.setBrush(controller->chatStyle()->msgServiceBg());
+			p.setBrush(st::shadowFg);
 			ChatHelpers::PaintStickerThumbnailPath(
 				p,
 				media.get(),
@@ -299,7 +318,7 @@ void PreloadSticker(const std::shared_ptr<Data::DocumentMedia> &media) {
 
 [[nodiscard]] not_null<Ui::RpWidget*> StickersPreview(
 		not_null<Ui::RpWidget*> parent,
-		not_null<Window::SessionController*> controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		Fn<void()> readyCallback) {
 	const auto result = Ui::CreateChild<Ui::RpWidget>(parent.get());
 	result->show();
@@ -324,7 +343,7 @@ void PreloadSticker(const std::shared_ptr<Data::DocumentMedia> &media) {
 		bool nextReady = false;
 		int index = 0;
 	};
-	const auto premium = &controller->session().api().premium();
+	const auto premium = &show->session().api().premium();
 	const auto state = lifetime.make_state<State>();
 	const auto create = [=](std::shared_ptr<Data::DocumentMedia> media) {
 		const auto outer = Ui::CreateChild<Ui::RpWidget>(result);
@@ -337,7 +356,7 @@ void PreloadSticker(const std::shared_ptr<Data::DocumentMedia> &media) {
 
 		[[maybe_unused]] const auto sticker = StickerPreview(
 			outer,
-			controller,
+			show,
 			media,
 			state->singleReadyCallback);
 
@@ -454,6 +473,8 @@ struct VideoPreviewDocument {
 		case PremiumPreview::InfiniteReactions: return "infinite_reactions";
 		case PremiumPreview::ProfileBadge: return "profile_badge";
 		case PremiumPreview::AnimatedUserpics: return "animated_userpics";
+		case PremiumPreview::RealTimeTranslation: return "translations";
+		case PremiumPreview::Wallpapers: return "wallpapers";
 		}
 		return "";
 	}();
@@ -516,7 +537,7 @@ struct VideoPreviewDocument {
 
 [[nodiscard]] not_null<Ui::RpWidget*> VideoPreview(
 		not_null<Ui::RpWidget*> parent,
-		not_null<Window::SessionController*> controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		not_null<DocumentData*> document,
 		bool alignToBottom,
 		Fn<void()> readyCallback) {
@@ -679,7 +700,7 @@ struct VideoPreviewDocument {
 
 [[nodiscard]] not_null<Ui::RpWidget*> GenericPreview(
 		not_null<Ui::RpWidget*> parent,
-		not_null<Window::SessionController*> controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		PremiumPreview section,
 		Fn<void()> readyCallback) {
 	const auto result = Ui::CreateChild<Ui::RpWidget>(parent.get());
@@ -695,7 +716,7 @@ struct VideoPreviewDocument {
 		std::vector<std::shared_ptr<Data::DocumentMedia>> medias;
 		Ui::RpWidget *single = nullptr;
 	};
-	const auto session = &controller->session();
+	const auto session = &show->session();
 	const auto state = lifetime.make_state<State>();
 	const auto create = [=] {
 		const auto document = LookupVideo(session, section);
@@ -704,7 +725,7 @@ struct VideoPreviewDocument {
 		}
 		state->single = VideoPreview(
 			result,
-			controller,
+			show,
 			document,
 			!VideoAlignToTop(section),
 			readyCallback);
@@ -720,14 +741,18 @@ struct VideoPreviewDocument {
 
 [[nodiscard]] not_null<Ui::RpWidget*> GenerateDefaultPreview(
 		not_null<Ui::RpWidget*> parent,
-		not_null<Window::SessionController*> controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		PremiumPreview section,
 		Fn<void()> readyCallback) {
 	switch (section) {
 	case PremiumPreview::Stickers:
-		return StickersPreview(parent, controller, readyCallback);
+		return StickersPreview(parent, std::move(show), readyCallback);
 	default:
-		return GenericPreview(parent, controller, section, readyCallback);
+		return GenericPreview(
+			parent,
+			std::move(show),
+			section,
+			readyCallback);
 	}
 }
 
@@ -744,19 +769,21 @@ struct VideoPreviewDocument {
 
 [[nodiscard]] object_ptr<Ui::RpWidget> CreateSwitch(
 		not_null<Ui::RpWidget*> parent,
-		not_null<rpl::variable<PremiumPreview>*> selected) {
+		not_null<rpl::variable<PremiumPreview>*> selected,
+		std::vector<PremiumPreview> order) {
 	const auto padding = st::premiumDotPadding;
 	const auto width = padding.left() + st::premiumDot + padding.right();
 	const auto height = padding.top() + st::premiumDot + padding.bottom();
 	const auto stops = Ui::Premium::ButtonGradientStops();
 	auto result = object_ptr<Ui::FixedHeightWidget>(parent.get(), height);
 	const auto raw = result.data();
-	for (auto i = 0; i != kPreviewsCount; ++i) {
-		const auto section = PremiumPreview(i);
+	const auto count = order.size();
+	for (auto i = 0; i != count; ++i) {
+		const auto section = order[i];
 		const auto button = Ui::CreateChild<Ui::AbstractButton>(raw);
 		parent->widthValue(
 		) | rpl::start_with_next([=](int outer) {
-			const auto full = width * kPreviewsCount;
+			const auto full = width * count;
 			const auto left = (outer - full) / 2 + (i * width);
 			button->setGeometry(left, 0, width, height);
 		}, button->lifetime());
@@ -770,7 +797,7 @@ struct VideoPreviewDocument {
 			p.setBrush((selected->current() == section)
 				? anim::gradient_color_at(
 					stops,
-					float64(i) / (kPreviewsCount - 1))
+					float64(i) / (count - 1))
 				: st::windowBgRipple->c);
 			p.setPen(Qt::NoPen);
 			p.drawEllipse(
@@ -786,7 +813,7 @@ struct VideoPreviewDocument {
 
 void PreviewBox(
 		not_null<Ui::GenericBox*> box,
-		not_null<Window::SessionController*> controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		const Descriptor &descriptor,
 		const std::shared_ptr<Data::DocumentMedia> &media,
 		const QImage &back) {
@@ -815,15 +842,23 @@ void PreviewBox(
 		Fn<void()> preload;
 		std::vector<Hiding> hiding;
 		rpl::variable<PremiumPreview> selected;
+		std::vector<PremiumPreview> order;
 	};
 	const auto state = outer->lifetime().make_state<State>();
 	state->selected = descriptor.section;
+	state->order = Settings::PremiumPreviewOrder(&show->session());
+
+	const auto index = [=](PremiumPreview section) {
+		const auto it = ranges::find(state->order, section);
+		return (it == end(state->order))
+			? 0
+			: std::distance(begin(state->order), it);
+	};
 
 	const auto move = [=](int delta) {
-		using Type = PremiumPreview;
-		const auto count = int(Type::kCount);
+		const auto count = int(state->order.size());
 		const auto now = state->selected.current();
-		state->selected = Type((int(now) + count + delta) % count);
+		state->selected = state->order[(index(now) + count + delta) % count];
 	};
 
 	const auto buttonsParent = box->verticalLayout().get();
@@ -866,7 +901,7 @@ void PreviewBox(
 			};
 			state->stickersPreload = GenerateDefaultPreview(
 				outer,
-				controller,
+				show,
 				PremiumPreview::Stickers,
 				ready);
 			state->stickersPreload->hide();
@@ -876,13 +911,13 @@ void PreviewBox(
 	switch (descriptor.section) {
 	case PremiumPreview::Stickers:
 		state->content = media
-			? StickerPreview(outer, controller, media, state->preload)
-			: StickersPreview(outer, controller, state->preload);
+			? StickerPreview(outer, show, media, state->preload)
+			: StickersPreview(outer, show, state->preload);
 		break;
 	default:
 		state->content = GenericPreview(
 			outer,
-			controller,
+			show,
 			descriptor.section,
 			state->preload);
 		break;
@@ -912,7 +947,7 @@ void PreviewBox(
 			}
 		};
 		animationCallback();
-		const auto toLeft = int(now) > int(was);
+		const auto toLeft = index(now) > index(was);
 		auto start = state->content->x() + (toLeft ? single : -single);
 		for (const auto &hiding : state->hiding) {
 			const auto left = hiding.widget->x();
@@ -941,7 +976,7 @@ void PreviewBox(
 		} else {
 			state->content = GenerateDefaultPreview(
 				outer,
-				controller,
+				show,
 				now,
 				state->preload);
 		}
@@ -955,14 +990,10 @@ void PreviewBox(
 	}, outer->lifetime());
 
 	auto title = state->selected.value(
-	) | rpl::map([=](PremiumPreview section) {
-		return SectionTitle(section);
-	}) | rpl::flatten_latest();
+	) | rpl::map(SectionTitle) | rpl::flatten_latest();
 
 	auto text = state->selected.value(
-	) | rpl::map([=](PremiumPreview section) {
-		return SectionAbout(section);
-	}) | rpl::flatten_latest();
+	) | rpl::map(SectionAbout) | rpl::flatten_latest();
 
 	const auto padding = st::premiumPreviewAboutPadding;
 	const auto available = size.width() - padding.left() - padding.right();
@@ -985,7 +1016,7 @@ void PreviewBox(
 		object_ptr<Ui::CenterWrap<Ui::FlatLabel>>(box, std::move(textLabel)),
 		padding);
 	box->addRow(
-		CreateSwitch(box->verticalLayout(), &state->selected),
+		CreateSwitch(box->verticalLayout(), &state->selected, state->order),
 		st::premiumDotsMargin);
 	const auto showFinished = [=] {
 		state->showFinished = true;
@@ -993,7 +1024,8 @@ void PreviewBox(
 			state->preload();
 		}
 	};
-	if (descriptor.fromSettings && controller->session().premium()) {
+	if ((descriptor.fromSettings && show->session().premium())
+		|| descriptor.hideSubscriptionButton) {
 		box->setShowFinishedCallback(showFinished);
 		box->addButton(tr::lng_close(), [=] { box->closeBox(); });
 	} else {
@@ -1020,16 +1052,21 @@ void PreviewBox(
 		auto button = descriptor.fromSettings
 			? object_ptr<Ui::GradientButton>::fromRaw(
 				Settings::CreateSubscribeButton({
-					controller,
-					box,
-					computeRef,
+					.parent = box,
+					.computeRef = computeRef,
+					.show = show,
 				}))
 			: CreateUnlockButton(box, std::move(unlock));
 		button->resizeToWidth(width);
 		if (!descriptor.fromSettings) {
 			button->setClickedCallback([=] {
+				const auto window = show->resolveWindow(
+					ChatHelpers::WindowUsage::PremiumPromo);
+				if (!window) {
+					return;
+				}
 				Settings::ShowPremium(
-					controller,
+					window,
 					Settings::LookupPremiumRef(state->selected.current()));
 			});
 		}
@@ -1042,7 +1079,7 @@ void PreviewBox(
 
 	if (descriptor.fromSettings) {
 		Data::AmPremiumValue(
-			&controller->session()
+			&show->session()
 		) | rpl::skip(1) | rpl::start_with_next([=] {
 			box->closeBox();
 		}, box->lifetime());
@@ -1066,25 +1103,26 @@ void PreviewBox(
 }
 
 void Show(
-		not_null<Window::SessionController*> controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		const Descriptor &descriptor,
 		const std::shared_ptr<Data::DocumentMedia> &media,
 		QImage back) {
-	const auto box = controller->show(
-		Box(PreviewBox, controller, descriptor, media, back));
+	auto box = Box(PreviewBox, show, descriptor, media, back);
+	const auto raw = box.data();
+	show->showBox(std::move(box));
 	if (descriptor.shownCallback) {
-		descriptor.shownCallback(box);
+		descriptor.shownCallback(raw);
 	}
 }
 
-void Show(not_null<Window::SessionController*> controller, QImage back) {
+void Show(std::shared_ptr<ChatHelpers::Show> show, QImage back) {
 	auto &list = Preloads();
 	for (auto i = begin(list); i != end(list);) {
-		const auto already = i->controller.get();
+		const auto already = i->show.lock();
 		if (!already) {
 			i = list.erase(i);
-		} else if (already == controller) {
-			Show(controller, i->descriptor, i->media, back);
+		} else if (already == show) {
+			Show(std::move(show), i->descriptor, i->media, back);
 			i = list.erase(i);
 			return;
 		} else {
@@ -1093,22 +1131,86 @@ void Show(not_null<Window::SessionController*> controller, QImage back) {
 	}
 }
 
+void DecorateListPromoBox(
+		not_null<Ui::GenericBox*> box,
+		std::shared_ptr<ChatHelpers::Show> show,
+		const Descriptor &descriptor) {
+	const auto session = &show->session();
+
+	box->addTopButton(st::boxTitleClose, [=] {
+		box->closeBox();
+	});
+
+	Data::AmPremiumValue(
+		session
+	) | rpl::skip(1) | rpl::start_with_next([=] {
+		box->closeBox();
+	}, box->lifetime());
+
+	if (const auto &hidden = descriptor.hiddenCallback) {
+		box->boxClosing() | rpl::start_with_next(hidden, box->lifetime());
+	}
+
+	if (session->premium() || descriptor.hideSubscriptionButton) {
+		box->addButton(tr::lng_close(), [=] {
+			box->closeBox();
+		});
+	} else {
+		const auto button = Settings::CreateSubscribeButton({
+			.parent = box,
+			.computeRef = [] { return u"double_limits"_q; },
+			.show = show,
+		});
+
+		box->setShowFinishedCallback([=] {
+			button->startGlareAnimation();
+		});
+
+		box->setStyle(st::premiumPreviewDoubledLimitsBox);
+		box->widthValue(
+		) | rpl::start_with_next([=](int width) {
+			const auto &padding =
+				st::premiumPreviewDoubledLimitsBox.buttonPadding;
+			button->resizeToWidth(width
+				- padding.left()
+				- padding.right());
+			button->moveToLeft(padding.left(), padding.top());
+		}, button->lifetime());
+		box->addButton(
+			object_ptr<Ui::AbstractButton>::fromRaw(button));
+	}
+}
+
 void Show(
-		not_null<Window::SessionController*> controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		Descriptor &&descriptor) {
-	if (!controller->session().premiumPossible()) {
-		const auto box = controller->show(Box(PremiumUnavailableBox));
+	if (!show->session().premiumPossible()) {
+		auto box = Box(PremiumUnavailableBox);
+		const auto raw = box.data();
+		show->showBox(std::move(box));
 		if (descriptor.shownCallback) {
-			descriptor.shownCallback(box);
+			descriptor.shownCallback(raw);
 		}
+		return;
+	} else if (descriptor.section == PremiumPreview::DoubleLimits) {
+		show->showBox(Box([=](not_null<Ui::GenericBox*> box) {
+			DoubledLimitsPreviewBox(box, &show->session());
+			DecorateListPromoBox(box, show, descriptor);
+		}));
+		return;
+	} else if (descriptor.section == PremiumPreview::Stories) {
+		show->showBox(Box([=](not_null<Ui::GenericBox*> box) {
+			UpgradedStoriesPreviewBox(box, &show->session());
+			DecorateListPromoBox(box, show, descriptor);
+		}));
 		return;
 	}
 	auto &list = Preloads();
 	for (auto i = begin(list); i != end(list);) {
-		const auto already = i->controller.get();
+		const auto already = i->show.lock();
 		if (!already) {
 			i = list.erase(i);
-		} else if (already == controller) {
+		} else if (already == show) {
 			if (i->descriptor == descriptor) {
 				return;
 			}
@@ -1125,13 +1227,13 @@ void Show(
 		}
 	}
 
-	const auto weak = base::make_weak(controller);
+	const auto weak = std::weak_ptr(show);
 	list.push_back({
 		.descriptor = descriptor,
 		.media = (descriptor.requestedSticker
 			? descriptor.requestedSticker->createMediaView()
 			: nullptr),
-		.controller = weak,
+		.show = weak,
 	});
 	if (const auto &media = list.back().media) {
 		PreloadSticker(media);
@@ -1156,8 +1258,8 @@ void Show(
 			Images::CornersMask(st::boxRadius),
 			RectPart::TopLeft | RectPart::TopRight);
 		crl::on_main([=] {
-			if (const auto strong = weak.get()) {
-				Show(strong, result);
+			if (auto strong = weak.lock()) {
+				Show(std::move(strong), result);
 			}
 		});
 	});
@@ -1166,9 +1268,9 @@ void Show(
 } // namespace
 
 void ShowStickerPreviewBox(
-		not_null<Window::SessionController*> controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		not_null<DocumentData*> document) {
-	Show(controller, Descriptor{
+	Show(std::move(show), Descriptor{
 		.section = PremiumPreview::Stickers,
 		.requestedSticker = document,
 	});
@@ -1178,9 +1280,18 @@ void ShowPremiumPreviewBox(
 		not_null<Window::SessionController*> controller,
 		PremiumPreview section,
 		Fn<void(not_null<Ui::BoxContent*>)> shown) {
-	Show(controller, Descriptor{
+	ShowPremiumPreviewBox(controller->uiShow(), section, std::move(shown));
+}
+
+void ShowPremiumPreviewBox(
+		std::shared_ptr<ChatHelpers::Show> show,
+		PremiumPreview section,
+		Fn<void(not_null<Ui::BoxContent*>)> shown,
+		bool hideSubscriptionButton) {
+	Show(std::move(show), Descriptor{
 		.section = section,
 		.shownCallback = std::move(shown),
+		.hideSubscriptionButton = hideSubscriptionButton,
 	});
 }
 
@@ -1188,7 +1299,7 @@ void ShowPremiumPreviewToBuy(
 		not_null<Window::SessionController*> controller,
 		PremiumPreview section,
 		Fn<void()> hiddenCallback) {
-	Show(controller, Descriptor{
+	Show(controller->uiShow(), Descriptor{
 		.section = section,
 		.fromSettings = true,
 		.hiddenCallback = std::move(hiddenCallback),
@@ -1207,11 +1318,13 @@ void PremiumUnavailableBox(not_null<Ui::GenericBox*> box) {
 void DoubledLimitsPreviewBox(
 		not_null<Ui::GenericBox*> box,
 		not_null<Main::Session*> session) {
+	box->setTitle(tr::lng_premium_summary_subtitle_double_limits());
+
 	const auto limits = Data::PremiumLimits(session);
 	auto entries = std::vector<Ui::Premium::ListEntry>();
 	{
 		const auto premium = limits.channelsPremium();
-		entries.push_back(Ui::Premium::ListEntry{
+		entries.push_back({
 			tr::lng_premium_double_limits_subtitle_channels(),
 			tr::lng_premium_double_limits_about_channels(
 				lt_count,
@@ -1223,7 +1336,7 @@ void DoubledLimitsPreviewBox(
 	}
 	{
 		const auto premium = limits.dialogsPinnedPremium();
-		entries.push_back(Ui::Premium::ListEntry{
+		entries.push_back({
 			tr::lng_premium_double_limits_subtitle_pins(),
 			tr::lng_premium_double_limits_about_pins(
 				lt_count,
@@ -1235,7 +1348,7 @@ void DoubledLimitsPreviewBox(
 	}
 	{
 		const auto premium = limits.channelsPublicPremium();
-		entries.push_back(Ui::Premium::ListEntry{
+		entries.push_back({
 			tr::lng_premium_double_limits_subtitle_links(),
 			tr::lng_premium_double_limits_about_links(
 				lt_count,
@@ -1247,7 +1360,7 @@ void DoubledLimitsPreviewBox(
 	}
 	{
 		const auto premium = limits.gifsPremium();
-		entries.push_back(Ui::Premium::ListEntry{
+		entries.push_back({
 			tr::lng_premium_double_limits_subtitle_gifs(),
 			tr::lng_premium_double_limits_about_gifs(
 				lt_count,
@@ -1259,7 +1372,7 @@ void DoubledLimitsPreviewBox(
 	}
 	{
 		const auto premium = limits.stickersFavedPremium();
-		entries.push_back(Ui::Premium::ListEntry{
+		entries.push_back({
 			tr::lng_premium_double_limits_subtitle_stickers(),
 			tr::lng_premium_double_limits_about_stickers(
 				lt_count,
@@ -1271,7 +1384,7 @@ void DoubledLimitsPreviewBox(
 	}
 	{
 		const auto premium = limits.aboutLengthPremium();
-		entries.push_back(Ui::Premium::ListEntry{
+		entries.push_back({
 			tr::lng_premium_double_limits_subtitle_bio(),
 			tr::lng_premium_double_limits_about_bio(
 				Ui::Text::RichLangValue),
@@ -1281,7 +1394,7 @@ void DoubledLimitsPreviewBox(
 	}
 	{
 		const auto premium = limits.captionLengthPremium();
-		entries.push_back(Ui::Premium::ListEntry{
+		entries.push_back({
 			tr::lng_premium_double_limits_subtitle_captions(),
 			tr::lng_premium_double_limits_about_captions(
 				Ui::Text::RichLangValue),
@@ -1291,7 +1404,7 @@ void DoubledLimitsPreviewBox(
 	}
 	{
 		const auto premium = limits.dialogFiltersPremium();
-		entries.push_back(Ui::Premium::ListEntry{
+		entries.push_back({
 			tr::lng_premium_double_limits_subtitle_folders(),
 			tr::lng_premium_double_limits_about_folders(
 				lt_count,
@@ -1303,7 +1416,7 @@ void DoubledLimitsPreviewBox(
 	}
 	{
 		const auto premium = limits.dialogFiltersChatsPremium();
-		entries.push_back(Ui::Premium::ListEntry{
+		entries.push_back({
 			tr::lng_premium_double_limits_subtitle_folder_chats(),
 			tr::lng_premium_double_limits_about_folder_chats(
 				lt_count,
@@ -1317,7 +1430,7 @@ void DoubledLimitsPreviewBox(
 	const auto till = (nextMax >= Main::Domain::kPremiumMaxAccounts)
 		? QString::number(Main::Domain::kPremiumMaxAccounts)
 		: (QString::number(nextMax) + QChar('+'));
-	entries.push_back(Ui::Premium::ListEntry{
+	entries.push_back({
 		tr::lng_premium_double_limits_subtitle_accounts(),
 		tr::lng_premium_double_limits_about_accounts(
 			lt_count,
@@ -1327,7 +1440,64 @@ void DoubledLimitsPreviewBox(
 		Main::Domain::kPremiumMaxAccounts,
 		till,
 	});
-	Ui::Premium::ShowListBox(box, std::move(entries));
+	Ui::Premium::ShowListBox(
+		box,
+		st::defaultPremiumLimits,
+		std::move(entries));
+}
+
+void UpgradedStoriesPreviewBox(
+		not_null<Ui::GenericBox*> box,
+		not_null<Main::Session*> session) {
+	using namespace Ui::Text;
+
+	box->setTitle(tr::lng_premium_summary_subtitle_stories());
+
+	auto entries = std::vector<Ui::Premium::ListEntry>();
+	entries.push_back({
+		.title = tr::lng_premium_stories_subtitle_order(),
+		.about = tr::lng_premium_stories_about_order(WithEntities),
+		.icon = &st::settingsStoriesIconOrder,
+	});
+	entries.push_back({
+		.title = tr::lng_premium_stories_subtitle_stealth(),
+		.about = tr::lng_premium_stories_about_stealth(WithEntities),
+		.icon = &st::settingsStoriesIconStealth,
+	});
+	entries.push_back({
+		.title = tr::lng_premium_stories_subtitle_views(),
+		.about = tr::lng_premium_stories_about_views(WithEntities),
+		.icon = &st::settingsStoriesIconViews,
+	});
+	entries.push_back({
+		.title = tr::lng_premium_stories_subtitle_expiration(),
+		.about = tr::lng_premium_stories_about_expiration(WithEntities),
+		.icon = &st::settingsStoriesIconExpiration,
+	});
+	entries.push_back({
+		.title = tr::lng_premium_stories_subtitle_download(),
+		.about = tr::lng_premium_stories_about_download(WithEntities),
+		.icon = &st::settingsStoriesIconDownload,
+	});
+	entries.push_back({
+		.title = tr::lng_premium_stories_subtitle_caption(),
+		.about = tr::lng_premium_stories_about_caption(WithEntities),
+		.icon = &st::settingsStoriesIconCaption,
+	});
+	entries.push_back({
+		.title = tr::lng_premium_stories_subtitle_links(),
+		.about = tr::lng_premium_stories_about_links(WithEntities),
+		.icon = &st::settingsStoriesIconLinks,
+	});
+
+	Ui::Premium::ShowListBox(
+		box,
+		st::defaultPremiumLimits,
+		std::move(entries));
+
+	Ui::AddDividerText(
+		box->verticalLayout(),
+		tr::lng_premium_stories_about_mobile());
 }
 
 object_ptr<Ui::GradientButton> CreateUnlockButton(

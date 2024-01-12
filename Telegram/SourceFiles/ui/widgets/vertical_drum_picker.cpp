@@ -11,9 +11,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_basic.h"
 
 namespace Ui {
+namespace {
 
-PickerAnimation::PickerAnimation() {
-}
+constexpr auto kAlmostIndex = float64(.99);
+
+} // namespace
+
+PickerAnimation::PickerAnimation() = default;
 
 void PickerAnimation::jumpToOffset(int offset) {
 	_result.from = _result.current;
@@ -27,6 +31,23 @@ void PickerAnimation::jumpToOffset(int offset) {
 			value);
 		_updates.fire(_result.current - was);
 	};
+	if (anim::Disabled()) {
+		auto value = float64(0.);
+		const auto diff = _result.to - _result.from;
+		const auto step = std::min(
+			kAlmostIndex,
+			1. / (std::max(1. - kAlmostIndex, std::abs(diff) + 1)));
+		while (true) {
+			value += step;
+			if (value >= 1.) {
+				callback(1.);
+				break;
+			} else {
+				callback(value);
+			}
+		}
+		return;
+	}
 	_animation.start(
 		std::move(callback),
 		0.,
@@ -101,9 +122,13 @@ VerticalDrumPicker::VerticalDrumPicker(
 }
 
 void VerticalDrumPicker::increaseShift(float64 by) {
-	// Guard input.
-	if (by >= 1.) {
-		by = .99;
+	{
+		// Guard input.
+		if (by >= 1.) {
+			by = kAlmostIndex;
+		} else if (by <= -1.) {
+			by = -kAlmostIndex;
+		}
 	}
 
 	auto shift = _shift;

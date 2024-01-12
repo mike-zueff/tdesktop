@@ -90,6 +90,7 @@ void MessagesSearch::searchRequest() {
 			(_from
 				? _from->input
 				: MTP_inputPeerEmpty()),
+			MTPInputPeer(), // saved_peer_id
 			MTPint(), // top_msg_id
 			MTP_inputMessagesFilterEmpty(),
 			MTP_int(0), // min_date
@@ -152,17 +153,21 @@ void MessagesSearch::searchReceived(
 		const auto total = int(data.vcount().v);
 		return FoundMessages{ total, std::move(items), nextToken };
 	}, [&](const MTPDmessages_channelMessages &data) {
-		if (const auto channel = _history->peer->asChannel()) {
-			channel->ptsReceived(data.vpts().v);
-		} else {
-			LOG(("API Error: "
-				"received messages.channelMessages when no channel "
-				"was passed!"));
-		}
 		if (_requestId != 0) {
 			// Don't apply cached data!
 			owner.processUsers(data.vusers());
 			owner.processChats(data.vchats());
+		}
+		if (const auto channel = _history->peer->asChannel()) {
+			channel->ptsReceived(data.vpts().v);
+			if (_requestId != 0) {
+				// Don't apply cached data!
+				channel->processTopics(data.vtopics());
+			}
+		} else {
+			LOG(("API Error: "
+				"received messages.channelMessages when no channel "
+				"was passed!"));
 		}
 		auto items = HistoryItemsFromTL(&owner, data.vmessages().v);
 		const auto total = int(data.vcount().v);

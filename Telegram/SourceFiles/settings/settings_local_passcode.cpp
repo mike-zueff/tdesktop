@@ -16,16 +16,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "settings/cloud_password/settings_cloud_password_common.h"
-#include "settings/settings_common.h"
 #include "storage/storage_domain.h"
+#include "ui/vertical_list.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/widgets/buttons.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/password_input.h"
 #include "ui/widgets/labels.h"
 #include "ui/wrap/vertical_layout.h"
 #include "window/window_session_controller.h"
 #include "styles/style_boxes.h"
 #include "styles/style_layers.h"
+#include "styles/style_menu_icons.h"
 #include "styles/style_settings.h"
 
 namespace Settings {
@@ -119,7 +120,7 @@ void LocalPasscodeEnter::setupContent() {
 			[=] { _showBack.fire({}); });
 	}
 
-	AddSkip(content);
+	Ui::AddSkip(content);
 
 	content->add(
 		object_ptr<Ui::CenterWrap<>>(
@@ -144,10 +145,10 @@ void LocalPasscodeEnter::setupContent() {
 	};
 
 	addDescription(tr::lng_passcode_about1());
-	AddSkip(content);
+	Ui::AddSkip(content);
 	addDescription(tr::lng_passcode_about2());
 
-	AddSkip(content, st::settingLocalPasscodeDescriptionBottomSkip);
+	Ui::AddSkip(content, st::settingLocalPasscodeDescriptionBottomSkip);
 
 	const auto addField = [&](rpl::producer<QString> &&text) {
 		const auto &st = st::settingLocalPasscodeInputField;
@@ -329,7 +330,7 @@ public:
 	}
 
 	[[nodiscard]] static Type Id() {
-		return &SectionMetaImplementation<SectionType>::Meta;
+		return SectionFactory<SectionType>::Instance();
 	}
 	[[nodiscard]] Type id() const final override {
 		return Id();
@@ -436,13 +437,13 @@ void LocalPasscodeManage::setupContent() {
 		content->lifetime(),
 		[=] { _showBack.fire({}); });
 
-	AddSkip(content);
+	Ui::AddSkip(content);
 
-	AddButton(
+	AddButtonWithIcon(
 		content,
 		tr::lng_passcode_change(),
 		st::settingsButton,
-		{ &st::settingsIconLock, kIconLightBlue }
+		{ &st::menuIconLock }
 	)->addClickHandler([=] {
 		_showOther.fire(LocalPasscodeChange::Id());
 	});
@@ -473,14 +474,14 @@ void LocalPasscodeManage::setupContent() {
 			: tr::lng_passcode_autolock_inactive)(),
 		std::move(autolockLabel),
 		st::settingsButton,
-		{ &st::settingsIconTimer, kIconGreen }
+		{ &st::menuIconTimer }
 	)->addClickHandler([=] {
 		const auto box = _controller->show(Box<AutoLockBox>());
 		box->boxClosing(
 		) | rpl::start_to_stream(state->autoLockBoxClosing, box->lifetime());
 	});
 
-	AddSkip(content);
+	Ui::AddSkip(content);
 
 	using Divider = CloudPassword::OneEdgeBoxContentDivider;
 	const auto divider = Ui::CreateChild<Divider>(this);
@@ -497,7 +498,7 @@ void LocalPasscodeManage::setupContent() {
 					return s1 + "\n\n" + s2;
 				}),
 				st::boxDividerLabel),
-		st::settingsDividerLabelPadding));
+		st::defaultBoxDividerLabelPadding));
 	about->geometryValue(
 	) | rpl::start_with_next([=](const QRect &r) {
 		divider->setGeometry(r);

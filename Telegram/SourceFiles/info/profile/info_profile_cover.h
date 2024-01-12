@@ -50,6 +50,11 @@ public:
 		not_null<Data::ForumTopic*> topic,
 		Fn<bool()> paused,
 		Fn<void()> update);
+	TopicIconView(
+		not_null<Data::ForumTopic*> topic,
+		Fn<bool()> paused,
+		Fn<void()> update,
+		const style::color &generalIconFg);
 
 	void paintInRect(QPainter &p, QRect rect);
 
@@ -61,6 +66,7 @@ private:
 	void setupImage(not_null<Data::ForumTopic*> topic);
 
 	const not_null<Data::ForumTopic*> _topic;
+	const style::color &_generalIconFg;
 	Fn<bool()> _paused;
 	Fn<void()> _update;
 	std::shared_ptr<StickerPlayer> _player;
@@ -83,18 +89,24 @@ private:
 
 class Cover final : public Ui::FixedHeightWidget {
 public:
+	enum class Role {
+		Info,
+		EditContact,
+	};
+
 	Cover(
 		QWidget *parent,
-		not_null<PeerData*> peer,
-		not_null<Window::SessionController*> controller);
-	Cover(
-		QWidget *parent,
-		not_null<Data::ForumTopic*> topic,
-		not_null<Window::SessionController*> controller);
-	Cover(
-		QWidget *parent,
-		not_null<PeerData*> peer,
 		not_null<Window::SessionController*> controller,
+		not_null<PeerData*> peer);
+	Cover(
+		QWidget *parent,
+		not_null<Window::SessionController*> controller,
+		not_null<Data::ForumTopic*> topic);
+	Cover(
+		QWidget *parent,
+		not_null<Window::SessionController*> controller,
+		not_null<PeerData*> peer,
+		Role role,
 		rpl::producer<QString> title);
 	~Cover();
 
@@ -103,13 +115,15 @@ public:
 	[[nodiscard]] rpl::producer<Section> showSection() const {
 		return _showSection.events();
 	}
+	[[nodiscard]] std::optional<QImage> updatedPersonalPhoto() const;
 
 private:
 	Cover(
 		QWidget *parent,
+		not_null<Window::SessionController*> controller,
 		not_null<PeerData*> peer,
 		Data::ForumTopic *topic,
-		not_null<Window::SessionController*> controller,
+		Role role,
 		rpl::producer<QString> title);
 
 	void setupChildGeometry();
@@ -118,16 +132,20 @@ private:
 	void refreshNameGeometry(int newWidth);
 	void refreshStatusGeometry(int newWidth);
 	void refreshUploadPhotoOverlay();
+	void setupChangePersonal();
 
 	const style::InfoProfileCover &_st;
 
+	const Role _role = Role::Info;
 	const not_null<Window::SessionController*> _controller;
 	const not_null<PeerData*> _peer;
 	const std::unique_ptr<EmojiStatusPanel> _emojiStatusPanel;
 	const std::unique_ptr<Badge> _badge;
-	int _onlineCount = 0;
+	rpl::variable<int> _onlineCount;
 
 	object_ptr<Ui::UserpicButton> _userpic;
+	Ui::UserpicButton *_changePersonal = nullptr;
+	std::optional<QImage> _personalChosen;
 	object_ptr<TopicIconButton> _iconButton;
 	object_ptr<Ui::FlatLabel> _name = { nullptr };
 	object_ptr<Ui::FlatLabel> _status = { nullptr };

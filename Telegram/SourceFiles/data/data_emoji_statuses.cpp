@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_emoji_statuses.h"
 
 #include "main/main_session.h"
+#include "data/data_channel.h"
 #include "data/data_user.h"
 #include "data/data_session.h"
 #include "data/data_document.h"
@@ -16,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer_rpl.h"
 #include "base/call_delayed.h"
 #include "apiwrap.h"
+#include "ui/controls/tabbed_search.h"
 
 namespace Data {
 namespace {
@@ -52,6 +54,7 @@ EmojiStatuses::EmojiStatuses(not_null<Session*> owner)
 		kRefreshDefaultListEach
 	) | rpl::start_with_next([=] {
 		refreshDefault();
+		refreshChannelDefault();
 	}, _lifetime);
 }
 
@@ -73,6 +76,14 @@ void EmojiStatuses::refreshColored() {
 	requestColored();
 }
 
+void EmojiStatuses::refreshChannelDefault() {
+	requestChannelDefault();
+}
+
+void EmojiStatuses::refreshChannelColored() {
+	requestChannelColored();
+}
+
 void EmojiStatuses::refreshRecentDelayed() {
 	if (_recentRequestId || _recentRequestScheduled) {
 		return;
@@ -90,6 +101,8 @@ const std::vector<DocumentId> &EmojiStatuses::list(Type type) const {
 	case Type::Recent: return _recent;
 	case Type::Default: return _default;
 	case Type::Colored: return _colored;
+	case Type::ChannelDefault: return _channelDefault;
+	case Type::ChannelColored: return _channelColored;
 	}
 	Unexpected("Type in EmojiStatuses::list.");
 }
@@ -102,20 +115,24 @@ rpl::producer<> EmojiStatuses::defaultUpdates() const {
 	return _defaultUpdated.events();
 }
 
+rpl::producer<> EmojiStatuses::channelDefaultUpdates() const {
+	return _channelDefaultUpdated.events();
+}
+
 void EmojiStatuses::registerAutomaticClear(
-		not_null<UserData*> user,
+		not_null<PeerData*> peer,
 		TimeId until) {
 	if (!until) {
-		_clearing.remove(user);
+		_clearing.remove(peer);
 		if (_clearing.empty()) {
 			_clearingTimer.cancel();
 		}
-	} else if (auto &already = _clearing[user]; already != until) {
+	} else if (auto &already = _clearing[peer]; already != until) {
 		already = until;
 		const auto i = ranges::min_element(_clearing, {}, [](auto &&pair) {
 			return pair.second;
 		});
-		if (i->first == user) {
+		if (i->first == peer) {
 			const auto now = base::unixtime::now();
 			if (now < until) {
 				processClearingIn(until - now);
@@ -124,6 +141,83 @@ void EmojiStatuses::registerAutomaticClear(
 			}
 		}
 	}
+}
+
+auto EmojiStatuses::emojiGroupsValue() const -> rpl::producer<Groups> {
+	const_cast<EmojiStatuses*>(this)->requestEmojiGroups();
+	return _emojiGroups.data.value();
+}
+
+auto EmojiStatuses::statusGroupsValue() const -> rpl::producer<Groups> {
+	const_cast<EmojiStatuses*>(this)->requestStatusGroups();
+	return _statusGroups.data.value();
+}
+
+auto EmojiStatuses::profilePhotoGroupsValue() const
+-> rpl::producer<Groups> {
+	const_cast<EmojiStatuses*>(this)->requestProfilePhotoGroups();
+	return _profilePhotoGroups.data.value();
+}
+
+void EmojiStatuses::requestEmojiGroups() {
+	requestGroups(
+		&_emojiGroups,
+		MTPmessages_GetEmojiGroups(MTP_int(_emojiGroups.hash)));
+
+}
+
+void EmojiStatuses::requestStatusGroups() {
+	requestGroups(
+		&_statusGroups,
+		MTPmessages_GetEmojiStatusGroups(MTP_int(_statusGroups.hash)));
+}
+
+void EmojiStatuses::requestProfilePhotoGroups() {
+	requestGroups(
+		&_profilePhotoGroups,
+		MTPmessages_GetEmojiProfilePhotoGroups(
+			MTP_int(_profilePhotoGroups.hash)));
+}
+
+[[nodiscard]] std::vector<Ui::EmojiGroup> GroupsFromTL(
+		const MTPDmessages_emojiGroups &data) {
+	const auto &list = data.vgroups().v;
+	auto result = std::vector<Ui::EmojiGroup>();
+	result.reserve(list.size());
+	for (const auto &group : list) {
+		const auto &data = group.data();
+		auto emoticons = ranges::views::all(
+			data.vemoticons().v
+		) | ranges::views::transform([](const MTPstring &emoticon) {
+			return qs(emoticon);
+		}) | ranges::to_vector;
+		result.push_back({
+			.iconId = QString::number(data.vicon_emoji_id().v),
+			.emoticons = std::move(emoticons),
+		});
+	}
+	return result;
+}
+
+template <typename Request>
+void EmojiStatuses::requestGroups(
+		not_null<GroupsType*> type,
+		Request &&request) {
+	if (type->requestId) {
+		return;
+	}
+	type->requestId = _owner->session().api().request(
+		std::forward<Request>(request)
+	).done([=](const MTPmessages_EmojiGroups &result) {
+		type->requestId = 0;
+		result.match([&](const MTPDmessages_emojiGroups &data) {
+			type->hash = data.vhash().v;
+			type->data = GroupsFromTL(data);
+		}, [](const MTPDmessages_emojiGroupsNotModified&) {
+		});
+	}).fail([=] {
+		type->requestId = 0;
+	}).send();
 }
 
 void EmojiStatuses::processClearing() {
@@ -188,7 +282,7 @@ void EmojiStatuses::requestDefault() {
 	}
 	auto &api = _owner->session().api();
 	_defaultRequestId = api.request(MTPaccount_GetDefaultEmojiStatuses(
-		MTP_long(_recentHash)
+		MTP_long(_defaultHash)
 	)).done([=](const MTPaccount_EmojiStatuses &result) {
 		_defaultRequestId = 0;
 		result.match([&](const MTPDaccount_emojiStatuses &data) {
@@ -221,6 +315,45 @@ void EmojiStatuses::requestColored() {
 	}).send();
 }
 
+void EmojiStatuses::requestChannelDefault() {
+	if (_channelDefaultRequestId) {
+		return;
+	}
+	auto &api = _owner->session().api();
+	_channelDefaultRequestId = api.request(MTPaccount_GetDefaultEmojiStatuses(
+		MTP_long(_channelDefaultHash)
+	)).done([=](const MTPaccount_EmojiStatuses &result) {
+		_channelDefaultRequestId = 0;
+		result.match([&](const MTPDaccount_emojiStatuses &data) {
+			updateChannelDefault(data);
+		}, [&](const MTPDaccount_emojiStatusesNotModified &) {
+		});
+	}).fail([=] {
+		_channelDefaultRequestId = 0;
+		_channelDefaultHash = 0;
+	}).send();
+}
+
+void EmojiStatuses::requestChannelColored() {
+	if (_channelColoredRequestId) {
+		return;
+	}
+	auto &api = _owner->session().api();
+	_channelColoredRequestId = api.request(MTPmessages_GetStickerSet(
+		MTP_inputStickerSetEmojiChannelDefaultStatuses(),
+		MTP_int(0) // hash
+	)).done([=](const MTPmessages_StickerSet &result) {
+		_channelColoredRequestId = 0;
+		result.match([&](const MTPDmessages_stickerSet &data) {
+			updateChannelColored(data);
+		}, [](const MTPDmessages_stickerSetNotModified &) {
+			LOG(("API Error: Unexpected messages.stickerSetNotModified."));
+		});
+	}).fail([=] {
+		_channelColoredRequestId = 0;
+	}).send();
+}
+
 void EmojiStatuses::updateRecent(const MTPDaccount_emojiStatuses &data) {
 	_recentHash = data.vhash().v;
 	_recent = ListFromMTP(data);
@@ -243,27 +376,57 @@ void EmojiStatuses::updateColored(const MTPDmessages_stickerSet &data) {
 	_coloredUpdated.fire({});
 }
 
-void EmojiStatuses::set(DocumentId id, TimeId until) {
-	auto &api = _owner->session().api();
-	if (_sentRequestId) {
-		api.request(base::take(_sentRequestId)).cancel();
+void EmojiStatuses::updateChannelDefault(
+		const MTPDaccount_emojiStatuses &data) {
+	_channelDefaultHash = data.vhash().v;
+	_channelDefault = ListFromMTP(data);
+	_channelDefaultUpdated.fire({});
+}
+
+void EmojiStatuses::updateChannelColored(
+		const MTPDmessages_stickerSet &data) {
+	const auto &list = data.vdocuments().v;
+	_channelColored.clear();
+	_channelColored.reserve(list.size());
+	for (const auto &sticker : data.vdocuments().v) {
+		_channelColored.push_back(_owner->processDocument(sticker)->id);
 	}
-	_owner->session().user()->setEmojiStatus(id, until);
-	_sentRequestId = api.request(MTPaccount_UpdateEmojiStatus(
-		!id
+	_channelColoredUpdated.fire({});
+}
+
+void EmojiStatuses::set(DocumentId id, TimeId until) {
+	set(_owner->session().user(), id, until);
+}
+
+void EmojiStatuses::set(
+		not_null<PeerData*> peer,
+		DocumentId id,
+		TimeId until) {
+	auto &api = _owner->session().api();
+	auto &requestId = _sentRequests[peer];
+	if (requestId) {
+		api.request(base::take(requestId)).cancel();
+	}
+	peer->setEmojiStatus(id, until);
+	const auto send = [&](auto &&request) {
+		requestId = api.request(
+			std::move(request)
+		).done([=] {
+			_sentRequests.remove(peer);
+		}).fail([=] {
+			_sentRequests.remove(peer);
+		}).send();
+	};
+	const auto status = !id
 		? MTP_emojiStatusEmpty()
 		: !until
 		? MTP_emojiStatus(MTP_long(id))
-		: MTP_emojiStatusUntil(MTP_long(id), MTP_int(until))
-	)).done([=] {
-		_sentRequestId = 0;
-	}).fail([=] {
-		_sentRequestId = 0;
-	}).send();
-}
-
-bool EmojiStatuses::setting() const {
-	return _sentRequestId != 0;;
+		: MTP_emojiStatusUntil(MTP_long(id), MTP_int(until));
+	if (peer->isSelf()) {
+		send(MTPaccount_UpdateEmojiStatus(status));
+	} else if (const auto channel = peer->asChannel()) {
+		send(MTPchannels_UpdateEmojiStatus(channel->inputChannel, status));
+	}
 }
 
 EmojiStatusData ParseEmojiStatus(const MTPEmojiStatus &status) {

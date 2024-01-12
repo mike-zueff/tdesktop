@@ -23,19 +23,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/call_button.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/dropdown_menu.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/tooltip.h"
 #include "ui/widgets/rp_window.h"
 #include "ui/chat/group_call_bar.h"
+#include "ui/controls/userpic_button.h"
 #include "ui/layers/layer_manager.h"
 #include "ui/layers/generic_box.h"
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
-#include "ui/toasts/common_toasts.h"
 #include "ui/image/image_prepare.h"
 #include "ui/painter.h"
 #include "ui/round_rect.h"
-#include "ui/special_buttons.h"
 #include "info/profile/info_profile_values.h" // Info::Profile::Value.
 #include "core/application.h"
 #include "core/core_settings.h"
@@ -46,6 +45,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_group_call.h"
 #include "data/data_session.h"
 #include "data/data_changes.h"
+#include "main/session/session_show.h"
 #include "main/main_session.h"
 #include "base/event_filter.h"
 #include "base/unixtime.h"
@@ -74,6 +74,94 @@ constexpr auto kStartNoConfirmation = TimeId(10);
 constexpr auto kControlsBackgroundOpacity = 0.8;
 constexpr auto kOverrideActiveColorBgAlpha = 172;
 constexpr auto kHideControlsTimeout = 5 * crl::time(1000);
+
+class Show final : public Main::SessionShow {
+public:
+	explicit Show(not_null<Panel*> panel);
+	~Show();
+
+	void showOrHideBoxOrLayer(
+		std::variant<
+			v::null_t,
+			object_ptr<Ui::BoxContent>,
+			std::unique_ptr<Ui::LayerWidget>> &&layer,
+		Ui::LayerOptions options,
+		anim::type animated) const override;
+	[[nodiscard]] not_null<QWidget*> toastParent() const override;
+	[[nodiscard]] bool valid() const override;
+	operator bool() const override;
+
+	[[nodiscard]] Main::Session &session() const override;
+
+private:
+	const base::weak_ptr<Panel> _panel;
+
+};
+
+Show::Show(not_null<Panel*> panel)
+: _panel(base::make_weak(panel)) {
+}
+
+Show::~Show() = default;
+
+void Show::showOrHideBoxOrLayer(
+		std::variant<
+			v::null_t,
+			object_ptr<Ui::BoxContent>,
+			std::unique_ptr<Ui::LayerWidget>> &&layer,
+		Ui::LayerOptions options,
+		anim::type animated) const {
+	using UniqueLayer = std::unique_ptr<Ui::LayerWidget>;
+	using ObjectBox = object_ptr<Ui::BoxContent>;
+	if (auto layerWidget = std::get_if<UniqueLayer>(&layer)) {
+		if (const auto panel = _panel.get()) {
+			panel->showLayer(std::move(*layerWidget), options, animated);
+		}
+	} else if (auto box = std::get_if<ObjectBox>(&layer)) {
+		if (const auto panel = _panel.get()) {
+			panel->showBox(std::move(*box), options, animated);
+		}
+	} else if (const auto panel = _panel.get()) {
+		panel->hideLayer(animated);
+	}
+}
+
+not_null<QWidget*> Show::toastParent() const {
+	const auto panel = _panel.get();
+	Assert(panel != nullptr);
+	return panel->widget();
+}
+
+bool Show::valid() const {
+	return !_panel.empty();
+}
+
+Show::operator bool() const {
+	return valid();
+}
+
+Main::Session &Show::session() const {
+	const auto panel = _panel.get();
+	Assert(panel != nullptr);
+	return panel->call()->peer()->session();
+}
+
+#ifdef Q_OS_WIN
+void UnpinMaximized(not_null<QWidget*> widget) {
+	SetWindowPos(
+		reinterpret_cast<HWND>(widget->window()->windowHandle()->winId()),
+		HWND_NOTOPMOST,
+		0,
+		0,
+		0,
+		0,
+		(SWP_NOMOVE
+			| SWP_NOSIZE
+			| SWP_NOOWNERZORDER
+			| SWP_FRAMECHANGED
+			| SWP_NOACTIVATE));
+}
+#endif // Q_OS_WIN
 
 } // namespace
 
@@ -170,21 +258,34 @@ not_null<GroupCall*> Panel::call() const {
 	return _call;
 }
 
-bool Panel::isActive() const {
-	return window()->isActiveWindow()
-		&& window()->isVisible()
+bool Panel::isVisible() const {
+	return window()->isVisible()
 		&& !(window()->windowState() & Qt::WindowMinimized);
 }
 
-void Panel::showToast(TextWithEntities &&text, crl::time duration) {
-	if (const auto strong = _lastToast.get()) {
-		strong->hideAnimated();
-	}
-	_lastToast = Ui::ShowMultilineToast({
-		.parentOverride = widget(),
-		.text = std::move(text),
-		.duration = duration,
-	});
+bool Panel::isActive() const {
+	return window()->isActiveWindow() && isVisible();
+}
+
+base::weak_ptr<Ui::Toast::Instance> Panel::showToast(
+		const QString &text,
+		crl::time duration) {
+	return Show(this).showToast(text, duration);
+}
+
+base::weak_ptr<Ui::Toast::Instance> Panel::showToast(
+		TextWithEntities &&text,
+		crl::time duration) {
+	return Show(this).showToast(std::move(text), duration);
+}
+
+base::weak_ptr<Ui::Toast::Instance> Panel::showToast(
+		Ui::Toast::Config &&config) {
+	return Show(this).showToast(std::move(config));
+}
+
+std::shared_ptr<Main::SessionShow> Panel::uiShow() {
+	return std::make_shared<Show>(this);
 }
 
 void Panel::minimize() {
@@ -487,7 +588,7 @@ void Panel::initControls() {
 }
 
 void Panel::toggleFullScreen() {
-	if (_fullScreenOrMaximized.current()) {
+	if (_fullScreenOrMaximized.current() || window()->isFullScreen()) {
 		window()->showNormal();
 	} else {
 		window()->showFullScreen();
@@ -634,16 +735,9 @@ void Panel::hideNiceTooltip() {
 }
 
 void Panel::initShareAction() {
-	const auto showBoxCallback = [=](object_ptr<Ui::BoxContent> next) {
-		showBox(std::move(next));
-	};
-	const auto showToastCallback = [=](QString text) {
-		showToast({ text });
-	};
 	auto [shareLinkCallback, shareLinkLifetime] = ShareInviteLinkAction(
 		_peer,
-		showBoxCallback,
-		showToastCallback);
+		uiShow());
 	_callShareLinkCallback = [=, callback = std::move(shareLinkCallback)] {
 		if (_call->lookupReal()) {
 			callback();
@@ -845,7 +939,7 @@ void Panel::setupMembers() {
 	_members->addMembersRequests(
 	) | rpl::start_with_next([=] {
 		if (!_peer->isBroadcast()
-			&& _peer->canWrite(false)
+			&& Data::CanSend(_peer, ChatRestriction::SendOther, false)
 			&& _call->joinAs()->isSelf()) {
 			addMembers();
 		} else if (const auto channel = _peer->asChannel()) {
@@ -1183,7 +1277,12 @@ void Panel::createPinOnTop() {
 
 		_pinOnTop->setVisible(!fullScreenOrMaximized);
 		if (fullScreenOrMaximized) {
+#ifdef Q_OS_WIN
+			UnpinMaximized(window());
+			_unpinnedMaximized = true;
+#else // Q_OS_WIN
 			pin(false);
+#endif // Q_OS_WIN
 
 			_viewport->rp()->events(
 			) | rpl::filter([](not_null<QEvent*> event) {
@@ -1195,6 +1294,9 @@ void Panel::createPinOnTop() {
 
 			_hideControlsTimer.callOnce(kHideControlsTimeout);
 		} else {
+			if (_unpinnedMaximized) {
+				pin(false);
+			}
 			_hideControlsTimerLifetime.destroy();
 			_hideControlsTimer.cancel();
 			refreshTitleGeometry();
@@ -1244,7 +1346,6 @@ void Panel::refreshTopButton() {
 			auto joinAsToggle = object_ptr<Ui::UserpicButton>(
 				widget(),
 				joinAs,
-				Ui::UserpicButton::Role::Custom,
 				st::groupCallJoinAsToggle);
 			_joinAsToggle.destroy();
 			_joinAsToggle = std::move(joinAsToggle);
@@ -1464,8 +1565,26 @@ void Panel::showBox(
 	_layerBg->showBox(std::move(box), options, animated);
 }
 
+void Panel::showLayer(
+		std::unique_ptr<Ui::LayerWidget> layer,
+		Ui::LayerOptions options,
+		anim::type animated) {
+	hideStickedTooltip(StickedTooltipHide::Unavailable);
+	if (window()->width() < st::groupCallWidth
+		|| window()->height() < st::groupCallWidth) {
+		window()->resize(
+			std::max(window()->width(), st::groupCallWidth),
+			std::max(window()->height(), st::groupCallWidth));
+	}
+	_layerBg->showLayer(std::move(layer), options, animated);
+}
+
 void Panel::hideLayer(anim::type animated) {
 	_layerBg->hideAll(animated);
+}
+
+bool Panel::isLayerShown() const {
+	return _layerBg->topShownLayer() != nullptr;
 }
 
 void Panel::kickParticipantSure(not_null<PeerData*> participantPeer) {
@@ -1969,6 +2088,7 @@ void Panel::showNiceTooltip(
 			(normal ? widget().get() : container),
 			std::move(text),
 			st::groupCallNiceTooltipLabel);
+		label->resizeToWidth(label->textMaxWidth());
 		if (normal) {
 			return label;
 		}
@@ -2430,8 +2550,8 @@ void Panel::refreshTitleGeometry() {
 			fullRect.height())
 		: fullRect;
 	const auto sep = st::groupCallTitleSeparator;
-	const auto best = _title->naturalWidth() + (_viewers
-		? (_titleSeparator->width() + sep * 2 + _viewers->naturalWidth())
+	const auto best = _title->textMaxWidth() + (_viewers
+		? (_titleSeparator->width() + sep * 2 + _viewers->textMaxWidth())
 		: 0);
 	const auto from = (widget()->width() - best) / 2;
 	const auto shownTop = (mode() == PanelMode::Default)
@@ -2449,8 +2569,8 @@ void Panel::refreshTitleGeometry() {
 	const auto left = titleRect.x();
 
 	const auto notEnough = std::max(0, best - titleRect.width());
-	const auto titleMaxWidth = _title->naturalWidth();
-	const auto viewersMaxWidth = _viewers ? _viewers->naturalWidth() : 0;
+	const auto titleMaxWidth = _title->textMaxWidth();
+	const auto viewersMaxWidth = _viewers ? _viewers->textMaxWidth() : 0;
 	const auto viewersNotEnough = std::clamp(
 		viewersMaxWidth - titleMaxWidth,
 		0,
@@ -2459,9 +2579,9 @@ void Panel::refreshTitleGeometry() {
 		(notEnough - std::abs(viewersMaxWidth - titleMaxWidth)) / 2,
 		0);
 	_title->resizeToWidth(
-		_title->naturalWidth() - (notEnough - viewersNotEnough));
+		_title->textMaxWidth() - (notEnough - viewersNotEnough));
 	if (_viewers) {
-		_viewers->resizeToWidth(_viewers->naturalWidth() - viewersNotEnough);
+		_viewers->resizeToWidth(_viewers->textMaxWidth() - viewersNotEnough);
 	}
 	const auto layout = [&](int position) {
 		_title->moveToLeft(position, top);
@@ -2549,40 +2669,6 @@ not_null<Ui::RpWindow*> Panel::window() const {
 
 not_null<Ui::RpWidget*> Panel::widget() const {
 	return _window.widget();
-}
-
-Show::Show(not_null<Panel*> panel)
-: _panel(base::make_weak(panel)) {
-}
-
-Show::~Show() = default;
-
-void Show::showBox(
-		object_ptr<Ui::BoxContent> content,
-		Ui::LayerOptions options) const {
-	if (const auto panel = _panel.get()) {
-		panel->showBox(std::move(content), options);
-	}
-}
-
-void Show::hideLayer() const {
-	if (const auto panel = _panel.get()) {
-		panel->hideLayer();
-	}
-}
-
-not_null<QWidget*> Show::toastParent() const {
-	const auto panel = _panel.get();
-	Assert(panel != nullptr);
-	return panel->widget();
-}
-
-bool Show::valid() const {
-	return !_panel.empty();
-}
-
-Show::operator bool() const {
-	return valid();
 }
 
 } // namespace Calls::Group

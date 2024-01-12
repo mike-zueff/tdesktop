@@ -8,7 +8,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/settings/info_settings_widget.h"
 
 #include "info/info_memento.h"
-#include "settings/settings_common.h"
 #include "settings/settings_main.h"
 #include "settings/settings_information.h"
 #include "ui/ui_utility.h"
@@ -45,7 +44,7 @@ Widget::Widget(
 , _self(controller->key().settingsSelf())
 , _type(controller->section().settingsType())
 , _inner([&] {
-	auto inner = _type()->create(this, controller->parentController());
+	auto inner = _type->create(this, controller->parentController());
 	if (inner->hasFlexibleTopBar()) {
 		auto filler = setInnerWidget(object_ptr<Ui::RpWidget>(this));
 		filler->resize(1, 1);

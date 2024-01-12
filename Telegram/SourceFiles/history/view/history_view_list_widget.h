@@ -29,6 +29,7 @@ class PopupMenu;
 class ChatTheme;
 struct ChatPaintContext;
 enum class TouchScrollState;
+struct PeerUserpicView;
 } // namespace Ui
 
 namespace Window {
@@ -37,7 +38,6 @@ class SessionController;
 
 namespace Data {
 struct Group;
-class CloudImageView;
 struct Reaction;
 struct AllowedReactions;
 } // namespace Data
@@ -48,11 +48,16 @@ struct ChosenReaction;
 struct ButtonParameters;
 } // namespace HistoryView::Reactions
 
+namespace Window {
+struct SectionShow;
+} // namespace Window
+
 namespace HistoryView {
 
 struct TextState;
 struct StateRequest;
 class EmojiInteractions;
+class TranslateTracker;
 enum class CursorState : char;
 enum class PointState : char;
 enum class Context : char;
@@ -92,6 +97,7 @@ public:
 	virtual bool listScrollTo(int top, bool syntetic = true) = 0;
 	virtual void listCancelRequest() = 0;
 	virtual void listDeleteRequest() = 0;
+	virtual void listTryProcessKeyInput(not_null<QKeyEvent*> e) = 0;
 	virtual rpl::producer<Data::MessagesSlice> listSource(
 		Data::MessagePosition aroundId,
 		int limitBefore,
@@ -142,6 +148,9 @@ public:
 		Painter &p,
 		const Ui::ChatPaintContext &context) = 0;
 	virtual QString listElementAuthorRank(not_null<const Element*> view) = 0;
+	virtual History *listTranslateHistory() = 0;
+	virtual void listAddTranslatedItems(
+		not_null<TranslateTracker*> tracker) = 0;
 };
 
 struct SelectionData {
@@ -222,11 +231,14 @@ public:
 	[[nodiscard]] bool animatedScrolling() const;
 	bool isAbovePosition(Data::MessagePosition position) const;
 	bool isBelowPosition(Data::MessagePosition position) const;
-	void highlightMessage(FullMsgId itemId);
+	void highlightMessage(
+		FullMsgId itemId,
+		const TextWithEntities &part,
+		int partOffsetHint);
 
 	void showAtPosition(
 		Data::MessagePosition position,
-		anim::type animated = anim::type::normal,
+		const Window::SectionShow &params,
 		Fn<void(bool found)> done = nullptr);
 	void refreshViewer();
 
@@ -272,8 +284,8 @@ public:
 	[[nodiscard]] rpl::producer<FullMsgId> editMessageRequested() const;
 	void editMessageRequestNotify(FullMsgId item) const;
 	[[nodiscard]] bool lastMessageEditRequestNotify() const;
-	[[nodiscard]] rpl::producer<FullMsgId> replyToMessageRequested() const;
-	void replyToMessageRequestNotify(FullMsgId item);
+	[[nodiscard]] rpl::producer<FullReplyTo> replyToMessageRequested() const;
+	void replyToMessageRequestNotify(FullReplyTo id);
 	[[nodiscard]] rpl::producer<FullMsgId> readMessageRequested() const;
 	[[nodiscard]] rpl::producer<FullMsgId> showMessageRequested() const;
 	void replyNextMessage(FullMsgId fullId, bool next = true);
@@ -286,15 +298,7 @@ public:
 
 	// ElementDelegate interface.
 	Context elementContext() override;
-	std::unique_ptr<Element> elementCreate(
-		not_null<HistoryMessage*> message,
-		Element *replacing = nullptr) override;
-	std::unique_ptr<Element> elementCreate(
-		not_null<HistoryService*> message,
-		Element *replacing = nullptr) override;
 	bool elementUnderCursor(not_null<const Element*> view) override;
-	[[nodiscard]] float64 elementHighlightOpacity(
-		not_null<const HistoryItem*> item) const override;
 	bool elementInSelectionMode() override;
 	bool elementIntersectsRange(
 		not_null<const Element*> view,
@@ -324,7 +328,7 @@ public:
 	void elementHandleViaClick(not_null<UserData*> bot) override;
 	bool elementIsChatWide() override;
 	not_null<Ui::PathShiftGradient*> elementPathShiftGradient() override;
-	void elementReplyTo(const FullMsgId &to) override;
+	void elementReplyTo(const FullReplyTo &to) override;
 	void elementStartInteraction(not_null<const Element*> view) override;
 	void elementStartPremium(
 		not_null<const Element*> view,
@@ -357,6 +361,14 @@ protected:
 	int resizeGetHeight(int newWidth) override;
 
 private:
+	using ScrollTopState = ListMemento::ScrollTopState;
+	using PointState = HistoryView::PointState;
+	using CursorState = HistoryView::CursorState;
+	using ChosenReaction = HistoryView::Reactions::ChosenReaction;
+	using ViewsMap = base::flat_map<
+		not_null<HistoryItem*>,
+		std::unique_ptr<Element>>;
+
 	struct MouseState {
 		MouseState();
 		MouseState(
@@ -407,10 +419,6 @@ private:
 		Selecting,
 		Deselecting,
 	};
-	using ScrollTopState = ListMemento::ScrollTopState;
-	using PointState = HistoryView::PointState;
-	using CursorState = HistoryView::CursorState;
-	using ChosenReaction = HistoryView::Reactions::ChosenReaction;
 
 	void onTouchSelect();
 	void onTouchScrollTimer();
@@ -427,14 +435,16 @@ private:
 		Fn<bool()> overrideInitialScroll);
 	bool showAtPositionNow(
 		Data::MessagePosition position,
-		anim::type animated,
+		const Window::SectionShow &params,
 		Fn<void(bool found)> done);
 
 	Ui::ChatPaintContext preparePaintContext(const QRect &clip) const;
 
 	Element *viewForItem(FullMsgId itemId) const;
 	Element *viewForItem(const HistoryItem *item) const;
-	not_null<Element*> enforceViewForItem(not_null<HistoryItem*> item);
+	not_null<Element*> enforceViewForItem(
+		not_null<HistoryItem*> item,
+		ViewsMap &old);
 
 	void mouseActionStart(
 		const QPoint &globalPosition,
@@ -608,6 +618,8 @@ private:
 	template <typename Method>
 	void enumerateDates(Method method);
 
+	void setGeometryCrashAnnotations(not_null<Element*> view);
+
 	static constexpr auto kMinimalIdsLimit = 24;
 
 	const not_null<ListDelegate*> _delegate;
@@ -616,15 +628,13 @@ private:
 
 	Data::MessagePosition _aroundPosition;
 	Data::MessagePosition _shownAtPosition;
+	Data::MessagePosition _initialAroundPosition;
 	Context _context;
 	int _aroundIndex = -1;
 	int _idsLimit = kMinimalIdsLimit;
 	Data::MessagesSlice _slice;
 	std::vector<not_null<Element*>> _items;
-	std::map<
-		not_null<HistoryItem*>,
-		std::unique_ptr<Element>,
-		std::less<>> _views;
+	ViewsMap _views, _viewsCapacity;
 	int _itemsTop = 0;
 	int _itemsWidth = 0;
 	int _itemsHeight = 0;
@@ -635,20 +645,20 @@ private:
 		ItemRevealAnimation> _itemRevealAnimations;
 	int _itemsRevealHeight = 0;
 	base::flat_set<FullMsgId> _animatedStickersPlayed;
-	base::flat_map<
-		not_null<PeerData*>,
-		std::shared_ptr<Data::CloudImageView>> _userpics, _userpicsCache;
-	base::flat_map<
-		MsgId,
-		std::shared_ptr<Data::CloudImageView>> _sponsoredUserpics;
+	base::flat_map<not_null<PeerData*>, Ui::PeerUserpicView> _userpics;
+	base::flat_map<not_null<PeerData*>, Ui::PeerUserpicView> _userpicsCache;
+	base::flat_map<MsgId, Ui::PeerUserpicView> _hiddenSenderUserpics;
 
 	const std::unique_ptr<Ui::PathShiftGradient> _pathGradient;
+	QPainterPath _highlightPathCache;
 
 	base::unique_qptr<Ui::RpWidget> _emptyInfo = nullptr;
 
 	std::unique_ptr<HistoryView::Reactions::Manager> _reactionsManager;
 	rpl::variable<HistoryItem*> _reactionsItem;
 	bool _useCornerReaction = false;
+
+	std::unique_ptr<TranslateTracker> _translateTracker;
 
 	int _minHeight = 0;
 	int _visibleTop = 0;
@@ -731,7 +741,7 @@ private:
 	base::Timer _touchScrollTimer;
 
 	rpl::event_stream<FullMsgId> _requestedToEditMessage;
-	rpl::event_stream<FullMsgId> _requestedToReplyToMessage;
+	rpl::event_stream<FullReplyTo> _requestedToReplyToMessage;
 	rpl::event_stream<FullMsgId> _requestedToReadMessage;
 	rpl::event_stream<FullMsgId> _requestedToShowMessage;
 

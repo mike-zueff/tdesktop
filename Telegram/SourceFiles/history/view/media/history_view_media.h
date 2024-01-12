@@ -32,6 +32,7 @@ struct ColorReplacements;
 namespace Ui {
 struct BubbleSelectionInterval;
 struct ChatPaintContext;
+class SpoilerAnimation;
 } // namespace Ui
 
 namespace Images {
@@ -45,8 +46,10 @@ enum class CursorState : char;
 enum class InfoDisplayType : char;
 struct TextState;
 struct StateRequest;
+struct MediaSpoiler;
 class StickerPlayer;
 class Element;
+struct SelectedQuote;
 
 using PaintContext = Ui::ChatPaintContext;
 
@@ -74,19 +77,28 @@ enum class MediaInBubbleState : uchar {
 	TimeId duration,
 	const QString &base);
 
-class Media : public Object {
+class Media : public Object, public base::has_weak_ptr {
 public:
 	explicit Media(not_null<Element*> parent) : _parent(parent) {
 	}
 
+	[[nodiscard]] not_null<Element*> parent() const;
 	[[nodiscard]] not_null<History*> history() const;
 
 	[[nodiscard]] virtual TextForMimeData selectedText(
 			TextSelection selection) const {
-		return TextForMimeData();
+		return {};
+	}
+	[[nodiscard]] virtual SelectedQuote selectedQuote(
+		TextSelection selection) const;
+	[[nodiscard]] virtual TextSelection selectionFromQuote(
+			const SelectedQuote &quote) const {
+		return {};
 	}
 
-	[[nodiscard]] virtual bool isDisplayed() const;
+	[[nodiscard]] virtual bool isDisplayed() const {
+		return true;
+	}
 	virtual void updateNeedBubbleState() {
 	}
 	[[nodiscard]] virtual bool hasTextForCopy() const {
@@ -94,6 +106,12 @@ public:
 	}
 	[[nodiscard]] virtual bool hideMessageText() const {
 		return true;
+	}
+	[[nodiscard]] virtual bool hideServiceText() const {
+		return false;
+	}
+	[[nodiscard]] virtual bool hideFromName() const {
+		return false;
 	}
 	[[nodiscard]] virtual bool allowsFastShare() const {
 		return false;
@@ -119,11 +137,8 @@ public:
 	// toggle selection instead of activating the pressed link
 	[[nodiscard]] virtual bool toggleSelectionByHandlerClick(
 		const ClickHandlerPtr &p) const = 0;
-
-	// if we press and drag on this media should we drag the item
-	[[nodiscard]] virtual bool dragItem() const {
-		return false;
-	}
+	[[nodiscard]] virtual bool allowTextSelectionByHandler(
+		const ClickHandlerPtr &p) const;
 
 	[[nodiscard]] virtual TextSelection adjustSelection(
 			TextSelection selection,
@@ -207,6 +222,8 @@ public:
 
 	[[nodiscard]] virtual TextWithEntities getCaption() const {
 		return TextWithEntities();
+	}
+	virtual void hideSpoilers() {
 	}
 	[[nodiscard]] virtual bool needsBubble() const = 0;
 	[[nodiscard]] virtual bool unwrapped() const {
@@ -320,6 +337,10 @@ public:
 	virtual void parentTextUpdated() {
 	}
 
+	virtual bool consumeHorizontalScroll(QPoint position, int delta) {
+		return false;
+	}
+
 	virtual ~Media() = default;
 
 protected:
@@ -342,6 +363,12 @@ protected:
 		QRect rect,
 		std::optional<Ui::BubbleRounding> rounding, // nullopt if in WebPage.
 		const PaintContext &context) const;
+	void fillImageSpoiler(
+		QPainter &p,
+		not_null<MediaSpoiler*> spoiler,
+		QRect rect,
+		const PaintContext &context) const;
+	void createSpoilerLink(not_null<MediaSpoiler*> spoiler);
 
 	void repaint() const;
 

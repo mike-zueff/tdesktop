@@ -23,10 +23,15 @@ struct BotInfo {
 	bool readsAllHistory = false;
 	bool cantJoinGroups = false;
 	bool supportsAttachMenu = false;
+	bool canEditInformation = false;
 	int version = 0;
-	QString description, inlinePlaceholder;
+	int descriptionVersion = 0;
+	QString description;
+	QString inlinePlaceholder;
 	std::vector<Data::BotCommand> commands;
-	Ui::Text::String text;
+
+	PhotoData *photo = nullptr;
+	DocumentData *document = nullptr;
 
 	QString botMenuButtonText;
 	QString botMenuButtonUrl;
@@ -56,6 +61,10 @@ enum class UserDataFlag {
 	Premium = (1 << 14),
 	CanReceiveGifts = (1 << 15),
 	VoiceMessagesForbidden = (1 << 16),
+	PersonalPhoto = (1 << 17),
+	StoriesHidden = (1 << 18),
+	HasActiveStories = (1 << 19),
+	HasUnreadStories = (1 << 20),
 };
 inline constexpr bool is_flag_type(UserDataFlag) { return true; };
 using UserDataFlags = base::flags<UserDataFlag>;
@@ -67,7 +76,6 @@ public:
 
 	UserData(not_null<Data::Session*> owner, PeerId id);
 	void setPhoto(const MTPUserProfilePhoto &photo);
-	void setEmojiStatus(const MTPEmojiStatus &status);
 
 	void setName(
 		const QString &newFirstName,
@@ -75,9 +83,6 @@ public:
 		const QString &newPhoneName,
 		const QString &newUsername);
 	void setUsernames(const Data::Usernames &newUsernames);
-
-	void setEmojiStatus(DocumentId emojiStatusId, TimeId until = 0);
-	[[nodiscard]] DocumentId emojiStatusId() const;
 
 	void setUsername(const QString &username);
 	void setPhone(const QString &newPhone);
@@ -111,14 +116,14 @@ public:
 	[[nodiscard]] bool isBot() const;
 	[[nodiscard]] bool isSupport() const;
 	[[nodiscard]] bool isInaccessible() const;
-	[[nodiscard]] bool canWrite() const;
 	[[nodiscard]] bool applyMinPhoto() const;
+	[[nodiscard]] bool hasPersonalPhoto() const;
+	[[nodiscard]] bool hasStoriesHidden() const;
 
 	[[nodiscard]] bool canShareThisContact() const;
 	[[nodiscard]] bool canAddContact() const;
 
 	[[nodiscard]] bool canReceiveGifts() const;
-	[[nodiscard]] bool canReceiveVoices() const;
 
 	// In Data::Session::processUsers() we check only that.
 	// When actually trying to share contact we perform
@@ -163,6 +168,14 @@ public:
 	int commonChatsCount() const;
 	void setCommonChatsCount(int count);
 
+	[[nodiscard]] bool hasPrivateForwardName() const;
+	[[nodiscard]] QString privateForwardName() const;
+	void setPrivateForwardName(const QString &name);
+
+	[[nodiscard]] bool hasActiveStories() const;
+	[[nodiscard]] bool hasUnreadStories() const;
+	void setStoriesState(StoriesState state);
+
 private:
 	auto unavailableReasons() const
 		-> const std::vector<Data::UnavailableReason> & override;
@@ -173,6 +186,7 @@ private:
 
 	std::vector<Data::UnavailableReason> _unavailableReasons;
 	QString _phone;
+	QString _privateForwardName;
 	ContactStatus _contactStatus = ContactStatus::Unknown;
 	CallsStatus _callsStatus = CallsStatus::Unknown;
 	int _commonChatsCount = 0;
@@ -180,8 +194,6 @@ private:
 	uint64 _accessHash = 0;
 	static constexpr auto kInaccessibleAccessHashOld
 		= 0xFFFFFFFFFFFFFFFFULL;
-
-	DocumentId _emojiStatusId = 0;
 
 };
 

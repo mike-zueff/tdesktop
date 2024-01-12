@@ -14,17 +14,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "calls/calls_instance.h"
 #include "ui/widgets/level_meter.h"
 #include "ui/widgets/continuous_sliders.h"
-#include "ui/widgets/buttons.h"
 #include "ui/widgets/checkbox.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/text/text_utilities.h"
-#include "ui/toasts/common_toasts.h"
+#include "ui/vertical_list.h"
 #include "lang/lang_keys.h"
 #include "boxes/share_box.h"
 #include "history/view/history_view_schedule_box.h"
-#include "history/history_message.h" // GetErrorTextForSending.
+#include "history/history_item_helpers.h" // GetErrorTextForSending.
 #include "history/history.h"
 #include "data/data_histories.h"
 #include "data/data_session.h"
@@ -41,10 +40,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_changes.h"
 #include "core/application.h"
 #include "core/core_settings.h"
-#include "ui/boxes/single_choice_box.h"
 #include "webrtc/webrtc_audio_input_tester.h"
 #include "webrtc/webrtc_media_devices.h"
-#include "settings/settings_common.h"
 #include "settings/settings_calls.h"
 #include "main/main_session.h"
 #include "apiwrap.h"
@@ -108,7 +105,7 @@ object_ptr<ShareBox> ShareInviteLinkBox(
 		not_null<PeerData*> peer,
 		const QString &linkSpeaker,
 		const QString &linkListener,
-		Fn<void(QString)> showToast) {
+		std::shared_ptr<Ui::Show> show) {
 	const auto sending = std::make_shared<bool>();
 	const auto box = std::make_shared<QPointer<ShareBox>>();
 
@@ -130,7 +127,7 @@ object_ptr<ShareBox> ShareInviteLinkBox(
 	};
 	auto copyCallback = [=] {
 		QGuiApplication::clipboard()->setText(currentLink());
-		showToast(tr::lng_group_invite_copied(tr::now));
+		show->showToast(tr::lng_group_invite_copied(tr::now));
 	};
 	auto submitCallback = [=](
 			std::vector<not_null<Data::Thread*>> &&result,
@@ -191,10 +188,10 @@ object_ptr<ShareBox> ShareInviteLinkBox(
 		if (*box) {
 			(*box)->closeBox();
 		}
-		showToast(tr::lng_share_done(tr::now));
+		show->showToast(tr::lng_share_done(tr::now));
 	};
 	auto filterCallback = [](not_null<Data::Thread*> thread) {
-		return thread->canWrite();
+		return Data::CanSend(thread, ChatRestriction::SendOther);
 	};
 
 	const auto scheduleStyle = [&] {
@@ -279,16 +276,16 @@ void SettingsBox(
 	};
 
 	if (addCheck) {
-		AddSkip(layout);
+		Ui::AddSkip(layout);
 	}
 	const auto muteJoined = addCheck
-		? AddButton(
+		? layout->add(object_ptr<Ui::SettingsButton>(
 			layout,
 			tr::lng_group_call_new_muted(),
-			st::groupCallSettingsButton)->toggleOn(rpl::single(joinMuted))
+			st::groupCallSettingsButton))->toggleOn(rpl::single(joinMuted))
 		: nullptr;
 	if (addCheck) {
-		AddSkip(layout);
+		Ui::AddSkip(layout);
 	}
 
 	AddButtonWithLabel(
@@ -345,15 +342,15 @@ void SettingsBox(
 			}, was, state->micLevel, kMicTestAnimationDuration);
 		});
 
-		AddSkip(layout);
-		//AddDivider(layout);
-		//AddSkip(layout);
+		Ui::AddSkip(layout);
+		//Ui::AddDivider(layout);
+		//Ui::AddSkip(layout);
 
-		AddButton(
+		layout->add(object_ptr<Ui::SettingsButton>(
 			layout,
 			tr::lng_group_call_noise_suppression(),
 			st::groupCallSettingsButton
-		)->toggleOn(rpl::single(
+		))->toggleOn(rpl::single(
 			settings.groupCallNoiseSuppression()
 		))->toggledChanges(
 		) | rpl::start_with_next([=](bool enabled) {
@@ -392,11 +389,12 @@ void SettingsBox(
 			tryFillFromManager();
 
 			state->delay = settings.groupCallPushToTalkDelay();
-			const auto pushToTalk = AddButton(
-				layout,
-				tr::lng_group_call_push_to_talk(),
-				st::groupCallSettingsButton
-			)->toggleOn(rpl::single(
+			const auto pushToTalk = layout->add(
+				object_ptr<Ui::SettingsButton>(
+					layout,
+					tr::lng_group_call_push_to_talk(),
+					st::groupCallSettingsButton
+			))->toggleOn(rpl::single(
 				settings.groupCallPushToTalk()
 			) | rpl::then(state->pushToTalkToggles.events()));
 			const auto pushToTalkWrap = layout->add(
@@ -404,10 +402,11 @@ void SettingsBox(
 					layout,
 					object_ptr<Ui::VerticalLayout>(layout)));
 			const auto pushToTalkInner = pushToTalkWrap->entity();
-			const auto recording = AddButton(
-				pushToTalkInner,
-				state->recordText.value(),
-				st::groupCallSettingsButton);
+			const auto recording = pushToTalkInner->add(
+				object_ptr<Ui::SettingsButton>(
+					pushToTalkInner,
+					state->recordText.value(),
+					st::groupCallSettingsButton));
 			CreateRightLabel(
 				recording,
 				state->shortcutText.value(),
@@ -578,9 +577,9 @@ void SettingsBox(
 				base::install_event_filter(box, std::move(boxKeyFilter)));
 		}
 
-		AddSkip(layout);
-		//AddDivider(layout);
-		//AddSkip(layout);
+		Ui::AddSkip(layout);
+		//Ui::AddDivider(layout);
+		//Ui::AddSkip(layout);
 	}
 	auto shareLink = Fn<void()>();
 	if (peer->isChannel()
@@ -591,15 +590,11 @@ void SettingsBox(
 			box->getDelegate()->show(std::move(next));
 		});
 		const auto showToast = crl::guard(box, [=](QString text) {
-			Ui::ShowMultilineToast({
-				.parentOverride = Ui::BoxShow(box).toastParent(),
-				.text = { text },
-			});
+			box->showToast(text);
 		});
 		auto [shareLinkCallback, shareLinkLifetime] = ShareInviteLinkAction(
 			peer,
-			showBox,
-			showToast);
+			box->uiShow());
 		shareLink = std::move(shareLinkCallback);
 		box->lifetime().add(std::move(shareLinkLifetime));
 	} else {
@@ -635,10 +630,8 @@ void SettingsBox(
 				}
 				QGuiApplication::clipboard()->setText(link);
 				if (weakBox) {
-					Ui::ShowMultilineToast({
-						.parentOverride = Ui::BoxShow(box).toastParent(),
-						.text = { tr::lng_create_channel_link_copied(tr::now) },
-					});
+					box->showToast(
+						tr::lng_create_channel_link_copied(tr::now));
 				}
 				return true;
 			};
@@ -653,16 +646,16 @@ void SettingsBox(
 		}
 	}
 	if (shareLink) {
-		AddButton(
+		layout->add(object_ptr<Ui::SettingsButton>(
 			layout,
 			tr::lng_group_call_share(),
 			st::groupCallSettingsButton
-		)->addClickHandler(std::move(shareLink));
+		))->addClickHandler(std::move(shareLink));
 	}
 	if (rtmp && !call->rtmpInfo().url.isEmpty()) {
-		AddSkip(layout);
+		Ui::AddSkip(layout);
 		addDivider();
-		AddSkip(layout);
+		Ui::AddSkip(layout);
 
 		struct State {
 			base::unique_qptr<Ui::PopupMenu> menu;
@@ -735,7 +728,7 @@ void SettingsBox(
 		StartRtmpProcess::FillRtmpRows(
 			layout,
 			false,
-			std::make_shared<Ui::BoxShow>(box),
+			box->uiShow(),
 			state->data.events(),
 			&st::groupCallBoxLabel,
 			&st::groupCallSettingsRtmpShowButton,
@@ -745,17 +738,17 @@ void SettingsBox(
 		state->data.fire(call->rtmpInfo());
 
 		addDivider();
-		AddSkip(layout);
+		Ui::AddSkip(layout);
 	}
 
 	if (peer->canManageGroupCall()) {
-		AddButton(
+		layout->add(object_ptr<Ui::SettingsButton>(
 			layout,
 			(peer->isBroadcast()
 				? tr::lng_group_call_end_channel()
 				: tr::lng_group_call_end()),
 			st::groupCallSettingsAttentionButton
-		)->addClickHandler([=] {
+		))->addClickHandler([=] {
 			if (const auto call = weakCall.get()) {
 				box->getDelegate()->show(Box(
 					LeaveBox,
@@ -795,8 +788,7 @@ void SettingsBox(
 
 std::pair<Fn<void()>, rpl::lifetime> ShareInviteLinkAction(
 		not_null<PeerData*> peer,
-		Fn<void(object_ptr<Ui::BoxContent>)> showBox,
-		Fn<void(QString)> showToast) {
+		std::shared_ptr<Ui::Show> show) {
 	auto lifetime = rpl::lifetime();
 	struct State {
 		State(not_null<Main::Session*> session) : session(session) {
@@ -823,11 +815,11 @@ std::pair<Fn<void()>, rpl::lifetime> ShareInviteLinkAction(
 			|| state->linkListener.isEmpty()) {
 			return false;
 		}
-		showBox(ShareInviteLinkBox(
+		show->showBox(ShareInviteLinkBox(
 			peer,
 			*state->linkSpeaker,
 			state->linkListener,
-			showToast));
+			show));
 		return true;
 	};
 	auto callback = [=] {

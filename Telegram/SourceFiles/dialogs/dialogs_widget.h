@@ -11,14 +11,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "dialogs/dialogs_key.h"
 #include "window/section_widget.h"
 #include "ui/effects/animations.h"
-#include "ui/widgets/scroll_area.h"
-#include "ui/special_buttons.h"
+#include "ui/userpic_view.h"
 #include "mtproto/sender.h"
 #include "api/api_single_message_search.h"
 
 namespace MTP {
 class Error;
 } // namespace MTP
+
+namespace Data {
+class Forum;
+enum class StorySourcesList : uchar;
+} // namespace Data
 
 namespace Main {
 class Session;
@@ -30,6 +34,7 @@ class ContactStatus;
 } // namespace HistoryView
 
 namespace Ui {
+class AbstractButton;
 class IconButton;
 class PopupMenu;
 class DropdownMenu;
@@ -40,6 +45,9 @@ class PlainShadow;
 class DownloadBar;
 class GroupCallBar;
 class RequestsBar;
+class MoreChatsBar;
+class JumpDownButton;
+class ElasticScroll;
 template <typename Widget>
 class FadeWrapScaled;
 } // namespace Ui
@@ -47,9 +55,17 @@ class FadeWrapScaled;
 namespace Window {
 class SessionController;
 class ConnectionState;
+struct SectionShow;
 } // namespace Window
 
+namespace Dialogs::Stories {
+class List;
+struct Content;
+} // namespace Dialogs::Stories
+
 namespace Dialogs {
+
+extern const char kOptionForumHideChatsList[];
 
 struct RowDescriptor;
 class Row;
@@ -61,7 +77,14 @@ enum class SearchRequestType;
 
 class Widget final : public Window::AbstractSectionWidget {
 public:
-	Widget(QWidget *parent, not_null<Window::SessionController*> controller);
+	enum class Layout {
+		Main,
+		Child,
+	};
+	Widget(
+		QWidget *parent,
+		not_null<Window::SessionController*> controller,
+		Layout layout);
 
 	// When resizing the widget with top edge moved up or down and we
 	// want to add this top movement to the scroll position, so inner
@@ -70,10 +93,14 @@ public:
 
 	void updateDragInScroll(bool inScroll);
 
+	void showForum(
+		not_null<Data::Forum*> forum,
+		const Window::SectionShow &params);
 	void searchInChat(Key chat);
 	void setInnerFocus();
 
 	void jumpToTop(bool belowPinned = false);
+	void raiseWithTooltip();
 
 	void startWidthAnimation();
 	void stopWidthAnimation();
@@ -81,18 +108,17 @@ public:
 	bool hasTopBarShadow() const {
 		return true;
 	}
-	void showAnimated(Window::SlideDirection direction, const Window::SectionSlideParams &params);
+	void showAnimated(
+		Window::SlideDirection direction,
+		const Window::SectionSlideParams &params);
 	void showFast();
+	[[nodiscard]] rpl::producer<float64> shownProgressValue() const;
 
 	void scrollToEntry(const RowDescriptor &entry);
 
 	void searchMessages(const QString &query, Key inChat = {});
 	void searchTopics();
 	void searchMore();
-
-	void updateForwardBar();
-
-	[[nodiscard]] rpl::producer<> closeForwardBarRequests() const;
 
 	[[nodiscard]] RowDescriptor resolveChatNext(RowDescriptor from = {}) const;
 	[[nodiscard]] RowDescriptor resolveChatPrevious(RowDescriptor from = {}) const;
@@ -115,11 +141,6 @@ protected:
 	void paintEvent(QPaintEvent *e) override;
 
 private:
-	enum class ShowAnimation {
-		External,
-		Internal,
-	};
-
 	void chosenRow(const ChosenRow &row);
 	void listScrollUpdated();
 	void cancelSearchInChat();
@@ -131,7 +152,7 @@ private:
 	bool searchMessages(bool searchCache = false);
 	void needSearchMessages();
 
-	void animationCallback();
+	void slideFinished();
 	void searchReceived(
 		SearchRequestType type,
 		const MTPmessages_Messages &result,
@@ -148,18 +169,27 @@ private:
 	void setupSupportMode();
 	void setupConnectingWidget();
 	void setupMainMenuToggle();
+	void setupMoreChatsBar();
 	void setupDownloadBar();
 	void setupShortcuts();
+	void setupStories();
+	void storiesExplicitCollapse();
+	void collectStoriesUserpicsViews(Data::StorySourcesList list);
+	void storiesToggleExplicitExpand(bool expand);
+	void trackScroll(not_null<Ui::RpWidget*> widget);
 	[[nodiscard]] bool searchForPeersRequired(const QString &query) const;
 	[[nodiscard]] bool searchForTopicsRequired(const QString &query) const;
-	void setSearchInChat(Key chat, PeerData *from = nullptr);
+	bool setSearchInChat(Key chat, PeerData *from = nullptr);
 	void showCalendar();
 	void showSearchFrom();
 	void showMainMenu();
 	void clearSearchCache();
+	void setSearchQuery(const QString &query);
 	void updateControlsVisibility(bool fast = false);
-	void updateLockUnlockVisibility();
+	void updateLockUnlockVisibility(
+		anim::type animated = anim::type::instant);
 	void updateLoadMoreChatsVisibility();
+	void updateStoriesVisibility();
 	void updateJumpToDateVisibility(bool fast = false);
 	void updateSearchFromVisibility(bool fast = false);
 	void updateControlsGeometry();
@@ -171,9 +201,19 @@ private:
 		bool fromRight,
 		anim::type animated);
 	void changeOpenedFolder(Data::Folder *folder, anim::type animated);
-	void changeOpenedForum(ChannelData *forum, anim::type animated);
-	QPixmap grabForFolderSlideAnimation();
-	void startSlideAnimation();
+	void changeOpenedForum(Data::Forum *forum, anim::type animated);
+	void hideChildList();
+	void destroyChildListCanvas();
+	[[nodiscard]] QPixmap grabForFolderSlideAnimation();
+	void startSlideAnimation(
+		QPixmap oldContentCache,
+		QPixmap newContentCache,
+		Window::SlideDirection direction);
+
+	void openChildList(
+		not_null<Data::Forum*> forum,
+		const Window::SectionShow &params);
+	void closeChildList(anim::type animated);
 
 	void fullSearchRefreshOn(rpl::producer<> events);
 	void applyFilterUpdate(bool force = false);
@@ -186,11 +226,13 @@ private:
 		mtpRequestId requestId);
 	void peopleFailed(const MTP::Error &error, mtpRequestId requestId);
 
-	void scrollToTop();
+	void scrollToDefault(bool verytop = false);
+	void scrollToDefaultChecked(bool verytop = false);
 	void setupScrollUpButton();
 	void updateScrollUpVisibility();
 	void startScrollUpButtonAnimation(bool shown);
 	void updateScrollUpPosition();
+	void updateLockUnlockPosition();
 
 	MTP::Sender _api;
 
@@ -198,23 +240,29 @@ private:
 	bool _dragForward = false;
 	base::Timer _chooseByDragTimer;
 
-	object_ptr<Ui::IconButton> _forwardCancel = { nullptr };
+	Layout _layout = Layout::Main;
+	int _narrowWidth = 0;
 	object_ptr<Ui::RpWidget> _searchControls;
 	object_ptr<HistoryView::TopBarWidget> _subsectionTopBar = { nullptr } ;
-	object_ptr<Ui::IconButton> _mainMenuToggle;
+	struct {
+		object_ptr<Ui::IconButton> toggle;
+		object_ptr<Ui::AbstractButton> under;
+	} _mainMenu;
 	object_ptr<Ui::IconButton> _searchForNarrowFilters;
 	object_ptr<Ui::InputField> _filter;
 	object_ptr<Ui::FadeWrapScaled<Ui::IconButton>> _chooseFromUser;
 	object_ptr<Ui::FadeWrapScaled<Ui::IconButton>> _jumpToDate;
 	object_ptr<Ui::CrossButton> _cancelSearch;
-	object_ptr<Ui::IconButton> _lockUnlock;
+	object_ptr< Ui::FadeWrapScaled<Ui::IconButton>> _lockUnlock;
+
+	std::unique_ptr<Ui::MoreChatsBar> _moreChatsBar;
 
 	std::unique_ptr<Ui::PlainShadow> _forumTopShadow;
 	std::unique_ptr<Ui::GroupCallBar> _forumGroupCallBar;
 	std::unique_ptr<Ui::RequestsBar> _forumRequestsBar;
 	std::unique_ptr<HistoryView::ContactStatus> _forumReportBar;
 
-	object_ptr<Ui::ScrollArea> _scroll;
+	object_ptr<Ui::ElasticScroll> _scroll;
 	QPointer<InnerWidget> _inner;
 	class BottomButton;
 	object_ptr<BottomButton> _updateTelegram = { nullptr };
@@ -223,22 +271,32 @@ private:
 	std::unique_ptr<Window::ConnectionState> _connecting;
 
 	Ui::Animations::Simple _scrollToAnimation;
-	Ui::Animations::Simple _a_show;
-	Window::SlideDirection _showDirection = Window::SlideDirection();
-	QPixmap _cacheUnder, _cacheOver;
-	ShowAnimation _showAnimationType = ShowAnimation::External;
+	int _scrollAnimationTo = 0;
+	std::unique_ptr<Window::SlideAnimation> _showAnimation;
+	rpl::variable<float64> _shownProgressValue;
 
 	Ui::Animations::Simple _scrollToTopShown;
-	object_ptr<Ui::HistoryDownButton> _scrollToTop;
+	object_ptr<Ui::JumpDownButton> _scrollToTop;
 	bool _scrollToTopIsShown = false;
 	bool _forumSearchRequested = false;
 
 	Data::Folder *_openedFolder = nullptr;
-	ChannelData *_openedForum = nullptr;
+	Data::Forum *_openedForum = nullptr;
 	Dialogs::Key _searchInChat;
 	History *_searchInMigrated = nullptr;
 	PeerData *_searchFromAuthor = nullptr;
 	QString _lastFilterText;
+
+	rpl::event_stream<rpl::producer<Stories::Content>> _storiesContents;
+	base::flat_map<PeerId, Ui::PeerUserpicView> _storiesUserpicsViewsHidden;
+	base::flat_map<PeerId, Ui::PeerUserpicView> _storiesUserpicsViewsShown;
+	Fn<void()> _updateScrollGeometryCached;
+	std::unique_ptr<Stories::List> _stories;
+	Ui::Animations::Simple _storiesExplicitExpandAnimation;
+	rpl::variable<int> _storiesExplicitExpandValue = 0;
+	int _storiesExplicitExpandScrollTop = 0;
+	int _aboveScrollAdded = 0;
+	bool _storiesExplicitExpand = false;
 
 	base::Timer _searchTimer;
 
@@ -275,7 +333,11 @@ private:
 
 	int _topDelta = 0;
 
-	rpl::event_stream<> _closeForwardBarRequests;
+	std::unique_ptr<Widget> _childList;
+	std::unique_ptr<Ui::RpWidget> _childListShadow;
+	rpl::variable<float64> _childListShown;
+	rpl::variable<PeerId> _childListPeerId;
+	std::unique_ptr<Ui::RpWidget> _hideChildListCanvas;
 
 };
 

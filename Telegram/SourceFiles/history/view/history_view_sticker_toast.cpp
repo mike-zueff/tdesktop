@@ -165,7 +165,7 @@ void StickerToast::showWithTitle(const QString &title) {
 	_weak = Ui::Toast::Show(_parent, Ui::Toast::Config{
 		.text = text,
 		.st = &_st,
-		.durationMs = kPremiumToastDuration,
+		.duration = kPremiumToastDuration,
 		.multiline = true,
 		.dark = true,
 		.slideSide = RectPart::Bottom,
@@ -241,7 +241,7 @@ void StickerToast::showWithTitle(const QString &title) {
 				PremiumPreview::AnimatedEmoji);
 		} else {
 			_controller->show(Box<StickerSetBox>(
-				_controller,
+				_controller->uiShow(),
 				_for->sticker()->set,
 				setType));
 		}
@@ -311,7 +311,7 @@ void StickerToast::setupEmojiPreview(
 		const auto size = Ui::Emoji::GetSizeLarge()
 			/ style::DevicePixelRatio();
 		instance->object.paint(p, Ui::Text::CustomEmoji::Context{
-			.preview = st::toastBg->c,
+			.textColor = st::toastFg->c,
 			.now = crl::now(),
 			.position = QPoint(
 				(widget->width() - size) / 2,

@@ -57,6 +57,14 @@ enum class ChannelDataFlag {
 	JoinToWrite = (1 << 21),
 	RequestToJoin = (1 << 22),
 	Forum = (1 << 23),
+	AntiSpam = (1 << 24),
+	ParticipantsHidden = (1 << 25),
+	StoriesHidden = (1 << 26),
+	HasActiveStories = (1 << 27),
+	HasUnreadStories = (1 << 28),
+	CanGetStatistics = (1 << 29),
+	ViewAsMessages = (1 << 30),
+	SimilarExpanded = (1 << 31),
 };
 inline constexpr bool is_flag_type(ChannelDataFlag) { return true; };
 using ChannelDataFlags = base::flags<ChannelDataFlag>;
@@ -114,6 +122,7 @@ public:
 	QString creatorRank;
 	int botStatus = 0; // -1 - no bots, 0 - unknown, 1 - one bot, that sees all history, 2 - other
 	bool joinedMessageFound = false;
+	bool adminsLoaded = false;
 	StickerSetIdentifier stickerSet;
 
 	enum LastParticipantsStatus {
@@ -223,6 +232,12 @@ public:
 	[[nodiscard]] bool isFake() const {
 		return flags() & Flag::Fake;
 	}
+	[[nodiscard]] bool hasStoriesHidden() const {
+		return flags() & Flag::StoriesHidden;
+	}
+	[[nodiscard]] bool viewForumAsMessages() const {
+		return flags() & Flag::ViewAsMessages;
+	}
 
 	[[nodiscard]] static ChatRestrictionsInfo KickedRestrictedRights(
 		not_null<PeerData*> participant);
@@ -239,6 +254,7 @@ public:
 		not_null<PeerData*> participant,
 		ChatRestrictionsInfo oldRights,
 		ChatRestrictionsInfo newRights);
+	void setViewAsMessagesFlag(bool enabled);
 
 	void markForbidden();
 
@@ -273,6 +289,9 @@ public:
 	}
 	[[nodiscard]] bool requestToJoin() const {
 		return flags() & Flag::RequestToJoin;
+	}
+	[[nodiscard]] bool antiSpamMode() const {
+		return flags() & Flag::AntiSpam;
 	}
 
 	[[nodiscard]] auto adminRights() const {
@@ -313,7 +332,6 @@ public:
 	void setDefaultRestrictions(ChatRestrictions rights);
 
 	// Like in ChatData.
-	[[nodiscard]] bool canWrite(bool checkForForum = true) const;
 	[[nodiscard]] bool allowsForwarding() const;
 	[[nodiscard]] bool canEditInformation() const;
 	[[nodiscard]] bool canEditPermissions() const;
@@ -322,13 +340,15 @@ public:
 	[[nodiscard]] bool canAddMembers() const;
 	[[nodiscard]] bool canAddAdmins() const;
 	[[nodiscard]] bool canBanMembers() const;
-	[[nodiscard]] bool canSendPolls() const;
 	[[nodiscard]] bool anyoneCanAddMembers() const;
 
+	[[nodiscard]] bool canPostMessages() const;
 	[[nodiscard]] bool canEditMessages() const;
 	[[nodiscard]] bool canDeleteMessages() const;
+	[[nodiscard]] bool canPostStories() const;
+	[[nodiscard]] bool canEditStories() const;
+	[[nodiscard]] bool canDeleteStories() const;
 	[[nodiscard]] bool hiddenPreHistory() const;
-	[[nodiscard]] bool canPublish() const;
 	[[nodiscard]] bool canViewMembers() const;
 	[[nodiscard]] bool canViewAdmins() const;
 	[[nodiscard]] bool canViewBanned() const;
@@ -433,9 +453,18 @@ public:
 	void setAllowedReactions(Data::AllowedReactions value);
 	[[nodiscard]] const Data::AllowedReactions &allowedReactions() const;
 
+	[[nodiscard]] bool hasActiveStories() const;
+	[[nodiscard]] bool hasUnreadStories() const;
+	void setStoriesState(StoriesState state);
+
 	[[nodiscard]] Data::Forum *forum() const {
 		return mgInfo ? mgInfo->forum() : nullptr;
 	}
+
+	void processTopics(const MTPVector<MTPForumTopic> &topics);
+
+	[[nodiscard]] int levelHint() const;
+	void updateLevelHint(int levelHint);
 
 	// Still public data members.
 	uint64 access = 0;
@@ -471,6 +500,7 @@ private:
 	int _restrictedCount = 0;
 	int _kickedCount = 0;
 	int _pendingRequestsCount = 0;
+	int _levelHint = 0;
 	std::vector<UserId> _recentRequesters;
 	MsgId _availableMinId = 0;
 
