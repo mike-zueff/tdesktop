@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mainwindow.h"
 #include "window/window_adaptive.h"
+#include "window/window_separate_id.h"
 
 namespace Main {
 class Account;
@@ -36,32 +37,20 @@ namespace Window {
 class Controller final : public base::has_weak_ptr {
 public:
 	Controller();
-	explicit Controller(not_null<Main::Account*> account);
-	Controller(
-		not_null<PeerData*> singlePeer,
-		MsgId showAtMsgId);
+	Controller(SeparateId id, MsgId showAtMsgId);
 	~Controller();
 
 	Controller(const Controller &other) = delete;
 	Controller &operator=(const Controller &other) = delete;
 
 	void showAccount(not_null<Main::Account*> account);
-	[[nodiscard]] PeerData *singlePeer() const;
-	[[nodiscard]] bool isPrimary() const {
-		return (singlePeer() == nullptr);
-	}
+	[[nodiscard]] SeparateId id() const;
+	[[nodiscard]] bool isPrimary() const;
 
 	[[nodiscard]] not_null<::MainWindow*> widget() {
 		return &_widget;
 	}
-	[[nodiscard]] Main::Account &account() const {
-		Expects(_account != nullptr);
-
-		return *_account;
-	}
-	[[nodiscard]] Main::Account *maybeAccount() const {
-		return _account;
-	}
+	[[nodiscard]] Main::Account &account() const;
 	[[nodiscard]] Main::Session *maybeSession() const;
 	[[nodiscard]] SessionController *sessionController() const {
 		return _sessionController.get();
@@ -74,6 +63,7 @@ public:
 
 	[[nodiscard]] Adaptive &adaptive() const;
 
+	void firstShow();
 	void finishFirstShow();
 
 	void setupPasscodeLock();
@@ -89,7 +79,7 @@ public:
 	void showToast(TextWithEntities &&text, crl::time duration = 0);
 	void showToast(const QString &text, crl::time duration = 0);
 
-	void showRightColumn(object_ptr<TWidget> widget);
+	void showRightColumn(object_ptr<Ui::RpWidget> widget);
 
 	void showBox(
 		object_ptr<Ui::BoxContent> content,
@@ -108,17 +98,16 @@ public:
 		typename BoxType,
 		typename = std::enable_if_t<
 			std::is_base_of_v<Ui::BoxContent, BoxType>>>
-	QPointer<BoxType> show(
+		base::weak_qptr<BoxType> show(
 			object_ptr<BoxType> content,
 			Ui::LayerOptions options = Ui::LayerOption::KeepOther,
 			anim::type animated = anim::type()) {
-		auto result = QPointer<BoxType>(content.data());
+		auto result = base::weak_qptr<BoxType>(content.data());
 		showBox(std::move(content), options, animated);
 		return result;
 	}
 
 	void activate();
-	void reActivate();
 	void updateIsActiveFocus();
 	void updateIsActiveBlur();
 	void updateIsActive();
@@ -155,7 +144,7 @@ public:
 
 private:
 	struct CreateArgs {
-		PeerData *singlePeer = nullptr;
+		SeparateId id;
 	};
 	explicit Controller(CreateArgs &&args);
 
@@ -173,14 +162,13 @@ private:
 	void showTermsDecline();
 	void showTermsDelete();
 
-	PeerData *_singlePeer = nullptr;
-	Main::Account *_account = nullptr;
+	SeparateId _id;
 	base::Timer _isActiveTimer;
 	::MainWindow _widget;
 	const std::unique_ptr<Adaptive> _adaptive;
 	std::unique_ptr<SessionController> _sessionController;
 	rpl::variable<SessionController*> _sessionControllerValue;
-	QPointer<Ui::BoxContent> _termsBox;
+	base::weak_qptr<Ui::BoxContent> _termsBox;
 
 	rpl::event_stream<Media::View::OpenRequest> _openInMediaViewRequests;
 

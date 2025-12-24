@@ -7,18 +7,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "chat_helpers/bot_keyboard.h"
 
+#include "api/api_bot.h"
 #include "core/click_handler_types.h"
+#include "data/data_session.h"
+#include "data/data_user.h"
 #include "history/history.h"
 #include "history/history_item_components.h"
-#include "data/data_user.h"
-#include "data/data_session.h"
 #include "main/main_session.h"
-#include "window/window_session_controller.h"
 #include "ui/cached_round_corners.h"
 #include "ui/painter.h"
-#include "api/api_bot.h"
-#include "styles/style_widgets.h"
+#include "ui/ui_utility.h"
+#include "window/window_session_controller.h"
 #include "styles/style_chat.h"
+#include "styles/style_widgets.h"
 
 namespace {
 
@@ -125,7 +126,7 @@ int Style::minButtonWidth(HistoryMessageMarkupButton::Type type) const {
 BotKeyboard::BotKeyboard(
 	not_null<Window::SessionController*> controller,
 	QWidget *parent)
-: TWidget(parent)
+: RpWidget(parent)
 , _controller(controller)
 , _st(&st::botKbButton) {
 	setGeometry(0, 0, _st->margin, st::botKbScroll.deltat);

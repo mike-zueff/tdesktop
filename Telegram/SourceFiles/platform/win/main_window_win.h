@@ -48,6 +48,11 @@ protected:
 
 	bool initGeometryFromSystem() override;
 
+	bool nativeEvent(
+		const QByteArray &eventType,
+		void *message,
+		native_event_filter_result *result) override;
+
 private:
 	struct Private;
 

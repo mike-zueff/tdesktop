@@ -10,23 +10,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/platform_integration.h"
 #include "base/platform/base_platform_info.h"
 #include "base/platform/linux/base_linux_xdp_utilities.h"
-#include "window/notifications_manager.h"
 #include "core/sandbox.h"
 #include "core/application.h"
+#if QT_VERSION < QT_VERSION_CHECK(6, 5, 0)
 #include "core/core_settings.h"
+#endif
 #include "base/random.h"
 
 #include <QtCore/QAbstractEventDispatcher>
-#include <qpa/qwindowsysteminterface.h>
 
-#include <glibmm.h>
 #include <gio/gio.hpp>
 #include <xdpinhibit/xdpinhibit.hpp>
+
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif // __GLIBC__
 
 namespace Platform {
 namespace {
 
 using namespace gi::repository;
+namespace GObject = gi::repository::GObject;
 
 class Application : public Gio::impl::ApplicationImpl {
 public:
@@ -100,72 +104,17 @@ Application::Application()
 	});
 	actionMap.add_action(quitAction);
 
-	using Window::Notifications::Manager;
-	using NotificationId = Manager::NotificationId;
-	using NotificationIdTuple = std::invoke_result_t<
-		decltype(&NotificationId::toTuple),
-		NotificationId*
-	>;
-
-	const auto notificationIdVariantType = [] {
-		try {
-			return gi::wrap(
-				Glib::create_variant(
-					NotificationId().toTuple()
-				).get_type().gobj_copy(),
-				gi::transfer_full
-			);
-		} catch (...) {
-			return GLib::VariantType();
-		}
-	}();
+	const auto notificationIdVariantType = GLib::VariantType::new_("a{sv}");
 
 	auto notificationActivateAction = Gio::SimpleAction::new_(
 		"notification-activate",
 		notificationIdVariantType);
-
-	notificationActivateAction.signal_activate().connect([](
-			Gio::SimpleAction,
-			GLib::Variant parameter) {
-		Core::Sandbox::Instance().customEnterFromEventLoop([&] {
-			try {
-				const auto &app = Core::App();
-				app.notifications().manager().notificationActivated(
-					NotificationId::FromTuple(
-						Glib::wrap(
-							parameter.gobj_copy_()
-						).get_dynamic<NotificationIdTuple>()
-					)
-				);
-			} catch (...) {
-			}
-		});
-	});
 
 	actionMap.add_action(notificationActivateAction);
 
 	auto notificationMarkAsReadAction = Gio::SimpleAction::new_(
 		"notification-mark-as-read",
 		notificationIdVariantType);
-
-	notificationMarkAsReadAction.signal_activate().connect([](
-			Gio::SimpleAction,
-			GLib::Variant parameter) {
-		Core::Sandbox::Instance().customEnterFromEventLoop([&] {
-			try {
-				const auto &app = Core::App();
-				app.notifications().manager().notificationReplied(
-					NotificationId::FromTuple(
-						Glib::wrap(
-							parameter.gobj_copy_()
-						).get_dynamic<NotificationIdTuple>()
-					),
-					{}
-				);
-			} catch (...) {
-			}
-		});
-	});
 
 	actionMap.add_action(notificationMarkAsReadAction);
 }
@@ -180,7 +129,7 @@ gi::ref_ptr<Application> MakeApplication() {
 	return result;
 }
 
-class LinuxIntegration final : public Integration {
+class LinuxIntegration final : public Integration, public base::has_weak_ptr {
 public:
 	LinuxIntegration();
 
@@ -195,30 +144,24 @@ private:
 
 	const gi::ref_ptr<Application> _application;
 	XdpInhibit::InhibitProxy _inhibitProxy;
+#if QT_VERSION < QT_VERSION_CHECK(6, 5, 0)
 	base::Platform::XDP::SettingWatcher _darkModeWatcher;
+#endif // Qt < 6.5.0
 };
 
 LinuxIntegration::LinuxIntegration()
 : _application(MakeApplication())
-, _inhibitProxy(
-	XdpInhibit::InhibitProxy::new_for_bus_sync(
-		Gio::BusType::SESSION_,
-		Gio::DBusProxyFlags::DO_NOT_AUTO_START_AT_CONSTRUCTION_,
-		base::Platform::XDP::kService,
-		base::Platform::XDP::kObjectPath,
-		nullptr))
+#if QT_VERSION < QT_VERSION_CHECK(6, 5, 0)
 , _darkModeWatcher(
 	"org.freedesktop.appearance",
 	"color-scheme",
-	[](uint value) {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-		QWindowSystemInterface::handleThemeChange();
-#else // Qt >= 6.5.0
+	[](GLib::Variant value) {
 		Core::Sandbox::Instance().customEnterFromEventLoop([&] {
-			Core::App().settings().setSystemDarkMode(value == 1);
+			Core::App().settings().setSystemDarkMode(value.get_uint32() == 1);
 		});
+})
 #endif // Qt < 6.5.0
-}) {
+{
 	LOG(("Icon theme: %1").arg(QIcon::themeName()));
 	LOG(("Fallback icon theme: %1").arg(QIcon::fallbackThemeName()));
 
@@ -227,10 +170,40 @@ LinuxIntegration::LinuxIntegration()
 		g_warning("Qt is running without GLib event loop integration, "
 			"expect various functionality to not to work.");
 	}
+
+#ifdef __GLIBC__
+	mallopt(M_ARENA_MAX, 1);
+	QObject::connect(
+		QCoreApplication::eventDispatcher(),
+		&QAbstractEventDispatcher::aboutToBlock,
+		[] {
+			static auto timer = [] {
+				QElapsedTimer timer;
+				timer.start();
+				return timer;
+			}();
+
+			if (timer.hasExpired(10000)) {
+				malloc_trim(0);
+				timer.start();
+			}
+		});
+#endif // __GLIBC__
 }
 
 void LinuxIntegration::init() {
-	initInhibit();
+	XdpInhibit::InhibitProxy::new_for_bus(
+		Gio::BusType::SESSION_,
+		Gio::DBusProxyFlags::NONE_,
+		base::Platform::XDP::kService,
+		base::Platform::XDP::kObjectPath,
+		crl::guard(this, [=](GObject::Object, Gio::AsyncResult res) {
+			_inhibitProxy = XdpInhibit::InhibitProxy::new_for_bus_finish(
+				res,
+				nullptr);
+
+			initInhibit();
+		}));
 }
 
 void LinuxIntegration::initInhibit() {
@@ -248,7 +221,8 @@ void LinuxIntegration::initInhibit() {
 	const auto sessionHandleToken = "tdesktop"
 		+ std::to_string(base::RandomValue<uint>());
 
-	const auto sessionHandle = "/org/freedesktop/portal/desktop/session/"
+	const auto sessionHandle = base::Platform::XDP::kObjectPath
+		+ std::string("/session/")
 		+ uniqueName
 		+ '/'
 		+ sessionHandleToken;

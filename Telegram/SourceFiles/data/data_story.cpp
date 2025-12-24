@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_changes.h"
 #include "data/data_channel.h"
 #include "data/data_file_origin.h"
+#include "data/data_media_preload.h"
 #include "data/data_photo.h"
 #include "data/data_photo_media.h"
 #include "data/data_user.h"
@@ -26,6 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/download_manager_mtproto.h"
 #include "storage/file_download.h" // kMaxFileInMemory
 #include "ui/text/text_utilities.h"
+#include "ui/color_int_conversion.h"
 
 namespace Data {
 namespace {
@@ -40,6 +42,7 @@ using UpdateFlag = StoryUpdate::Flag;
 	return {
 		.geometry = { corner / 100., size / 100. },
 		.rotation = data.vrotation().v,
+		.radius = data.vradius().value_or_empty(),
 	};
 }
 
@@ -82,6 +85,9 @@ using UpdateFlag = StoryUpdate::Flag;
 		});
 	}, [&](const MTPDmediaAreaSuggestedReaction &data) {
 	}, [&](const MTPDmediaAreaChannelPost &data) {
+	}, [&](const MTPDmediaAreaUrl &data) {
+	}, [&](const MTPDmediaAreaWeather &data) {
+	}, [&](const MTPDmediaAreaStarGift &data) {
 	}, [&](const MTPDinputMediaAreaChannelPost &data) {
 		LOG(("API Error: Unexpected inputMediaAreaChannelPost from API."));
 	}, [&](const MTPDinputMediaAreaVenue &data) {
@@ -103,6 +109,9 @@ using UpdateFlag = StoryUpdate::Flag;
 			.dark = data.is_dark(),
 		});
 	}, [&](const MTPDmediaAreaChannelPost &data) {
+	}, [&](const MTPDmediaAreaUrl &data) {
+	}, [&](const MTPDmediaAreaWeather &data) {
+	}, [&](const MTPDmediaAreaStarGift &data) {
 	}, [&](const MTPDinputMediaAreaChannelPost &data) {
 		LOG(("API Error: Unexpected inputMediaAreaChannelPost from API."));
 	}, [&](const MTPDinputMediaAreaVenue &data) {
@@ -124,6 +133,62 @@ using UpdateFlag = StoryUpdate::Flag;
 				peerFromChannel(data.vchannel_id()),
 				data.vmsg_id().v),
 		});
+	}, [&](const MTPDmediaAreaUrl &data) {
+	}, [&](const MTPDmediaAreaWeather &data) {
+	}, [&](const MTPDmediaAreaStarGift &data) {
+	}, [&](const MTPDinputMediaAreaChannelPost &data) {
+		LOG(("API Error: Unexpected inputMediaAreaChannelPost from API."));
+	}, [&](const MTPDinputMediaAreaVenue &data) {
+		LOG(("API Error: Unexpected inputMediaAreaVenue from API."));
+	});
+	return result;
+}
+
+[[nodiscard]] auto ParseUrlArea(const MTPMediaArea &area)
+-> std::optional<UrlArea> {
+	auto result = std::optional<UrlArea>();
+	area.match([&](const MTPDmediaAreaVenue &data) {
+	}, [&](const MTPDmediaAreaGeoPoint &data) {
+	}, [&](const MTPDmediaAreaSuggestedReaction &data) {
+	}, [&](const MTPDmediaAreaChannelPost &data) {
+	}, [&](const MTPDmediaAreaUrl &data) {
+		result.emplace(UrlArea{
+			.area = ParseArea(data.vcoordinates()),
+			.url = qs(data.vurl()),
+		});
+	}, [&](const MTPDmediaAreaWeather &data) {
+	}, [&](const MTPDmediaAreaStarGift &data) {
+		result.emplace(UrlArea{
+			.area = ParseArea(data.vcoordinates()),
+			.url = u"tg://nft?slug="_q + qs(data.vslug()),
+		});
+	}, [&](const MTPDinputMediaAreaChannelPost &data) {
+		LOG(("API Error: Unexpected inputMediaAreaChannelPost from API."));
+	}, [&](const MTPDinputMediaAreaVenue &data) {
+		LOG(("API Error: Unexpected inputMediaAreaVenue from API."));
+	});
+	return result;
+}
+
+[[nodiscard]] auto ParseWeatherArea(const MTPMediaArea &area)
+-> std::optional<WeatherArea> {
+	auto result = std::optional<WeatherArea>();
+	area.match([&](const MTPDmediaAreaVenue &data) {
+	}, [&](const MTPDmediaAreaGeoPoint &data) {
+	}, [&](const MTPDmediaAreaSuggestedReaction &data) {
+	}, [&](const MTPDmediaAreaChannelPost &data) {
+	}, [&](const MTPDmediaAreaUrl &data) {
+	}, [&](const MTPDmediaAreaWeather &data) {
+		result.emplace(WeatherArea{
+			.area = ParseArea(data.vcoordinates()),
+			.emoji = qs(data.vemoji()),
+			.color = Ui::Color32FromSerialized(data.vcolor().v),
+			.millicelsius = int(1000. * std::clamp(
+				data.vtemperature_c().v,
+				-274.,
+				1'000'000.)),
+		});
+	}, [&](const MTPDmediaAreaStarGift &data) {
 	}, [&](const MTPDinputMediaAreaChannelPost &data) {
 		LOG(("API Error: Unexpected inputMediaAreaChannelPost from API."));
 	}, [&](const MTPDinputMediaAreaVenue &data) {
@@ -164,108 +229,16 @@ using UpdateFlag = StoryUpdate::Flag;
 	return false;
 }
 
+[[nodiscard]] PeerData *FromPeer(
+		not_null<Session*> owner,
+		const MTPDstoryItem &data) {
+	if (const auto from = data.vfrom_id()) {
+		return owner->peer(peerFromMTP(*from));
+	}
+	return nullptr;
+}
+
 } // namespace
-
-class StoryPreload::LoadTask final : private Storage::DownloadMtprotoTask {
-public:
-	LoadTask(
-		FullStoryId id,
-		not_null<DocumentData*> document,
-		Fn<void(QByteArray)> done);
-	~LoadTask();
-
-private:
-	bool readyToRequest() const override;
-	int64 takeNextRequestOffset() override;
-	bool feedPart(int64 offset, const QByteArray &bytes) override;
-	void cancelOnFail() override;
-	bool setWebFileSizeHook(int64 size) override;
-
-	base::flat_map<uint32, QByteArray> _parts;
-	Fn<void(QByteArray)> _done;
-	base::flat_set<int> _requestedOffsets;
-	int64 _full = 0;
-	int _nextRequestOffset = 0;
-	bool _finished = false;
-	bool _failed = false;
-
-};
-
-StoryPreload::LoadTask::LoadTask(
-	FullStoryId id,
-	not_null<DocumentData*> document,
-	Fn<void(QByteArray)> done)
-: DownloadMtprotoTask(
-	&document->session().downloader(),
-	document->videoPreloadLocation(),
-	id)
-, _done(std::move(done))
-, _full(document->size) {
-	const auto prefix = document->videoPreloadPrefix();
-	Assert(prefix > 0 && prefix <= document->size);
-	const auto part = Storage::kDownloadPartSize;
-	const auto parts = (prefix + part - 1) / part;
-	for (auto i = 0; i != parts; ++i) {
-		_parts.emplace(i * part, QByteArray());
-	}
-	addToQueue();
-}
-
-StoryPreload::LoadTask::~LoadTask() {
-	if (!_finished && !_failed) {
-		cancelAllRequests();
-	}
-}
-
-bool StoryPreload::LoadTask::readyToRequest() const {
-	const auto part = Storage::kDownloadPartSize;
-	return !_failed && (_nextRequestOffset < _parts.size() * part);
-}
-
-int64 StoryPreload::LoadTask::takeNextRequestOffset() {
-	Expects(readyToRequest());
-
-	_requestedOffsets.emplace(_nextRequestOffset);
-	_nextRequestOffset += Storage::kDownloadPartSize;
-	return _requestedOffsets.back();
-}
-
-bool StoryPreload::LoadTask::feedPart(
-		int64 offset,
-		const QByteArray &bytes) {
-	Expects(offset < _parts.size() * Storage::kDownloadPartSize);
-	Expects(_requestedOffsets.contains(int(offset)));
-	Expects(bytes.size() <= Storage::kDownloadPartSize);
-
-	const auto part = Storage::kDownloadPartSize;
-	_requestedOffsets.remove(int(offset));
-	_parts[offset] = bytes;
-	if ((_nextRequestOffset + part >= _parts.size() * part)
-		&& _requestedOffsets.empty()) {
-		_finished = true;
-		removeFromQueue();
-		auto result = ::Media::Streaming::SerializeComplexPartsMap(_parts);
-		if (result.size() == _full) {
-			// Make sure it is parsed as a complex map.
-			result.push_back(char(0));
-		}
-		_done(result);
-	}
-	return true;
-}
-
-void StoryPreload::LoadTask::cancelOnFail() {
-	_failed = true;
-	cancelAllRequests();
-	_done({});
-}
-
-bool StoryPreload::LoadTask::setWebFileSizeHook(int64 size) {
-	_failed = true;
-	cancelAllRequests();
-	_done({});
-	return false;
-}
 
 Story::Story(
 	StoryId id,
@@ -278,6 +251,7 @@ Story::Story(
 , _repostSourcePeer(RepostSourcePeer(&peer->owner(), data))
 , _repostSourceName(RepostSourceName(data))
 , _repostSourceId(RepostSourceId(data))
+, _fromPeer(FromPeer(&peer->owner(), data))
 , _date(data.vdate().v)
 , _expires(data.vexpire_date().v)
 , _repostModified(RepostModified(data)) {
@@ -379,12 +353,30 @@ TextWithEntities Story::inReplyText() const {
 			Ui::Text::WithEntities);
 }
 
-void Story::setPinned(bool pinned) {
-	_pinned = pinned;
+void Story::setPinnedToTop(bool pinned) {
+	if (_pinnedToTop != pinned) {
+		_pinnedToTop = pinned;
+		if (const auto item = _peer->owner().stories().lookupItem(this)) {
+			item->setIsPinned(pinned);
+		}
+	}
 }
 
-bool Story::pinned() const {
-	return _pinned;
+bool Story::pinnedToTop() const {
+	return _pinnedToTop;
+}
+
+void Story::setInProfile(bool value) {
+	if (_inProfile != value) {
+		_inProfile = value;
+		if (const auto item = _peer->owner().stories().lookupItem(this)) {
+			item->setStoryInProfile(value);
+		}
+	}
+}
+
+bool Story::inProfile() const {
+	return _inProfile;
 }
 
 StoryPrivacy Story::privacy() const {
@@ -421,15 +413,13 @@ bool Story::canDownloadChecked() const {
 }
 
 bool Story::canShare() const {
-	return _privacyPublic && !forbidsForward() && (pinned() || !expired());
+	return _privacyPublic
+		&& !forbidsForward()
+		&& (inProfile() || !expired());
 }
 
 bool Story::canDelete() const {
-	if (const auto channel = _peer->asChannel()) {
-		return channel->canDeleteStories()
-			|| (out() && channel->canPostStories());
-	}
-	return _peer->isSelf();
+	return _peer->canDeleteStories() || (out() && _peer->canPostStories());
 }
 
 bool Story::canReport() const {
@@ -437,13 +427,13 @@ bool Story::canReport() const {
 }
 
 bool Story::hasDirectLink() const {
-	if (!_privacyPublic || (!_pinned && expired())) {
+	if (!_privacyPublic || (!_inProfile && expired())) {
 		return false;
 	}
-	return !_peer->userName().isEmpty();
+	return !_peer->username().isEmpty();
 }
 
-std::optional<QString> Story::errorTextForForward(
+Data::SendError Story::errorTextForForward(
 		not_null<Thread*> to) const {
 	const auto peer = to->peer();
 	const auto holdsPhoto = v::is<not_null<PhotoData*>>(_media.data);
@@ -453,10 +443,10 @@ std::optional<QString> Story::errorTextForForward(
 	const auto second = holdsPhoto
 		? ChatRestriction::SendVideos
 		: ChatRestriction::SendPhotos;
-	if (const auto error = Data::RestrictionError(peer, first)) {
-		return *error;
-	} else if (const auto error = Data::RestrictionError(peer, second)) {
-		return *error;
+	if (const auto one = Data::RestrictionError(peer, first)) {
+		return one;
+	} else if (const auto two = Data::RestrictionError(peer, second)) {
+		return two;
 	} else if (!Data::CanSend(to, first, false)
 		|| !Data::CanSend(to, second, false)) {
 		return tr::lng_forward_cant(tr::now);
@@ -637,6 +627,14 @@ const std::vector<ChannelPost> &Story::channelPosts() const {
 	return _channelPosts;
 }
 
+const std::vector<UrlArea> &Story::urlAreas() const {
+	return _urlAreas;
+}
+
+const std::vector<WeatherArea> &Story::weatherAreas() const {
+	return _weatherAreas;
+}
+
 void Story::applyChanges(
 		StoryMedia media,
 		const MTPDstoryItem &data,
@@ -697,7 +695,7 @@ void Story::applyFields(
 		: data.vsent_reaction()
 		? Data::ReactionFromMTP(*data.vsent_reaction())
 		: Data::ReactionId();
-	const auto pinned = data.is_pinned();
+	const auto inProfile = data.is_pinned();
 	const auto edited = data.is_edited();
 	const auto privacy = data.is_public()
 		? StoryPrivacy::Public
@@ -740,6 +738,8 @@ void Story::applyFields(
 	auto locations = std::vector<StoryLocation>();
 	auto suggestedReactions = std::vector<SuggestedReaction>();
 	auto channelPosts = std::vector<ChannelPost>();
+	auto urlAreas = std::vector<UrlArea>();
+	auto weatherAreas = std::vector<WeatherArea>();
 	if (const auto areas = data.vmedia_areas()) {
 		for (const auto &area : areas->v) {
 			if (const auto location = ParseLocation(area)) {
@@ -753,11 +753,15 @@ void Story::applyFields(
 				suggestedReactions.push_back(*reaction);
 			} else if (auto post = ParseChannelPost(area)) {
 				channelPosts.push_back(*post);
+			} else if (auto url = ParseUrlArea(area)) {
+				urlAreas.push_back(*url);
+			} else if (auto weather = ParseWeatherArea(area)) {
+				weatherAreas.push_back(*weather);
 			}
 		}
 	}
 
-	const auto pinnedChanged = (_pinned != pinned);
+	const auto inProfileChanged = (_inProfile != inProfile);
 	const auto editedChanged = (_edited != edited);
 	const auto mediaChanged = (_media != media);
 	const auto captionChanged = (_caption != caption);
@@ -765,6 +769,8 @@ void Story::applyFields(
 	const auto suggestedReactionsChanged
 		= (_suggestedReactions != suggestedReactions);
 	const auto channelPostsChanged = (_channelPosts != channelPosts);
+	const auto urlAreasChanged = (_urlAreas != urlAreas);
+	const auto weatherAreasChanged = (_weatherAreas != weatherAreas);
 	const auto reactionChanged = (_sentReactionId != reaction);
 
 	_out = out;
@@ -773,7 +779,7 @@ void Story::applyFields(
 	_privacyContacts = (privacy == StoryPrivacy::Contacts);
 	_privacySelectedContacts = (privacy == StoryPrivacy::SelectedContacts);
 	_edited = edited;
-	_pinned = pinned;
+	_inProfile = inProfile;
 	_noForwards = noForwards;
 	if (mediaChanged) {
 		_media = std::move(media);
@@ -790,6 +796,12 @@ void Story::applyFields(
 	if (channelPostsChanged) {
 		_channelPosts = std::move(channelPosts);
 	}
+	if (urlAreasChanged) {
+		_urlAreas = std::move(urlAreas);
+	}
+	if (weatherAreasChanged) {
+		_weatherAreas = std::move(weatherAreas);
+	}
 	if (reactionChanged) {
 		_sentReactionId = reaction;
 	}
@@ -799,7 +811,9 @@ void Story::applyFields(
 		|| captionChanged
 		|| mediaChanged
 		|| locationsChanged
-		|| channelPostsChanged;
+		|| channelPostsChanged
+		|| urlAreasChanged
+		|| weatherAreasChanged;
 	const auto reactionsChanged = reactionChanged
 		|| suggestedReactionsChanged;
 	if (!initial && (changed || reactionsChanged)) {
@@ -813,7 +827,7 @@ void Story::applyFields(
 		}
 		_peer->owner().refreshStoryItemViews(fullId());
 	}
-	if (pinnedChanged) {
+	if (inProfileChanged) {
 		_peer->owner().stories().savedStateChanged(this);
 	}
 }
@@ -890,17 +904,44 @@ StoryId Story::repostSourceId() const {
 	return _repostSourceId;
 }
 
-StoryPreload::StoryPreload(not_null<Story*> story, Fn<void()> done)
-: _story(story)
-, _done(std::move(done)) {
-	start();
+const base::flat_set<int> &Story::albumIds() const {
+	return _albumIds;
 }
 
-StoryPreload::~StoryPreload() {
-	if (_photo) {
-		base::take(_photo)->owner()->cancel();
+void Story::setAlbumIds(base::flat_set<int> ids) {
+	_albumIds = std::move(ids);
+}
+
+PeerData *Story::fromPeer() const {
+	return _fromPeer;
+}
+
+StoryPreload::StoryPreload(not_null<Story*> story, Fn<void()> done)
+: _story(story) {
+	if (const auto photo = _story->photo()) {
+		if (PhotoPreload::Should(photo, story->peer())) {
+			_task = std::make_unique<PhotoPreload>(
+				photo,
+				story->fullId(),
+				std::move(done));
+		} else {
+			done();
+		}
+	} else if (const auto video = _story->document()) {
+		if (VideoPreload::Can(video)) {
+			_task = std::make_unique<VideoPreload>(
+				video,
+				story->fullId(),
+				std::move(done));
+		} else {
+			done();
+		}
+	} else {
+		done();
 	}
 }
+
+StoryPreload::~StoryPreload() = default;
 
 FullStoryId StoryPreload::id() const {
 	return _story->fullId();
@@ -908,78 +949,6 @@ FullStoryId StoryPreload::id() const {
 
 not_null<Story*> StoryPreload::story() const {
 	return _story;
-}
-
-void StoryPreload::start() {
-	if (const auto photo = _story->photo()) {
-		_photo = photo->createMediaView();
-		if (_photo->loaded()) {
-			callDone();
-		} else {
-			_photo->automaticLoad(_story->fullId(), _story->peer());
-			photo->session().downloaderTaskFinished(
-			) | rpl::filter([=] {
-				return _photo->loaded();
-			}) | rpl::start_with_next([=] { callDone(); }, _lifetime);
-		}
-	} else if (const auto video = _story->document()) {
-		if (video->canBeStreamed(nullptr) && video->videoPreloadPrefix()) {
-			const auto key = video->bigFileBaseCacheKey();
-			if (key) {
-				const auto weak = base::make_weak(this);
-				video->owner().cacheBigFile().get(key, [weak](
-						const QByteArray &result) {
-					if (!result.isEmpty()) {
-						crl::on_main([weak] {
-							if (const auto strong = weak.get()) {
-								strong->callDone();
-							}
-						});
-					} else {
-						crl::on_main([weak] {
-							if (const auto strong = weak.get()) {
-								strong->load();
-							}
-						});
-					}
-				});
-			} else {
-				callDone();
-			}
-		} else {
-			callDone();
-		}
-	} else {
-		callDone();
-	}
-}
-
-void StoryPreload::load() {
-	Expects(_story->document() != nullptr);
-
-	const auto video = _story->document();
-	const auto valid = video->videoPreloadLocation().valid();
-	const auto prefix = video->videoPreloadPrefix();
-	const auto key = video->bigFileBaseCacheKey();
-	if (!valid || prefix <= 0 || prefix > video->size || !key) {
-		callDone();
-		return;
-	}
-	_task = std::make_unique<LoadTask>(id(), video, [=](QByteArray data) {
-		if (!data.isEmpty()) {
-			Assert(data.size() < Storage::kMaxFileInMemory);
-			_story->owner().cacheBigFile().putIfEmpty(
-				key,
-				Storage::Cache::Database::TaggedValue(std::move(data), 0));
-		}
-		callDone();
-	});
-}
-
-void StoryPreload::callDone() {
-	if (const auto onstack = _done) {
-		onstack();
-	}
 }
 
 } // namespace Data

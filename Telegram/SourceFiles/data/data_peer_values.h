@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "data/data_peer.h"
+#include "data/data_peer_values.h"
 #include "data/data_chat_participant_status.h"
 
 enum class ImageRoundRadius;
@@ -20,6 +21,7 @@ namespace Data {
 
 struct Reaction;
 class ForumTopic;
+class LastseenStatus;
 
 template <typename ChangeType, typename Error, typename Generator>
 inline auto FlagsValueWithMask(
@@ -151,17 +153,22 @@ inline auto PeerFullFlagValue(
 	not_null<Main::Session*> session);
 
 [[nodiscard]] TimeId SortByOnlineValue(not_null<UserData*> user, TimeId now);
-[[nodiscard]] crl::time OnlineChangeTimeout(TimeId online, TimeId now);
+[[nodiscard]] crl::time OnlineChangeTimeout(
+	LastseenStatus status,
+	TimeId now);
 [[nodiscard]] crl::time OnlineChangeTimeout(
 	not_null<UserData*> user,
 	TimeId now);
-[[nodiscard]] QString OnlineText(TimeId online, TimeId now);
+[[nodiscard]] QString OnlineText(LastseenStatus status, TimeId now);
 [[nodiscard]] QString OnlineText(not_null<UserData*> user, TimeId now);
 [[nodiscard]] QString OnlineTextFull(not_null<UserData*> user, TimeId now);
-[[nodiscard]] bool OnlineTextActive(TimeId online, TimeId now);
 [[nodiscard]] bool OnlineTextActive(not_null<UserData*> user, TimeId now);
 [[nodiscard]] bool IsUserOnline(not_null<UserData*> user, TimeId now = 0);
 [[nodiscard]] bool ChannelHasActiveCall(not_null<ChannelData*> channel);
+[[nodiscard]] bool ChannelHasSubscriptionUntilDate(ChannelData *channel);
+
+[[nodiscard]] rpl::producer<Data::StarsRating> StarsRatingValue(
+	not_null<PeerData*> peer);
 
 [[nodiscard]] rpl::producer<QImage> PeerUserpicImageValue(
 	not_null<PeerData*> peer,

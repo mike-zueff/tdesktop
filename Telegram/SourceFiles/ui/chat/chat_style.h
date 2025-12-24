@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/cached_round_corners.h"
 #include "ui/chat/message_bubble.h"
 #include "ui/chat/chat_style_radius.h"
+#include "ui/controls/swipe_handler_data.h"
 #include "ui/style/style_core_palette.h"
 #include "layout/layout_selection.h"
 #include "styles/style_basic.h"
@@ -75,6 +76,7 @@ struct MessageStyle {
 	style::icon historyCallArrowMissed = { Qt::Uninitialized };
 	style::icon historyCallIcon = { Qt::Uninitialized };
 	style::icon historyCallCameraIcon = { Qt::Uninitialized };
+	style::icon historyCallGroupIcon = { Qt::Uninitialized };
 	style::icon historyFilePlay = { Qt::Uninitialized };
 	style::icon historyFileWaiting = { Qt::Uninitialized };
 	style::icon historyFileDownload = { Qt::Uninitialized };
@@ -91,6 +93,8 @@ struct MessageStyle {
 	style::icon historyTranscribeIcon = { Qt::Uninitialized };
 	style::icon historyTranscribeLock = { Qt::Uninitialized };
 	style::icon historyTranscribeHide = { Qt::Uninitialized };
+	style::icon historyVoiceMessageTTL = { Qt::Uninitialized };
+	style::icon liveLocationLongIcon = { Qt::Uninitialized };
 	std::array<
 		std::unique_ptr<Text::QuotePaintCache>,
 		kColorPatternsCount> quoteCache;
@@ -118,6 +122,7 @@ struct MessageImageStyle {
 	style::icon historyVideoDownload = { Qt::Uninitialized };
 	style::icon historyVideoCancel = { Qt::Uninitialized };
 	style::icon historyVideoMessageMute = { Qt::Uninitialized };
+	style::icon historyVideoMessageTtlIcon = { Qt::Uninitialized };
 	style::icon historyPageEnlarge = { Qt::Uninitialized };
 };
 
@@ -148,6 +153,7 @@ struct ChatPaintHighlight {
 	float64 opacity = 0.;
 	float64 collapsion = 0.;
 	TextSelection range;
+	int todoItemId = 0;
 };
 
 struct ChatPaintContext {
@@ -161,6 +167,7 @@ struct ChatPaintContext {
 	QPainterPath *highlightPathCache = nullptr;
 	mutable QRect highlightInterpolateTo;
 	crl::time now = 0;
+	Ui::Controls::SwipeContextData gestureHorizontal;
 
 	void translate(int x, int y) {
 		viewport.translate(x, y);
@@ -218,6 +225,14 @@ struct ChatPaintContext {
 	bool outbg = false;
 	bool paused = false;
 
+};
+
+struct ChatPaintContextArgs {
+	not_null<ChatTheme*> theme;
+	QRect clip;
+	QPoint visibleAreaPositionGlobal;
+	int visibleAreaTop = 0;
+	int visibleAreaWidth = 0;
 };
 
 [[nodiscard]] int HistoryServiceMsgRadius();
@@ -338,6 +353,9 @@ public:
 	[[nodiscard]] const style::TextPalette &serviceTextPalette() const {
 		return _serviceTextPalette;
 	}
+	[[nodiscard]] const style::TextPalette &priceTagTextPalette() const {
+		return _priceTagTextPalette;
+	}
 	[[nodiscard]] const style::icon &historyRepliesInvertedIcon() const {
 		return _historyRepliesInvertedIcon;
 	}
@@ -377,6 +395,9 @@ public:
 	[[nodiscard]] const style::icon &msgBotKbWebviewIcon() const {
 		return _msgBotKbWebviewIcon;
 	}
+	[[nodiscard]] const style::icon &msgBotKbCopyIcon() const {
+		return _msgBotKbCopyIcon;
+	}
 	[[nodiscard]] const style::icon &historyFastCommentsIcon() const {
 		return _historyFastCommentsIcon;
 	}
@@ -394,6 +415,9 @@ public:
 	}
 	[[nodiscard]] const style::icon &historyFastCloseIcon() const {
 		return _historyFastCloseIcon;
+	}
+	[[nodiscard]] const style::icon &historyFastMoreIcon() const {
+		return _historyFastMoreIcon;
 	}
 	[[nodiscard]] const style::icon &historyMapPoint() const {
 		return _historyMapPoint;
@@ -502,6 +526,7 @@ private:
 	style::TextPalette _historyPsaForwardPalette;
 	style::TextPalette _imgReplyTextPalette;
 	style::TextPalette _serviceTextPalette;
+	style::TextPalette _priceTagTextPalette;
 	style::icon _historyRepliesInvertedIcon = { Qt::Uninitialized };
 	style::icon _historyViewsInvertedIcon = { Qt::Uninitialized };
 	style::icon _historyViewsSendingIcon = { Qt::Uninitialized };
@@ -515,8 +540,10 @@ private:
 	style::icon _msgBotKbPaymentIcon = { Qt::Uninitialized };
 	style::icon _msgBotKbSwitchPmIcon = { Qt::Uninitialized };
 	style::icon _msgBotKbWebviewIcon = { Qt::Uninitialized };
+	style::icon _msgBotKbCopyIcon = { Qt::Uninitialized };
 	style::icon _historyFastCommentsIcon = { Qt::Uninitialized };
 	style::icon _historyFastShareIcon = { Qt::Uninitialized };
+	style::icon _historyFastMoreIcon = { Qt::Uninitialized };
 	style::icon _historyFastTranscribeIcon = { Qt::Uninitialized };
 	style::icon _historyFastTranscribeLock = { Qt::Uninitialized };
 	style::icon _historyGoToOriginalIcon = { Qt::Uninitialized };

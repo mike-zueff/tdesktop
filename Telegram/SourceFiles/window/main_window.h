@@ -33,6 +33,7 @@ class Controller;
 class SessionController;
 class TitleWidget;
 struct TermsLock;
+struct SeparateId;
 
 [[nodiscard]] const QImage &Logo();
 [[nodiscard]] const QImage &LogoNoMargin();
@@ -54,6 +55,7 @@ struct CounterLayerArgs {
 };
 
 extern const char kOptionNewWindowsSizeAsFirst[];
+extern const char kOptionDisableTouchbar[];
 
 [[nodiscard]] QImage GenerateCounterLayer(CounterLayerArgs &&args);
 [[nodiscard]] QImage WithSmallCounter(QImage image, CounterLayerArgs &&args);
@@ -66,7 +68,7 @@ public:
 	[[nodiscard]] Window::Controller &controller() const {
 		return *_controller;
 	}
-	[[nodiscard]] PeerData *singlePeer() const;
+	[[nodiscard]] Window::SeparateId id() const;
 	[[nodiscard]] bool isPrimary() const;
 	[[nodiscard]] Main::Account &account() const;
 	[[nodiscard]] Window::SessionController *sessionController() const;
@@ -98,9 +100,7 @@ public:
 	}
 	void positionUpdated();
 
-	void reActivateWindow();
-
-	void showRightColumn(object_ptr<TWidget> widget);
+	void showRightColumn(object_ptr<Ui::RpWidget> widget);
 	int maximalExtendBy() const;
 	bool canExtendNoMove(int extendBy) const;
 
@@ -119,7 +119,8 @@ public:
 
 	void launchDrag(std::unique_ptr<QMimeData> data, Fn<void()> &&callback);
 
-	rpl::producer<> leaveEvents() const;
+	[[nodiscard]] rpl::producer<> leaveEvents() const;
+	[[nodiscard]] rpl::producer<> imeCompositionStarts() const;
 
 	virtual void updateWindowIcon() = 0;
 	void updateTitle();
@@ -132,6 +133,7 @@ public:
 	void recountGeometryConstraints();
 	virtual void updateControlsGeometry();
 
+	void firstShow();
 	bool minimizeToTray();
 	void updateGlobalMenu() {
 		updateGlobalMenuHook();
@@ -142,12 +144,16 @@ public:
 		Core::WindowPosition initial,
 		QSize minSize) const;
 
+	[[nodiscard]] virtual rpl::producer<QPoint> globalForceClicks() {
+		return rpl::never<QPoint>();
+	}
+
 protected:
 	void leaveEventHook(QEvent *e) override;
 
 	void savePosition(Qt::WindowState state = Qt::WindowActive);
 	void handleStateChanged(Qt::WindowState state);
-	void handleActiveChanged();
+	void handleActiveChanged(bool active);
 	void handleVisibleChanged(bool visible);
 
 	virtual void checkActivation() {
@@ -184,6 +190,7 @@ protected:
 		return false;
 	}
 
+	void imeCompositionStartReceived();
 	void setPositionInited();
 
 	virtual QRect computeDesktopRect() const;
@@ -195,9 +202,8 @@ private:
 
 	[[nodiscard]] Core::WindowPosition initialPosition() const;
 	[[nodiscard]] Core::WindowPosition nextInitialChildPosition(
-		bool primary);
+		SeparateId childId);
 	[[nodiscard]] QRect countInitialGeometry(Core::WindowPosition position);
-	void initGeometry();
 
 	bool computeIsActive() const;
 
@@ -209,11 +215,12 @@ private:
 	object_ptr<Ui::PlainShadow> _titleShadow = { nullptr };
 	object_ptr<Ui::RpWidget> _outdated;
 	object_ptr<Ui::RpWidget> _body;
-	object_ptr<TWidget> _rightColumn = { nullptr };
+	object_ptr<Ui::RpWidget> _rightColumn = { nullptr };
 
 	bool _isActive = false;
 
 	rpl::event_stream<> _leaveEvents;
+	rpl::event_stream<> _imeCompositionStartReceived;
 
 	bool _maximizedBeforeHide = false;
 

@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Data {
 class ForumTopic;
+class SavedSublist;
 class PhotoMedia;
 } // namespace Data
 
@@ -37,12 +38,14 @@ namespace Profile {
 class Memento;
 class Members;
 class Cover;
+struct Origin;
 
 class InnerWidget final : public Ui::RpWidget {
 public:
 	InnerWidget(
 		QWidget *parent,
-		not_null<Controller*> controller);
+		not_null<Controller*> controller,
+		Origin origin);
 
 	void saveState(not_null<Memento*> memento);
 	void restoreState(not_null<Memento*> memento);
@@ -57,7 +60,9 @@ protected:
 		int visibleBottom) override;
 
 private:
-	object_ptr<RpWidget> setupContent(not_null<RpWidget*> parent);
+	object_ptr<RpWidget> setupContent(
+		not_null<RpWidget*> parent,
+		Origin origin);
 	object_ptr<RpWidget> setupSharedMedia(not_null<RpWidget*> parent);
 	void setupMembers(not_null<Ui::VerticalLayout*> container);
 
@@ -70,6 +75,9 @@ private:
 	const not_null<PeerData*> _peer;
 	PeerData * const _migrated = nullptr;
 	Data::ForumTopic * const _topic = nullptr;
+	Data::SavedSublist * const _sublist = nullptr;
+
+	PeerData *_reactionGroup = nullptr;
 
 	std::shared_ptr<Data::PhotoMedia> _nonPersonalView;
 

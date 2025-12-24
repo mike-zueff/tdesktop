@@ -59,7 +59,7 @@ void PowerSavingBox(not_null<Ui::GenericBox*> box) {
 		state->forceDisabledMessage.value());
 
 	const auto controlsRaw = checkboxes.data();
-	box->addRow(std::move(checkboxes), {});
+	box->addRow(std::move(checkboxes), style::margins());
 
 	auto automatic = (Ui::SettingsButton*)nullptr;
 	if (batterySaving.has_value()) {
@@ -152,6 +152,7 @@ EditFlagsDescriptor<PowerSaving::Flags> PowerSavingLabels() {
 			&st::menuIconChatBubble,
 		},
 		{ kChatSpoiler, tr::lng_settings_power_chat_spoiler(tr::now) },
+		{ kChatEffects, tr::lng_settings_power_chat_effects(tr::now) },
 	};
 	auto calls = std::vector<Label>{
 		{

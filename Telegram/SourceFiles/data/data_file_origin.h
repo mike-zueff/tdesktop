@@ -121,6 +121,14 @@ struct FileOriginPremiumPreviews {
 	}
 };
 
+struct FileOriginWebPage {
+	QString url;
+
+	inline bool operator<(const FileOriginWebPage &other) const {
+		return url < other.url;
+	}
+};
+
 struct FileOrigin {
 	using Variant = std::variant<
 		v::null_t,
@@ -134,6 +142,7 @@ struct FileOrigin {
 		FileOriginTheme,
 		FileOriginRingtones,
 		FileOriginPremiumPreviews,
+		FileOriginWebPage,
 		FileOriginStory>;
 
 	FileOrigin() = default;
@@ -156,6 +165,8 @@ struct FileOrigin {
 	FileOrigin(FileOriginRingtones data) : data(data) {
 	}
 	FileOrigin(FileOriginPremiumPreviews data) : data(data) {
+	}
+	FileOrigin(FileOriginWebPage data) : data(data) {
 	}
 	FileOrigin(FileOriginStory data) : data(data) {
 	}
@@ -208,7 +219,9 @@ UpdatedFileReferences GetFileReferences(const MTPTheme &data);
 UpdatedFileReferences GetFileReferences(
 	const MTPaccount_SavedRingtones &data);
 UpdatedFileReferences GetFileReferences(const MTPhelp_PremiumPromo &data);
+UpdatedFileReferences GetFileReferences(const MTPmessages_WebPage &data);
 UpdatedFileReferences GetFileReferences(const MTPstories_Stories &data);
+UpdatedFileReferences GetFileReferences(const MTPusers_SavedMusic &data);
 
 // Admin Log Event.
 UpdatedFileReferences GetFileReferences(const MTPMessageMedia &data);

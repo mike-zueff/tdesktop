@@ -8,29 +8,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/weak_ptr.h"
-#include "chat_helpers/bot_command.h"
 #include "media/player/media_player_float.h"
 #include "mtproto/sender.h"
 
-struct HistoryMessageMarkupButton;
-class MainWindow;
 class HistoryWidget;
 class StackItem;
-struct FileLoadResult;
-class History;
 class Image;
 
-namespace MTP {
-class Error;
-} // namespace MTP
-
-namespace Api {
-struct SendAction;
-struct SendOptions;
-} // namespace Api
+namespace Bot {
+struct SendCommandRequest;
+} // namespace Bot
 
 namespace SendMenu {
-enum class Type;
+struct Details;
 } // namespace SendMenu
 
 namespace Main {
@@ -42,6 +32,8 @@ class Thread;
 class WallPaper;
 struct ForwardDraft;
 class Forum;
+class SavedMessages;
+struct ReportInput;
 } // namespace Data
 
 namespace Dialogs {
@@ -69,11 +61,8 @@ struct Content;
 
 namespace Ui {
 class ChatTheme;
-class ConfirmBox;
 class ResizeArea;
 class PlainShadow;
-class DropdownMenu;
-enum class ReportReason;
 template <typename Widget>
 class SlideWrap;
 } // namespace Ui
@@ -84,13 +73,13 @@ template <typename Inner>
 class TopBarWrapWidget;
 class SectionMemento;
 class SectionWidget;
-class AbstractSectionWidget;
 class SlideAnimation;
 class ConnectionState;
 struct SectionSlideParams;
 struct SectionShow;
 enum class Column;
 class HistoryHider;
+struct SeparateId;
 } // namespace Window
 
 namespace Calls {
@@ -103,13 +92,7 @@ namespace Core {
 class Changelogs;
 } // namespace Core
 
-namespace InlineBots {
-namespace Layout {
-class ItemBase;
-} // namespace Layout
-} // namespace InlineBots
-
-class MainWidget
+class MainWidget final
 	: public Ui::RpWidget
 	, private Media::Player::FloatDelegate {
 public:
@@ -122,7 +105,7 @@ public:
 
 	[[nodiscard]] Main::Session &session() const;
 	[[nodiscard]] not_null<Window::SessionController*> controller() const;
-	[[nodiscard]] PeerData *singlePeer() const;
+	[[nodiscard]] Window::SeparateId windowId() const;
 	[[nodiscard]] bool isPrimary() const;
 	[[nodiscard]] bool isMainSectionShown() const;
 	[[nodiscard]] bool isThirdSectionShown() const;
@@ -152,17 +135,12 @@ public:
 		const SectionShow &params);
 	void updateColumnLayout();
 	bool stackIsEmpty() const;
-	void showBackFromStack(
-		const SectionShow &params);
+	bool showBackFromStack(const SectionShow &params);
 	void orderWidgets();
 	QPixmap grabForShowAnimation(const Window::SectionSlideParams &params);
 	void checkMainSectionToLayer();
 
-	[[nodiscard]] SendMenu::Type sendMenuType() const;
-	bool sendExistingDocument(not_null<DocumentData*> document);
-	bool sendExistingDocument(
-		not_null<DocumentData*> document,
-		Api::SendOptions options);
+	[[nodiscard]] SendMenu::Details sendMenuDetails() const;
 
 	[[nodiscard]] bool animatingShow() const;
 
@@ -186,7 +164,10 @@ public:
 	void sendBotCommand(Bot::SendCommandRequest request);
 	void hideSingleUseKeyboard(FullMsgId replyToId);
 
-	void searchMessages(const QString &query, Dialogs::Key inChat);
+	void searchMessages(
+		const QString &query,
+		Dialogs::Key inChat,
+		PeerData *searchFrom = nullptr);
 
 	void setChatBackground(
 		const Data::WallPaper &background,
@@ -196,19 +177,14 @@ public:
 	void checkChatBackground();
 	Image *newBackgroundThumb();
 
-	void clearBotStartToken(PeerData *peer);
-
-	void ctrlEnterSubmitUpdated();
 	void setInnerFocus();
 
 	bool contentOverlapped(const QRect &globalRect);
 
-	void searchInChat(Dialogs::Key chat);
-
 	void showChooseReportMessages(
 		not_null<PeerData*> peer,
-		Ui::ReportReason reason,
-		Fn<void(MessageIdsList)> done);
+		Data::ReportInput reportInput,
+		Fn<void(std::vector<MsgId>)> done);
 	void clearChooseReportMessages();
 
 	void toggleChooseChatTheme(
@@ -235,20 +211,26 @@ public:
 		Fn<void()> callback,
 		const SectionShow &params) const;
 
-	void dialogsCancelled();
+	void showNonPremiumLimitToast(bool download);
 
-protected:
+	void dialogsCancelled();
+	void toggleFiltersMenu(bool value) const;
+
+private:
 	void paintEvent(QPaintEvent *e) override;
 	void resizeEvent(QResizeEvent *e) override;
 	bool eventFilter(QObject *o, QEvent *e) override;
 
-private:
+	[[nodiscard]] bool relevantForDialogsFocus(
+		not_null<QWidget*> widget) const;
+
 	void showFinished();
 	void handleAdaptiveLayoutUpdate();
 	void updateWindowAdaptiveLayout();
 	void handleAudioUpdate(const Media::Player::TrackState &state);
 	void updateMediaPlaylistPosition(int x);
 	void updateControlsGeometry();
+	void updateMainSectionShown();
 	void updateDialogsWidthAnimated();
 	void updateThirdColumnToCurrentChat(
 		Dialogs::Key key,
@@ -263,7 +245,7 @@ private:
 
 	void setCurrentCall(Calls::Call *call);
 	void setCurrentGroupCall(Calls::GroupCall *call);
-	void createCallTopBar();
+	void createCallTopBar(Calls::Call *call, Calls::GroupCall *group);
 	void destroyCallTopBar();
 	void callTopBarHeightUpdated(int callTopBarHeight);
 
@@ -277,7 +259,7 @@ private:
 	void showNewSection(
 		std::shared_ptr<Window::SectionMemento> memento,
 		const SectionShow &params);
-	void dropMainSection(Window::SectionWidget *widget);
+	void destroyThirdSection();
 
 	Window::SectionSlideParams prepareThirdSectionAnimation(Window::SectionWidget *section);
 
@@ -348,16 +330,17 @@ private:
 	int _thirdColumnWidth = 0;
 	Ui::Animations::Simple _a_dialogsWidth;
 
-	const base::unique_qptr<Ui::PlainShadow> _sideShadow;
-	object_ptr<Ui::PlainShadow> _thirdShadow = { nullptr };
-	object_ptr<Ui::ResizeArea> _firstColumnResizeArea = { nullptr };
-	object_ptr<Ui::ResizeArea> _thirdColumnResizeArea = { nullptr };
 	const base::unique_qptr<Dialogs::Widget> _dialogs;
 	const base::unique_qptr<HistoryWidget> _history;
 	object_ptr<Window::SectionWidget> _mainSection = { nullptr };
 	object_ptr<Window::SectionWidget> _thirdSection = { nullptr };
 	std::shared_ptr<Window::SectionMemento> _thirdSectionFromStack;
 	std::unique_ptr<Window::ConnectionState> _connecting;
+
+	const base::unique_qptr<Ui::PlainShadow> _sideShadow;
+	object_ptr<Ui::PlainShadow> _thirdShadow = { nullptr };
+	object_ptr<Ui::ResizeArea> _firstColumnResizeArea = { nullptr };
+	object_ptr<Ui::ResizeArea> _thirdColumnResizeArea = { nullptr };
 
 	base::weak_ptr<Calls::Call> _currentCall;
 	base::weak_ptr<Calls::GroupCall> _currentGroupCall;

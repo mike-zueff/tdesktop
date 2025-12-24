@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/text_options.h"
 #include "ui/painter.h"
 #include "ui/vertical_list.h"
+#include "ui/ui_utility.h"
 #include "storage/localstorage.h"
 #include "boxes/abstract_box.h"
 #include "boxes/premium_preview_box.h"
@@ -1121,7 +1122,7 @@ void LanguageBox::prepare() {
 
 	using namespace rpl::mappers;
 
-	const auto [recent, official] = PrepareLists();
+	const auto &[recent, official] = PrepareLists();
 	const auto inner = setInnerWidget(
 		object_ptr<Content>(this, recent, official),
 		st::boxScroll,
@@ -1216,7 +1217,7 @@ void LanguageBox::setupTop(not_null<Ui::VerticalLayout*> container) {
 		if (checked && !premium) {
 			ShowPremiumPreviewToBuy(
 				_controller,
-				PremiumPreview::RealTimeTranslation);
+				PremiumFeature::RealTimeTranslation);
 			_translateChatTurnOff.fire(false);
 		}
 		return premium

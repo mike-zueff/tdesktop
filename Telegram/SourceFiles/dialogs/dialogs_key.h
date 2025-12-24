@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/qt/qt_compare.h"
+#include "data/data_message_reaction_id.h"
+
 class History;
 class PeerData;
 
@@ -15,11 +18,13 @@ class Thread;
 class Folder;
 class ForumTopic;
 class SavedSublist;
+struct ReactionId;
 } // namespace Data
 
 namespace Dialogs {
 
 class Entry;
+enum class ChatSearchTab : uchar;
 
 class Key {
 public:
@@ -108,15 +113,53 @@ struct EntryState {
 		Replies,
 		SavedSublist,
 		ContextMenu,
+		SubsectionTabsMenu,
+		ShortcutMessages,
 	};
 
 	Key key;
 	Section section = Section::History;
 	FilterId filterId = 0;
 	FullReplyTo currentReplyTo;
+	SuggestPostOptions currentSuggest;
 
-	friend inline auto operator<=>(EntryState, EntryState) noexcept
-		= default;
+	friend inline auto operator<=>(
+		const EntryState&,
+		const EntryState&) = default;
+	friend inline bool operator==(
+		const EntryState&,
+		const EntryState&) = default;
+};
+
+enum class ChatTypeFilter : uchar {
+	All,
+	Private,
+	Groups,
+	Channels,
+};
+
+struct SearchState {
+	Key inChat;
+	PeerData *fromPeer = nullptr;
+	std::vector<Data::ReactionId> tags;
+	ChatSearchTab tab = {};
+	ChatTypeFilter filter = ChatTypeFilter::All;
+	QString query;
+
+	[[nodiscard]] bool empty() const;
+	[[nodiscard]] ChatSearchTab defaultTabForMe() const;
+	[[nodiscard]] bool filterChatsList() const;
+
+	explicit operator bool() const {
+		return !empty();
+	}
+
+	friend inline auto operator<=>(
+		const SearchState&,
+		const SearchState&) noexcept = default;
+	friend inline bool operator==(
+		const SearchState&,
+		const SearchState&) = default;
 };
 
 } // namespace Dialogs

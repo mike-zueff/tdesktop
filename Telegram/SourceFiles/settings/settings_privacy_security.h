@@ -18,6 +18,11 @@ class BoxContent;
 
 namespace Settings {
 
+void SetupSensitiveContent(
+	not_null<Window::SessionController*> controller,
+	not_null<Ui::VerticalLayout*> container,
+	rpl::producer<> updateTrigger);
+
 int ExceptionUsersCount(const std::vector<not_null<PeerData*>> &exceptions);
 
 bool CheckEditCloudPassword(not_null<::Main::Session*> session);
@@ -26,7 +31,7 @@ object_ptr<Ui::BoxContent> EditCloudPasswordBox(
 void RemoveCloudPassword(not_null<Window::SessionController*> session);
 object_ptr<Ui::BoxContent> CloudPasswordAppOutdatedBox();
 
-void AddPrivacyButton(
+not_null<Ui::SettingsButton*> AddPrivacyButton(
 	not_null<Window::SessionController*> controller,
 	not_null<Ui::VerticalLayout*> container,
 	rpl::producer<QString> label,
@@ -47,12 +52,8 @@ public:
 
 	[[nodiscard]] rpl::producer<QString> title() override;
 
-	rpl::producer<Type> sectionShowOther() override;
-
 private:
 	void setupContent(not_null<Window::SessionController*> controller);
-
-	rpl::event_stream<Type> _showOther;
 
 };
 

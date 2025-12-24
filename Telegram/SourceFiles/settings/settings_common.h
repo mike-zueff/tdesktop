@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "ui/text/text_variant.h"
 #include "ui/rp_widget.h"
 #include "ui/round_rect.h"
 #include "base/object_ptr.h"
@@ -15,6 +16,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace anim {
 enum class repeat : uchar;
 } // namespace anim
+
+namespace Info {
+struct SelectedItems;
+enum class SelectionAction;
+} // namespace Info
 
 namespace Main {
 class Session;
@@ -64,6 +70,12 @@ public:
 	[[nodiscard]] virtual rpl::producer<std::vector<Type>> removeFromStack() {
 		return nullptr;
 	}
+	[[nodiscard]] virtual bool closeByOutsideClick() const {
+		return true;
+	}
+	virtual void checkBeforeClose(Fn<void()> close) {
+		close();
+	}
 	[[nodiscard]] virtual rpl::producer<QString> title() = 0;
 	virtual void sectionSaveChanges(FnMut<void()> done) {
 		done();
@@ -76,11 +88,11 @@ public:
 	[[nodiscard]] virtual const Ui::RoundRect *bottomSkipRounding() const {
 		return nullptr;
 	}
-	[[nodiscard]] virtual QPointer<Ui::RpWidget> createPinnedToTop(
+	[[nodiscard]] virtual base::weak_qptr<Ui::RpWidget> createPinnedToTop(
 			not_null<QWidget*> parent) {
 		return nullptr;
 	}
-	[[nodiscard]] virtual QPointer<Ui::RpWidget> createPinnedToBottom(
+	[[nodiscard]] virtual base::weak_qptr<Ui::RpWidget> createPinnedToBottom(
 			not_null<Ui::RpWidget*> parent) {
 		return nullptr;
 	}
@@ -88,6 +100,23 @@ public:
 		return false;
 	}
 	virtual void setStepDataReference(std::any &data) {
+	}
+
+	[[nodiscard]] virtual auto selectedListValue()
+	-> rpl::producer<Info::SelectedItems> {
+		return nullptr;
+	}
+	virtual void selectionAction(Info::SelectionAction action) {
+	}
+	virtual void fillTopBarMenu(
+		const Ui::Menu::MenuCallback &addAction) {
+	}
+
+	virtual bool paintOuter(
+			not_null<QWidget*> outer,
+			int maxVisibleHeight,
+			QRect clip) {
+		return false;
 	}
 };
 
@@ -102,6 +131,7 @@ struct IconDescriptor {
 	IconType type = IconType::Rounded;
 	const style::color *background = nullptr;
 	std::optional<QBrush> backgroundBrush; // Can be useful for gradients.
+	bool newBadge = false;
 
 	explicit operator bool() const {
 		return (icon != nullptr);
@@ -148,14 +178,24 @@ not_null<Button*> AddButtonWithLabel(
 	IconDescriptor &&descriptor = {});
 void CreateRightLabel(
 	not_null<Button*> button,
-	rpl::producer<QString> label,
+	v::text::data &&label,
 	const style::SettingsButton &st,
-	rpl::producer<QString> buttonText);
+	rpl::producer<QString> buttonText,
+	Ui::Text::MarkedContext context = {});
+
+struct DividerWithLottieDescriptor {
+	QString lottie;
+	std::optional<anim::repeat> lottieRepeat;
+	std::optional<int> lottieSize;
+	std::optional<QMargins> lottieMargins;
+	rpl::producer<> showFinished;
+	rpl::producer<TextWithEntities> about;
+	std::optional<QMargins> aboutMargins;
+	RectParts parts = RectPart::Top | RectPart::Bottom;
+};
 void AddDividerTextWithLottie(
-	not_null<Ui::VerticalLayout*> parent,
-	rpl::producer<> showFinished,
-	rpl::producer<TextWithEntities> text,
-	const QString &lottie);
+	not_null<Ui::VerticalLayout*> container,
+	DividerWithLottieDescriptor &&descriptor);
 
 struct LottieIcon {
 	object_ptr<Ui::RpWidget> widget;
@@ -164,7 +204,8 @@ struct LottieIcon {
 [[nodiscard]] LottieIcon CreateLottieIcon(
 	not_null<QWidget*> parent,
 	Lottie::IconDescriptor &&descriptor,
-	style::margins padding = {});
+	style::margins padding = {},
+	Fn<QColor()> colorOverride = nullptr);
 
 struct SliderWithLabel {
 	object_ptr<Ui::RpWidget> widget;
@@ -176,6 +217,7 @@ struct SliderWithLabel {
 	const style::MediaSlider &sliderSt,
 	const style::FlatLabel &labelSt,
 	int skip,
-	int minLabelWidth = 0);
+	int minLabelWidth = 0,
+	bool ignoreWheel = false);
 
 } // namespace Settings

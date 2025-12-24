@@ -54,7 +54,8 @@ constexpr auto kLoadViewsPages = 2;
 	static const auto size = st::storiesWhoViewed.userpics.size;
 
 	static const auto GenerateUserpic = [](Userpic &userpic) {
-		auto result = userpic.peer->generateUserpicImage(
+		auto result = PeerData::GenerateUserpicImage(
+			userpic.peer,
 			userpic.view,
 			size * style::DevicePixelRatio());
 		result.setDevicePixelRatio(style::DevicePixelRatio());
@@ -139,7 +140,7 @@ constexpr auto kLoadViewsPages = 2;
 RecentViewsType RecentViewsTypeFor(not_null<PeerData*> peer) {
 	return peer->isSelf()
 		? RecentViewsType::Self
-		: peer->isChannel()
+		: peer->isBroadcast()
 		? RecentViewsType::Channel
 		: peer->isServiceUser()
 		? RecentViewsType::Changelog
@@ -421,7 +422,7 @@ void RecentViews::updatePartsGeometry() {
 
 void RecentViews::updateText() {
 	const auto text = (_data.type == RecentViewsType::Channel)
-		? u"View reactions"_q
+		? tr::lng_stories_view_reactions(tr::now)
 		: _data.views
 		? (tr::lng_stories_views(tr::now, lt_count, _data.views)
 			+ (_data.reactions
@@ -522,7 +523,8 @@ void RecentViews::addMenuRow(Data::StoryView entry, const QDateTime &now) {
 	const auto show = _controller->uiShow();
 	const auto prepare = [&](Ui::PeerUserpicView &view) {
 		const auto size = st::storiesWhoViewed.photoSize;
-		auto userpic = peer->generateUserpicImage(
+		auto userpic = PeerData::GenerateUserpicImage(
+			peer,
 			view,
 			size * style::DevicePixelRatio());
 		userpic.setDevicePixelRatio(style::DevicePixelRatio());
@@ -636,7 +638,8 @@ void RecentViews::subscribeToMenuUserpicsLoading(
 			const auto update = (entry.key != key);
 			if (update) {
 				const auto size = st::storiesWhoViewed.photoSize;
-				auto userpic = peer->generateUserpicImage(
+				auto userpic = PeerData::GenerateUserpicImage(
+					peer,
 					view,
 					size * style::DevicePixelRatio());
 				userpic.setDevicePixelRatio(style::DevicePixelRatio());

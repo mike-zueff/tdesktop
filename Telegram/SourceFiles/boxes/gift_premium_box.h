@@ -9,43 +9,39 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/sender.h"
 
-class UserData;
-
 namespace Api {
 struct GiftCode;
 } // namespace Api
 
+namespace ChatHelpers {
+class Show;
+} // namespace ChatHelpers
+
 namespace Data {
+struct Boost;
+struct CreditsHistoryEntry;
 struct GiveawayStart;
 struct GiveawayResults;
+struct SubscriptionEntry;
 } // namespace Data
 
+namespace Main {
+class Session;
+} // namespace Main
+
+namespace Settings {
+struct CreditsEntryBoxStyleOverrides;
+} // namespace Settings
+
 namespace Ui {
+class Show;
 class GenericBox;
+class VerticalLayout;
 } // namespace Ui
 
 namespace Window {
-class SessionController;
 class SessionNavigation;
 } // namespace Window
-
-class GiftPremiumValidator final {
-public:
-	GiftPremiumValidator(not_null<Window::SessionController*> controller);
-
-	void showBox(not_null<UserData*> user);
-	void showChoosePeerBox(const QString &ref);
-	void cancel();
-
-private:
-	const not_null<Window::SessionController*> _controller;
-	MTP::Sender _api;
-
-	mtpRequestId _requestId = 0;
-
-	rpl::lifetime _manyGiftsLifetime;
-
-};
 
 [[nodiscard]] rpl::producer<QString> GiftDurationValue(int months);
 [[nodiscard]] QString GiftDuration(int months);
@@ -70,3 +66,49 @@ void ResolveGiveawayInfo(
 	MsgId messageId,
 	std::optional<Data::GiveawayStart> start,
 	std::optional<Data::GiveawayResults> results);
+
+[[nodiscard]] QString TonAddressUrl(
+	not_null<Main::Session*> session,
+	const QString &address);
+
+void AddStarGiftTable(
+	std::shared_ptr<ChatHelpers::Show> show,
+	not_null<Ui::VerticalLayout*> container,
+	Settings::CreditsEntryBoxStyleOverrides st,
+	const Data::CreditsHistoryEntry &entry,
+	Fn<void()> convertToStars,
+	Fn<void()> startUpgrade);
+void AddCreditsHistoryEntryTable(
+	std::shared_ptr<ChatHelpers::Show> show,
+	not_null<Ui::VerticalLayout*> container,
+	Settings::CreditsEntryBoxStyleOverrides st,
+	const Data::CreditsHistoryEntry &entry);
+
+void AddSubscriptionEntryTable(
+	std::shared_ptr<ChatHelpers::Show> show,
+	not_null<Ui::VerticalLayout*> container,
+	Settings::CreditsEntryBoxStyleOverrides st,
+	const Data::SubscriptionEntry &s);
+void AddSubscriberEntryTable(
+	std::shared_ptr<ChatHelpers::Show> show,
+	not_null<Ui::VerticalLayout*> container,
+	Settings::CreditsEntryBoxStyleOverrides st,
+	not_null<PeerData*> peer,
+	TimeId date);
+
+void AddCreditsBoostTable(
+	std::shared_ptr<ChatHelpers::Show> show,
+	not_null<Ui::VerticalLayout*> container,
+	Settings::CreditsEntryBoxStyleOverrides st,
+	const Data::Boost &boost);
+
+void AddChannelEarnTable(
+	std::shared_ptr<Ui::Show> show,
+	not_null<Ui::VerticalLayout*> container,
+	const Data::CreditsHistoryEntry &entry);
+
+void AddUniqueGiftValueTable(
+	std::shared_ptr<ChatHelpers::Show> show,
+	not_null<Ui::VerticalLayout*> container,
+	Settings::CreditsEntryBoxStyleOverrides st,
+	const Data::CreditsHistoryEntry &entry);

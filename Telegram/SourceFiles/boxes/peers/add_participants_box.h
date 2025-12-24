@@ -56,7 +56,7 @@ private:
 		base::flat_set<not_null<UserData*>> &&alreadyIn,
 		bool justCreated);
 
-	QPointer<Ui::BoxContent> showBox(object_ptr<Ui::BoxContent> box) const;
+	base::weak_qptr<Ui::BoxContent> showBox(object_ptr<Ui::BoxContent> box) const;
 
 	void addInviteLinkButton();
 	void inviteSelectedUsers(
@@ -73,13 +73,22 @@ private:
 
 };
 
-[[nodiscard]] std::vector<not_null<UserData*>> CollectForbiddenUsers(
+struct ForbiddenInvites {
+	std::vector<not_null<UserData*>> users;
+	std::vector<not_null<UserData*>> premiumAllowsInvite;
+	std::vector<not_null<UserData*>> premiumAllowsWrite;
+
+	[[nodiscard]] bool empty() const {
+		return users.empty();
+	}
+};
+[[nodiscard]] ForbiddenInvites CollectForbiddenUsers(
 	not_null<Main::Session*> session,
-	const MTPUpdates &updates);
+	const MTPmessages_InvitedUsers &result);
 bool ChatInviteForbidden(
 	std::shared_ptr<Ui::Show> show,
 	not_null<PeerData*> peer,
-	std::vector<not_null<UserData*>> forbidden);
+	ForbiddenInvites forbidden);
 
 // Adding an admin, banned or restricted user from channel members
 // with search + contacts search + global search.
@@ -138,7 +147,7 @@ private:
 	void subscribeToMigration();
 	void migrate(not_null<ChatData*> chat, not_null<ChannelData*> channel);
 
-	QPointer<Ui::BoxContent> showBox(object_ptr<Ui::BoxContent> box) const;
+	base::weak_qptr<Ui::BoxContent> showBox(object_ptr<Ui::BoxContent> box) const;
 
 	not_null<PeerData*> _peer;
 	MTP::Sender _api;
@@ -149,7 +158,7 @@ private:
 	ParticipantsAdditionalData _additional;
 	std::unique_ptr<ParticipantsOnlineSorter> _onlineSorter;
 	Ui::BoxPointer _editBox;
-	QPointer<Ui::BoxContent> _editParticipantBox;
+	base::weak_qptr<Ui::BoxContent> _editParticipantBox;
 	AdminDoneCallback _adminDoneCallback;
 	BannedDoneCallback _bannedDoneCallback;
 

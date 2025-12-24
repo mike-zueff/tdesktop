@@ -17,7 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_boxes.h"
 #include "styles/style_media_view.h"
 
-class ColorEditor::Picker : public TWidget {
+class ColorEditor::Picker : public Ui::RpWidget {
 public:
 	Picker(QWidget *parent, Mode mode, QColor color);
 
@@ -94,7 +94,7 @@ QCursor ColorEditor::Picker::generateCursor() {
 }
 
 ColorEditor::Picker::Picker(QWidget *parent, Mode mode, QColor color)
-: TWidget(parent)
+: RpWidget(parent)
 , _mode(mode) {
 	setCursor(generateCursor());
 
@@ -292,7 +292,7 @@ void ColorEditor::Picker::setFromColor(QColor color) {
 	}
 }
 
-class ColorEditor::Slider : public TWidget {
+class ColorEditor::Slider : public Ui::RpWidget {
 public:
 	enum class Direction {
 		Horizontal,
@@ -365,7 +365,7 @@ ColorEditor::Slider::Slider(
 	Direction direction,
 	Type type,
 	QColor color)
-: TWidget(parent)
+: RpWidget(parent)
 , _direction(direction)
 , _type(type)
 , _color(color.red(), color.green(), color.blue())
@@ -704,7 +704,7 @@ void ColorEditor::Field::correctValue(
 }
 
 void ColorEditor::Field::paintAdditionalPlaceholder(QPainter &p) {
-	p.setFont(_st.font);
+	p.setFont(_st.style.font);
 	p.setPen(_st.placeholderFg);
 	const auto inner = QRect(
 		_st.textMargins.right(),
@@ -829,7 +829,7 @@ void ColorEditor::ResultField::correctValue(
 }
 
 void ColorEditor::ResultField::paintAdditionalPlaceholder(QPainter &p) {
-	p.setFont(_st.font);
+	p.setFont(_st.style.font);
 	p.setPen(_st.placeholderFg);
 	p.drawText(
 		QRect(
@@ -997,9 +997,9 @@ void ColorEditor::updateResultField() {
 	auto text = QString();
 	const auto addHex = [&text](int value) {
 		if (value >= 0 && value <= 9) {
-			text.append('0' + value);
+			text.append(QChar('0' + value));
 		} else if (value >= 10 && value <= 15) {
-			text.append('a' + (value - 10));
+			text.append(QChar('a' + (value - 10)));
 		}
 	};
 	const auto addValue = [&](int value) {

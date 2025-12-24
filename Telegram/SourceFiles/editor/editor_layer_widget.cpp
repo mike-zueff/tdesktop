@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "editor/editor_layer_widget.h"
 
 #include "ui/painter.h"
+#include "ui/ui_utility.h"
 
 #include <QtGui/QGuiApplication>
 
@@ -156,12 +157,12 @@ void LayerWidget::checkCacheBackground() {
 
 void LayerWidget::cacheBackground() {
 	_backgroundCaching = true;
-	const auto weak = Ui::MakeWeak(this);
+	const auto weak = base::make_weak(this);
 	const auto night = IsNightMode();
 	crl::async([weak, night, image = renderBackground()]() mutable {
 		auto result = ProcessBackground(image, night);
 		crl::on_main([weak, night, result = std::move(result)]() mutable {
-			if (const auto strong = weak.data()) {
+			if (const auto strong = weak.get()) {
 				strong->backgroundReady(std::move(result), night);
 			}
 		});

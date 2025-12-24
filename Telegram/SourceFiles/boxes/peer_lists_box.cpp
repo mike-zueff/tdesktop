@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/vertical_layout.h"
 #include "ui/widgets/multi_select.h"
 #include "ui/widgets/scroll_area.h"
+#include "ui/ui_utility.h"
 #include "main/session/session_show.h"
 #include "main/main_session.h"
 #include "data/data_session.h"
@@ -281,9 +282,7 @@ void PeerListsBox::resizeEvent(QResizeEvent *e) {
 void PeerListsBox::paintEvent(QPaintEvent *e) {
 	auto p = QPainter(this);
 
-	const auto &bg = (firstController()->listSt()
-		? *firstController()->listSt()
-		: st::peerListBox).bg;
+	const auto &bg = firstController()->computeListSt().bg;
 	for (const auto &rect : e->region()) {
 		p.fillRect(rect, bg);
 	}

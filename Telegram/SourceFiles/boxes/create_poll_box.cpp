@@ -7,33 +7,44 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "boxes/create_poll_box.h"
 
-#include "lang/lang_keys.h"
-#include "data/data_poll.h"
-#include "ui/toast/toast.h"
-#include "ui/wrap/vertical_layout.h"
-#include "ui/wrap/slide_wrap.h"
-#include "ui/wrap/fade_wrap.h"
-#include "ui/widgets/fields/input_field.h"
-#include "ui/widgets/shadow.h"
-#include "ui/widgets/labels.h"
-#include "ui/widgets/buttons.h"
-#include "ui/widgets/checkbox.h"
-#include "ui/text/text_utilities.h"
-#include "ui/vertical_list.h"
-#include "main/main_session.h"
-#include "core/application.h"
-#include "core/core_settings.h"
+#include "base/call_delayed.h"
+#include "base/event_filter.h"
+#include "base/random.h"
+#include "base/unique_qptr.h"
 #include "chat_helpers/emoji_suggestions_widget.h"
 #include "chat_helpers/message_field.h"
-#include "menu/menu_send.h"
+#include "chat_helpers/tabbed_panel.h"
+#include "chat_helpers/tabbed_selector.h"
+#include "core/application.h"
+#include "core/core_settings.h"
+#include "data/data_poll.h"
+#include "data/data_user.h"
+#include "data/stickers/data_custom_emoji.h"
 #include "history/view/history_view_schedule_box.h"
-#include "base/unique_qptr.h"
-#include "base/event_filter.h"
-#include "base/call_delayed.h"
-#include "base/random.h"
+#include "lang/lang_keys.h"
+#include "main/main_app_config.h"
+#include "main/main_session.h"
+#include "menu/menu_send.h"
+#include "ui/controls/emoji_button.h"
+#include "ui/controls/emoji_button_factory.h"
+#include "ui/rect.h"
+#include "ui/text/text_utilities.h"
+#include "ui/toast/toast.h"
+#include "ui/vertical_list.h"
+#include "ui/widgets/buttons.h"
+#include "ui/widgets/checkbox.h"
+#include "ui/widgets/fields/input_field.h"
+#include "ui/widgets/labels.h"
+#include "ui/widgets/shadow.h"
+#include "ui/wrap/fade_wrap.h"
+#include "ui/wrap/slide_wrap.h"
+#include "ui/wrap/vertical_layout.h"
+#include "ui/ui_utility.h"
 #include "window/window_session_controller.h"
-#include "styles/style_layers.h"
 #include "styles/style_boxes.h"
+#include "styles/style_chat_helpers.h" // defaultComposeFiles.
+#include "styles/style_layers.h"
+#include "styles/style_settings.h"
 
 namespace {
 
@@ -49,9 +60,10 @@ constexpr auto kErrorLimit = 99;
 class Options {
 public:
 	Options(
-		not_null<QWidget*> outer,
+		not_null<Ui::BoxContent*> box,
 		not_null<Ui::VerticalLayout*> container,
-		not_null<Main::Session*> session,
+		not_null<Window::SessionController*> controller,
+		ChatHelpers::TabbedPanel *emojiPanel,
 		bool chooseCorrectEnabled);
 
 	[[nodiscard]] bool hasOptions() const;
@@ -102,7 +114,7 @@ private:
 		void setPlaceholder() const;
 		void removePlaceholder() const;
 
-		not_null<Ui::InputField*> field() const;
+		[[nodiscard]] not_null<Ui::InputField*> field() const;
 
 		[[nodiscard]] PollAnswer toPollAnswer(int index) const;
 
@@ -140,9 +152,10 @@ private:
 	[[nodiscard]] auto createChooseCorrectGroup()
 		-> std::shared_ptr<Ui::RadiobuttonGroup>;
 
-	not_null<QWidget*> _outer;
+	not_null<Ui::BoxContent*> _box;
 	not_null<Ui::VerticalLayout*> _container;
-	const not_null<Main::Session*> _session;
+	const not_null<Window::SessionController*> _controller;
+	ChatHelpers::TabbedPanel * const _emojiPanel;
 	std::shared_ptr<Ui::RadiobuttonGroup> _chooseCorrectGroup;
 	int _position = 0;
 	std::vector<std::unique_ptr<Option>> _list;
@@ -154,6 +167,7 @@ private:
 	rpl::event_stream<not_null<QWidget*>> _scrollToWidget;
 	rpl::event_stream<> _backspaceInFront;
 	rpl::event_stream<> _tabbed;
+	rpl::lifetime _emojiPanelLifetime;
 
 };
 
@@ -193,8 +207,9 @@ not_null<Ui::FlatLabel*> CreateWarningLabel(
 			if (value >= 0) {
 				result->setText(QString::number(value));
 			} else {
+				constexpr auto kMinus = QChar(0x2212);
 				result->setMarkedText(Ui::Text::Colorized(
-					QString::number(value)));
+					kMinus + QString::number(std::abs(value))));
 			}
 			result->setVisible(shown);
 		}));
@@ -223,7 +238,9 @@ Options::Option::Option(
 , _field(
 	Ui::CreateChild<Ui::InputField>(
 		_content.get(),
-		st::createPollOptionField,
+		session->user()->isPremium()
+			? st::createPollOptionFieldPremium
+			: st::createPollOptionField,
 		Ui::InputField::Mode::NoNewlines,
 		tr::lng_polls_create_option_add())) {
 	InitField(outer, _field, session);
@@ -299,7 +316,7 @@ void Options::Option::createRemove() {
 	const auto remove = Ui::CreateChild<Ui::CrossButton>(
 		field.get(),
 		st::createPollOptionRemove);
-	remove->hide(anim::type::instant);
+	remove->show(anim::type::instant);
 
 	const auto toggle = lifetime.make_state<rpl::variable<bool>>(false);
 	_removeAlways = lifetime.make_state<rpl::variable<bool>>(false);
@@ -309,6 +326,7 @@ void Options::Option::createRemove() {
 		// Don't capture 'this'! Because Option is a value type.
 		*toggle = !field->getLastText().isEmpty();
 	}, field->lifetime());
+#if 0
 	rpl::combine(
 		toggle->value(),
 		_removeAlways->value(),
@@ -316,6 +334,7 @@ void Options::Option::createRemove() {
 	) | rpl::start_with_next([=](bool shown) {
 		remove->toggle(shown, anim::type::normal);
 	}, remove->lifetime());
+#endif
 
 	field->widthValue(
 	) | rpl::start_with_next([=](int width) {
@@ -456,10 +475,16 @@ void Options::Option::removePlaceholder() const {
 PollAnswer Options::Option::toPollAnswer(int index) const {
 	Expects(index >= 0 && index < kMaxOptionsCount);
 
+	const auto text = field()->getTextWithTags();
+
 	auto result = PollAnswer{
-		field()->getLastText().trimmed(),
-		QByteArray(1, ('0' + index))
+		TextWithEntities{
+			.text = text.text,
+			.entities = TextUtilities::ConvertTextTagsToEntities(text.tags),
+		},
+		QByteArray(1, ('0' + index)),
 	};
+	TextUtilities::Trim(result.text);
 	result.correct = _correct ? _correct->entity()->Checkbox::checked() : false;
 	return result;
 }
@@ -469,13 +494,15 @@ rpl::producer<Qt::MouseButton> Options::Option::removeClicks() const {
 }
 
 Options::Options(
-	not_null<QWidget*> outer,
+	not_null<Ui::BoxContent*> box,
 	not_null<Ui::VerticalLayout*> container,
-	not_null<Main::Session*> session,
+	not_null<Window::SessionController*> controller,
+	ChatHelpers::TabbedPanel *emojiPanel,
 	bool chooseCorrectEnabled)
-: _outer(outer)
+: _box(box)
 , _container(container)
-, _session(session)
+, _controller(controller)
+, _emojiPanel(emojiPanel)
 , _chooseCorrectGroup(chooseCorrectEnabled
 	? createChooseCorrectGroup()
 	: nullptr)
@@ -484,7 +511,8 @@ Options::Options(
 }
 
 bool Options::full() const {
-	return (_list.size() == kMaxOptionsCount);
+	const auto limit = _controller->session().appConfig().pollOptionsLimit();
+	return (_list.size() >= limit);
 }
 
 bool Options::hasOptions() const {
@@ -645,12 +673,40 @@ void Options::addEmptyOption() {
 		(*(_list.end() - 2))->toggleRemoveAlways(true);
 	}
 	_list.push_back(std::make_unique<Option>(
-		_outer,
+		_box,
 		_container,
-		_session,
+		&_controller->session(),
 		_position + _list.size() + _destroyed.size(),
 		_chooseCorrectGroup));
 	const auto field = _list.back()->field();
+	if (const auto emojiPanel = _emojiPanel) {
+		const auto emojiToggle = Ui::AddEmojiToggleToField(
+			field,
+			_box,
+			_controller,
+			emojiPanel,
+			QPoint(
+				-st::createPollOptionFieldPremium.textMargins.right(),
+				st::createPollOptionEmojiPositionSkip));
+		emojiToggle->shownValue() | rpl::start_with_next([=](bool shown) {
+			if (!shown) {
+				return;
+			}
+			_emojiPanelLifetime.destroy();
+			emojiPanel->selector()->emojiChosen(
+			) | rpl::start_with_next([=](ChatHelpers::EmojiChosen data) {
+				if (field->hasFocus()) {
+					Ui::InsertEmojiAtCursor(field->textCursor(), data.emoji);
+				}
+			}, _emojiPanelLifetime);
+			emojiPanel->selector()->customEmojiChosen(
+			) | rpl::start_with_next([=](ChatHelpers::FileChosen data) {
+				if (field->hasFocus()) {
+					Data::InsertCustomEmoji(field, data.document);
+				}
+			}, _emojiPanelLifetime);
+		}, emojiToggle->lifetime());
+	}
 	field->submits(
 	) | rpl::start_with_next([=] {
 		const auto index = findField(field);
@@ -697,7 +753,7 @@ void Options::addEmptyOption() {
 	});
 
 	_list.back()->removeClicks(
-	) | rpl::take(1) | rpl::start_with_next([=] {
+	) | rpl::start_with_next([=] {
 		Ui::PostponeCall(crl::guard(field, [=] {
 			Expects(!_list.empty());
 
@@ -763,13 +819,15 @@ CreatePollBox::CreatePollBox(
 	not_null<Window::SessionController*> controller,
 	PollData::Flags chosen,
 	PollData::Flags disabled,
+	rpl::producer<int> starsRequired,
 	Api::SendType sendType,
-	SendMenu::Type sendMenuType)
+	SendMenu::Details sendMenuDetails)
 : _controller(controller)
 , _chosen(chosen)
 , _disabled(disabled)
 , _sendType(sendType)
-, _sendMenuType(sendMenuType) {
+, _sendMenuDetails([result = sendMenuDetails] { return result; })
+, _starsRequired(std::move(starsRequired)) {
 }
 
 rpl::producer<CreatePollBox::Result> CreatePollBox::submitRequests() const {
@@ -789,18 +847,62 @@ not_null<Ui::InputField*> CreatePollBox::setupQuestion(
 	using namespace Settings;
 
 	const auto session = &_controller->session();
+	const auto isPremium = session->user()->isPremium();
 	Ui::AddSubsectionTitle(container, tr::lng_polls_create_question());
+
 	const auto question = container->add(
 		object_ptr<Ui::InputField>(
 			container,
 			st::createPollField,
 			Ui::InputField::Mode::MultiLine,
 			tr::lng_polls_create_question_placeholder()),
-		st::createPollFieldPadding);
+		st::createPollFieldPadding
+			+ (isPremium
+				? QMargins(0, 0, st::defaultComposeFiles.emoji.inner.width, 0)
+				: QMargins()));
 	InitField(getDelegate()->outerContainer(), question, session);
 	question->setMaxLength(kQuestionLimit + kErrorLimit);
 	question->setSubmitSettings(Ui::InputField::SubmitSettings::Both);
 	question->customTab(true);
+
+	if (isPremium) {
+		using Selector = ChatHelpers::TabbedSelector;
+		const auto outer = getDelegate()->outerContainer();
+		_emojiPanel = base::make_unique_q<ChatHelpers::TabbedPanel>(
+			outer,
+			_controller,
+			object_ptr<Selector>(
+				nullptr,
+				_controller->uiShow(),
+				Window::GifPauseReason::Layer,
+				Selector::Mode::EmojiOnly));
+		const auto emojiPanel = _emojiPanel.get();
+		emojiPanel->setDesiredHeightValues(
+			1.,
+			st::emojiPanMinHeight / 2,
+			st::emojiPanMinHeight);
+		emojiPanel->hide();
+		emojiPanel->selector()->setCurrentPeer(session->user());
+
+		const auto emojiToggle = Ui::AddEmojiToggleToField(
+			question,
+			this,
+			_controller,
+			emojiPanel,
+			st::createPollOptionFieldPremiumEmojiPosition);
+		emojiPanel->selector()->emojiChosen(
+		) | rpl::start_with_next([=](ChatHelpers::EmojiChosen data) {
+			if (question->hasFocus()) {
+				Ui::InsertEmojiAtCursor(question->textCursor(), data.emoji);
+			}
+		}, emojiToggle->lifetime());
+		emojiPanel->selector()->customEmojiChosen(
+		) | rpl::start_with_next([=](ChatHelpers::FileChosen data) {
+			if (question->hasFocus()) {
+				Data::InsertCustomEmoji(question, data.document);
+			}
+		}, emojiToggle->lifetime());
+	}
 
 	const auto warning = CreateWarningLabel(
 		container,
@@ -854,7 +956,16 @@ not_null<Ui::InputField*> CreatePollBox::setupSolution(
 	solution->setInstantReplaces(Ui::InstantReplaces::Default());
 	solution->setInstantReplacesEnabled(
 		Core::App().settings().replaceEmojiValue());
-	solution->setMarkdownReplacesEnabled(rpl::single(true));
+	solution->setMarkdownReplacesEnabled(rpl::single(
+		Ui::MarkdownEnabledState{ Ui::MarkdownEnabled{ {
+			Ui::InputField::kTagBold,
+			Ui::InputField::kTagItalic,
+			Ui::InputField::kTagUnderline,
+			Ui::InputField::kTagStrikeOut,
+			Ui::InputField::kTagCode,
+			Ui::InputField::kTagSpoiler,
+		} } }
+	));
 	solution->setEditLinkCallback(
 		DefaultEditLinkCallback(_controller->uiShow(), solution));
 	solution->customTab(true);
@@ -910,16 +1021,19 @@ object_ptr<Ui::RpWidget> CreatePollBox::setupContent() {
 			st::defaultSubsectionTitle),
 		st::createPollFieldTitlePadding);
 	const auto options = lifetime().make_state<Options>(
-		getDelegate()->outerContainer(),
+		this,
 		container,
-		&_controller->session(),
+		_controller,
+		_emojiPanel ? _emojiPanel.get() : nullptr,
 		(_chosen & PollData::Flag::Quiz));
 	auto limit = options->usedCount() | rpl::after_next([=](int count) {
 		setCloseByEscape(!count);
 		setCloseByOutsideClick(!count);
 	}) | rpl::map([=](int count) {
-		return (count < kMaxOptionsCount)
-			? tr::lng_polls_create_limit(tr::now, lt_count, kMaxOptionsCount - count)
+		const auto appConfig = &_controller->session().appConfig();
+		const auto max = appConfig->pollOptionsLimit();
+		return (count < max)
+			? tr::lng_polls_create_limit(tr::now, lt_count, max - count)
 			: tr::lng_polls_create_maximum(tr::now);
 	}) | rpl::after_next([=] {
 		container->resizeToWidth(container->widthNoMargins());
@@ -1029,9 +1143,13 @@ object_ptr<Ui::RpWidget> CreatePollBox::setupContent() {
 	};
 
 	const auto collectResult = [=] {
+		const auto textWithTags = question->getTextWithTags();
 		using Flag = PollData::Flag;
 		auto result = PollData(&_controller->session().data(), id);
-		result.question = question->getLastText().trimmed();
+		result.question.text = textWithTags.text;
+		result.question.entities = TextUtilities::ConvertTextTagsToEntities(
+			textWithTags.tags);
+		TextUtilities::Trim(result.question);
 		result.answers = options->toPollAnswers();
 		const auto solutionWithTags = quiz->checked()
 			? solution->getTextWithAppliedMarkdown()
@@ -1093,19 +1211,9 @@ object_ptr<Ui::RpWidget> CreatePollBox::setupContent() {
 			_submitRequests.fire({ collectResult(), sendOptions });
 		}
 	};
-	const auto sendSilent = [=] {
-		send({ .silent = true });
-	};
-	const auto sendScheduled = [=] {
-		_controller->show(
-			HistoryView::PrepareScheduleBox(
-				this,
-				SendMenu::Type::Scheduled,
-				send));
-	};
-	const auto sendWhenOnline = [=] {
-		send(Api::DefaultSendWhenOnlineOptions());
-	};
+	const auto sendAction = SendMenu::DefaultCallback(
+		_controller->uiShow(),
+		crl::guard(this, send));
 
 	options->scrollToWidget(
 	) | rpl::start_with_next([=](not_null<QWidget*> widget) {
@@ -1118,24 +1226,26 @@ object_ptr<Ui::RpWidget> CreatePollBox::setupContent() {
 	}, lifetime());
 
 	const auto isNormal = (_sendType == Api::SendType::Normal);
-
+	const auto schedule = [=] {
+		sendAction(
+			{ .type = SendMenu::ActionType::Schedule },
+			_sendMenuDetails());
+	};
 	const auto submit = addButton(
-		isNormal
-			? tr::lng_polls_create_button()
-			: tr::lng_schedule_button(),
-		[=] { isNormal ? send({}) : sendScheduled(); });
-	const auto sendMenuType = [=] {
+		tr::lng_polls_create_button(),
+		[=] { isNormal ? send({}) : schedule(); });
+	submit->setText(PaidSendButtonText(_starsRequired.value(), isNormal
+		? tr::lng_polls_create_button()
+		: tr::lng_schedule_button()));
+	const auto sendMenuDetails = [=] {
 		collectError();
-		return (*error)
-			? SendMenu::Type::Disabled
-			: _sendMenuType;
+		return (*error) ? SendMenu::Details() : _sendMenuDetails();
 	};
 	SendMenu::SetupMenuAndShortcuts(
 		submit.data(),
-		sendMenuType,
-		sendSilent,
-		sendScheduled,
-		sendWhenOnline);
+		_controller->uiShow(),
+		sendMenuDetails,
+		sendAction);
 	addButton(tr::lng_cancel(), [=] { closeBox(); });
 
 	return result;

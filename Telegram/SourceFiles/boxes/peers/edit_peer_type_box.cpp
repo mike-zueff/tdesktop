@@ -40,6 +40,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/widgets/fields/special_fields.h"
+#include "ui/ui_utility.h"
 #include "window/window_session_controller.h"
 #include "settings/settings_common.h"
 #include "styles/style_layers.h"
@@ -76,7 +77,7 @@ public:
 	}
 
 	[[nodiscard]] Privacy getPrivacy() const {
-		return _controls.privacy->value();
+		return _controls.privacy->current();
 	}
 
 	[[nodiscard]] bool noForwards() const {
@@ -219,7 +220,7 @@ void Controller::createContent() {
 			const auto wrap = _controls.whoSendWrap->entity();
 
 			Ui::AddSkip(wrap);
-			if (_dataSavedValue->hasLinkedChat) {
+			if (_dataSavedValue->hasDiscussionLink) {
 				Ui::AddSubsectionTitle(wrap, tr::lng_manage_peer_send_title());
 
 				_controls.joinToWrite = wrap->add(EditPeerInfoBox::CreateButton(
@@ -238,7 +239,7 @@ void Controller::createContent() {
 				}, wrap->lifetime());
 			} else {
 				_controls.whoSendWrap->toggle(
-					(_controls.privacy->value() == Privacy::HasUsername),
+					(_controls.privacy->current() == Privacy::HasUsername),
 					anim::type::instant);
 			}
 			auto joinToWrite = _controls.joinToWrite
@@ -299,7 +300,7 @@ void Controller::createContent() {
 	if (_linkOnly) {
 		_controls.inviteLinkWrap->show(anim::type::instant);
 	} else {
-		if (_controls.privacy->value() == Privacy::NoUsername) {
+		if (_controls.privacy->current() == Privacy::NoUsername) {
 			checkUsernameAvailability();
 		}
 		const auto forShowing = _dataSavedValue
@@ -474,7 +475,7 @@ object_ptr<Ui::RpWidget> Controller::createUsernameEdit() {
 		&Ui::UsernameInput::changed,
 		[this] { usernameChanged(); });
 
-	const auto shown = (_controls.privacy->value() == Privacy::HasUsername);
+	const auto shown = (_controls.privacy->current() == Privacy::HasUsername);
 	result->toggle(shown, anim::type::instant);
 
 	return result;
@@ -497,7 +498,7 @@ void Controller::privacyChanged(Privacy value) {
 		}
 		_controls.whoSendWrap->toggle(
 			(value == Privacy::HasUsername
-				|| (_dataSavedValue && _dataSavedValue->hasLinkedChat)),
+				|| (_dataSavedValue && _dataSavedValue->hasDiscussionLink)),
 			anim::type::instant);
 	};
 	const auto refreshVisibilities = [&] {
@@ -539,7 +540,7 @@ void Controller::checkUsernameAvailability() {
 	if (!_controls.usernameInput) {
 		return;
 	}
-	const auto initial = (_controls.privacy->value() != Privacy::HasUsername);
+	const auto initial = (_controls.privacy->current() != Privacy::HasUsername);
 	const auto checking = initial
 		? u".bad."_q
 		: getUsernameInput();
@@ -573,11 +574,11 @@ void Controller::checkUsernameAvailability() {
 			_controls.privacy->setValue(Privacy::NoUsername);
 		} else if (type == u"CHANNELS_ADMIN_PUBLIC_TOO_MUCH"_q) {
 			_usernameState = UsernameState::TooMany;
-			if (_controls.privacy->value() == Privacy::HasUsername) {
+			if (_controls.privacy->current() == Privacy::HasUsername) {
 				askUsernameRevoke();
 			}
 		} else if (initial) {
-			if (_controls.privacy->value() == Privacy::HasUsername) {
+			if (_controls.privacy->current() == Privacy::HasUsername) {
 				showUsernameEmpty();
 				setFocusUsername();
 			}
@@ -585,9 +586,8 @@ void Controller::checkUsernameAvailability() {
 			showUsernameError(tr::lng_create_channel_link_invalid());
 		} else if (type == u"USERNAME_PURCHASE_AVAILABLE"_q) {
 			_goodUsername = false;
-			_usernameCheckInfo.fire({
-				.type = UsernameCheckInfo::Type::PurchaseAvailable,
-			});
+			_usernameCheckInfo.fire(
+				UsernameCheckInfo::PurchaseAvailable(checking, _peer));
 		} else if (type == u"USERNAME_OCCUPIED"_q && checking != username) {
 			showUsernameError(tr::lng_create_channel_link_occupied());
 		}

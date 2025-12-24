@@ -111,6 +111,7 @@ MuteItem::MuteItem(
 			isMuted ? 1. : 0.,
 			st::defaultPopupMenu.showDuration);
 	}, lifetime());
+	_animation.stop();
 
 	setClickedCallback([=] {
 		descriptor.updateMutePeriod(_isMuted ? 0 : kMuteForeverValue);
@@ -123,7 +124,7 @@ void MuteItem::paintEvent(QPaintEvent *e) {
 	const auto progress = _animation.value(_isMuted ? 1. : 0.);
 	const auto color = anim::color(
 		st::menuIconAttentionColor,
-		st::settingsIconBg2,
+		st::boxTextFgGood,
 		progress);
 	p.setPen(color);
 
@@ -252,6 +253,7 @@ Descriptor ThreadDescriptor(not_null<Data::Thread*> thread) {
 		.currentSound = currentSound,
 		.updateSound = updateSound,
 		.updateMutePeriod = updateMutePeriod,
+		.volumeController = Data::ThreadRingtonesVolumeController(thread),
 	};
 }
 
@@ -289,6 +291,7 @@ Descriptor DefaultDescriptor(
 		.currentSound = currentSound,
 		.updateSound = updateSound,
 		.updateMutePeriod = updateMutePeriod,
+		.volumeController = DefaultRingtonesVolumeController(session, type),
 	};
 }
 
@@ -303,7 +306,8 @@ void FillMuteMenu(
 				RingtonesBox,
 				session,
 				*currentSound,
-				descriptor.updateSound));
+				descriptor.updateSound,
+				descriptor.volumeController));
 		}
 	};
 	menu->addAction(

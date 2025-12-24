@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/scroll_area.h"
 #include "ui/image/image_prepare.h"
 #include "ui/cached_round_corners.h"
+#include "ui/ui_utility.h"
 #include "styles/style_chat_helpers.h"
 
 namespace InlineBots {
@@ -79,7 +80,7 @@ Widget::Widget(
 	// Inner widget has OpaquePaintEvent attribute so it doesn't repaint on scroll.
 	// But we should force it to repaint so that GIFs will continue to animate without update() calls.
 	// We do that by creating a transparent widget above our _inner.
-	auto forceRepaintOnScroll = object_ptr<TWidget>(this);
+	auto forceRepaintOnScroll = object_ptr<RpWidget>(this);
 	forceRepaintOnScroll->setGeometry(innerRect().x() + st::roundRadiusSmall, innerRect().y() + st::roundRadiusSmall, st::roundRadiusSmall, st::roundRadiusSmall);
 	forceRepaintOnScroll->setAttribute(Qt::WA_TransparentForMouseEvents);
 	forceRepaintOnScroll->show();
@@ -236,7 +237,11 @@ void Widget::startShowAnimation() {
 
 		_showAnimation = std::make_unique<Ui::PanelAnimation>(st::emojiPanAnimation, Ui::PanelAnimation::Origin::BottomLeft);
 		auto inner = rect().marginsRemoved(st::emojiPanMargins);
-		_showAnimation->setFinalImage(std::move(image), QRect(inner.topLeft() * cIntRetinaFactor(), inner.size() * cIntRetinaFactor()));
+		_showAnimation->setFinalImage(
+			std::move(image),
+			QRect(
+				inner.topLeft() * style::DevicePixelRatio(),
+				inner.size() * style::DevicePixelRatio()));
 		_showAnimation->setCornerMasks(Images::CornersMask(ImageRoundRadius::Small));
 		_showAnimation->start();
 	}
@@ -246,8 +251,10 @@ void Widget::startShowAnimation() {
 
 QImage Widget::grabForPanelAnimation() {
 	Ui::SendPendingMoveResizeEvents(this);
-	auto result = QImage(size() * cIntRetinaFactor(), QImage::Format_ARGB32_Premultiplied);
-	result.setDevicePixelRatio(cRetinaFactor());
+	auto result = QImage(
+		size() * style::DevicePixelRatio(),
+		QImage::Format_ARGB32_Premultiplied);
+	result.setDevicePixelRatio(style::DevicePixelRatio());
 	result.fill(Qt::transparent);
 	_inPanelGrab = true;
 	render(&result);
@@ -259,8 +266,8 @@ void Widget::setResultSelectedCallback(Fn<void(ResultSelected)> callback) {
 	_inner->setResultSelectedCallback(std::move(callback));
 }
 
-void Widget::setSendMenuType(Fn<SendMenu::Type()> &&callback) {
-	_inner->setSendMenuType(std::move(callback));
+void Widget::setSendMenuDetails(Fn<SendMenu::Details()> &&callback) {
+	_inner->setSendMenuDetails(std::move(callback));
 }
 
 void Widget::hideAnimated() {

@@ -23,6 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/boxes/single_choice_box.h"
 #include "ui/painter.h"
 #include "ui/vertical_list.h"
+#include "ui/ui_utility.h"
 #include "boxes/connection_box.h"
 #include "boxes/about_box.h"
 #include "ui/boxes/confirm_box.h"
@@ -574,28 +575,31 @@ void SetupSystemIntegrationContent(
 		Core::App().saveSettings();
 	}, roundIcon->lifetime());
 #endif // OS_MAC_STORE
-#endif // Q_OS_MAC
+#elif defined Q_OS_WIN // Q_OS_MAC
+	using Behavior = Core::Settings::CloseBehavior;
+	const auto closeToTaskbar = addSlidingCheckbox(
+		tr::lng_settings_close_to_taskbar(),
+		settings->closeBehavior() == Behavior::CloseToTaskbar);
 
-	if (!Platform::RunInBackground()) {
-		const auto closeToTaskbar = addSlidingCheckbox(
-			tr::lng_settings_close_to_taskbar(),
-			settings->closeToTaskbar());
+	const auto closeToTaskbarShown = std::make_shared<
+		rpl::variable<bool>
+	>(false);
+	settings->workModeValue(
+	) | rpl::start_with_next([=](WorkMode workMode) {
+		*closeToTaskbarShown = !Core::App().tray().has();
+	}, closeToTaskbar->lifetime());
 
-		const auto closeToTaskbarShown = std::make_shared<rpl::variable<bool>>(false);
-		settings->workModeValue(
-		) | rpl::start_with_next([=](WorkMode workMode) {
-			*closeToTaskbarShown = !Core::App().tray().has();
-		}, closeToTaskbar->lifetime());
-
-		closeToTaskbar->toggleOn(closeToTaskbarShown->value());
-		closeToTaskbar->entity()->checkedChanges(
-		) | rpl::filter([=](bool checked) {
-			return (checked != settings->closeToTaskbar());
-		}) | rpl::start_with_next([=](bool checked) {
-			settings->setCloseToTaskbar(checked);
-			Local::writeSettings();
-		}, closeToTaskbar->lifetime());
-	}
+	closeToTaskbar->toggleOn(closeToTaskbarShown->value());
+	closeToTaskbar->entity()->checkedChanges(
+	) | rpl::map([=](bool checked) {
+		return checked ? Behavior::CloseToTaskbar : Behavior::Quit;
+	}) | rpl::filter([=](Behavior value) {
+		return (settings->closeBehavior() != value);
+	}) | rpl::start_with_next([=](Behavior value) {
+		settings->setCloseBehavior(value);
+		Local::writeSettings();
+	}, closeToTaskbar->lifetime());
+#endif // Q_OS_MAC || Q_OS_WIN
 
 	if (Platform::AutostartSupported() && controller) {
 		const auto minimizedToggled = [=] {
@@ -822,7 +826,7 @@ void SetupHardwareAcceleration(not_null<Ui::VerticalLayout*> container) {
 	}, container->lifetime());
 }
 
-#ifdef Q_OS_WIN
+#ifdef DESKTOP_APP_USE_ANGLE
 void SetupANGLE(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container) {
@@ -895,7 +899,7 @@ void SetupANGLE(
 		}));
 	});
 }
-#endif // Q_OS_WIN
+#endif // DESKTOP_APP_USE_ANGLE
 
 void SetupOpenGL(
 		not_null<Window::SessionController*> controller,
@@ -938,13 +942,13 @@ void SetupPerformance(
 		not_null<Ui::VerticalLayout*> container) {
 	SetupAnimations(&controller->window(), container);
 	SetupHardwareAcceleration(container);
-#ifdef Q_OS_WIN
+#ifdef DESKTOP_APP_USE_ANGLE
 	SetupANGLE(controller, container);
-#else // Q_OS_WIN
+#else // DESKTOP_APP_USE_ANGLE
 	if constexpr (!Platform::IsMac()) {
 		SetupOpenGL(controller, container);
 	}
-#endif // Q_OS_WIN
+#endif // DESKTOP_APP_USE_ANGLE
 }
 
 void SetupWindowTitle(
@@ -955,6 +959,65 @@ void SetupWindowTitle(
 	AddSubsectionTitle(container, tr::lng_settings_window_system());
 	SetupWindowTitleOptions(controller, container);
 	AddSkip(container);
+}
+
+void SetupWindowCloseBehavior(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container) {
+#if !defined Q_OS_WIN && !defined Q_OS_MAC
+	const auto wrap = container->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			container,
+			object_ptr<Ui::VerticalLayout>(container)));
+	const auto inner = wrap->entity();
+	AddDivider(inner);
+	AddSkip(inner);
+	AddSubsectionTitle(inner, tr::lng_settings_window_close());
+
+	const auto settings = &Core::App().settings();
+	using Behavior = Core::Settings::CloseBehavior;
+	const auto group = std::make_shared<Ui::RadioenumGroup<Behavior>>(
+		settings->closeBehavior());
+	const auto add = [&](Behavior value, const QString &label) {
+		inner->add(
+			object_ptr<Ui::Radioenum<Behavior>>(
+				inner,
+				group,
+				value,
+				label,
+				st::settingsSendType),
+			st::settingsSendTypePadding);
+	};
+
+	add(
+		Behavior::RunInBackground,
+		tr::lng_settings_run_in_background(tr::now));
+	add(
+		Behavior::CloseToTaskbar,
+		tr::lng_settings_close_to_taskbar(tr::now));
+	add(
+		Behavior::Quit,
+		tr::lng_settings_quit_on_close(tr::now));
+
+	group->value() | rpl::filter([=](Behavior value) {
+		return (value != settings->closeBehavior());
+	}) | rpl::start_with_next([=](Behavior value) {
+		settings->setCloseBehavior(value);
+		Local::writeSettings();
+	}, inner->lifetime());
+
+	AddSkip(inner);
+
+	if (!Platform::TrayIconSupported()) {
+		wrap->toggle(true, anim::type::instant);
+	} else {
+		wrap->toggleOn(Core::App().settings().workModeValue(
+		) | rpl::map([=](Core::Settings::WorkMode mode) {
+			return (mode == Core::Settings::WorkMode::WindowOnly);
+		}) | rpl::distinct_until_changed(), anim::type::normal);
+		wrap->finishAnimating();
+	}
+#endif
 }
 
 void SetupSystemIntegration(
@@ -976,10 +1039,6 @@ Advanced::Advanced(
 
 rpl::producer<QString> Advanced::title() {
 	return tr::lng_settings_advanced();
-}
-
-rpl::producer<Type> Advanced::sectionShowOther() {
-	return _showOther.events();
 }
 
 void Advanced::setupContent(not_null<Window::SessionController*> controller) {
@@ -1009,6 +1068,7 @@ void Advanced::setupContent(not_null<Window::SessionController*> controller) {
 	SetupDataStorage(controller, content);
 	SetupAutoDownload(controller, content);
 	SetupWindowTitle(controller, content);
+	SetupWindowCloseBehavior(controller, content);
 	SetupSystemIntegration(controller, content);
 	empty = false;
 
@@ -1033,9 +1093,7 @@ void Advanced::setupContent(not_null<Window::SessionController*> controller) {
 	AddSkip(content);
 	AddDivider(content);
 	AddSkip(content);
-	SetupExport(controller, content, [=](Type type) {
-		_showOther.fire_copy(type);
-	});
+	SetupExport(controller, content, showOtherMethod());
 
 	Ui::ResizeFitChild(this, content);
 }

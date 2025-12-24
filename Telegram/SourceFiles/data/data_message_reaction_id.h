@@ -14,17 +14,36 @@ namespace Data {
 struct ReactionId {
 	std::variant<QString, DocumentId> data;
 
+	[[nodiscard]] static QChar PaidTag() {
+		return '*';
+	}
+	[[nodiscard]] static ReactionId Paid() {
+		return { QString(PaidTag()) };
+	}
+
 	[[nodiscard]] bool empty() const {
 		const auto emoji = std::get_if<QString>(&data);
 		return emoji && emoji->isEmpty();
 	}
+	[[nodiscard]] bool paid() const {
+		const auto emoji = std::get_if<QString>(&data);
+		return emoji
+			&& emoji->size() == 1
+			&& emoji->at(0) == PaidTag();
+	}
 	[[nodiscard]] QString emoji() const {
 		const auto emoji = std::get_if<QString>(&data);
-		return emoji ? *emoji : QString();
+		return (emoji && (emoji->size() != 1 || emoji->at(0) != PaidTag()))
+			? *emoji
+			: QString();
 	}
 	[[nodiscard]] DocumentId custom() const {
 		const auto custom = std::get_if<DocumentId>(&data);
 		return custom ? *custom : DocumentId();
+	}
+
+	explicit operator bool() const {
+		return !empty();
 	}
 
 	friend inline auto operator<=>(
@@ -40,6 +59,18 @@ struct MessageReaction {
 	int count = 0;
 	bool my = false;
 };
+
+[[nodiscard]] QString SearchTagToQuery(const ReactionId &tagId);
+[[nodiscard]] ReactionId SearchTagFromQuery(const QString &query);
+[[nodiscard]] std::vector<ReactionId> SearchTagsFromQuery(
+	const QString &query);
+
+struct HashtagWithUsername {
+	QString hashtag;
+	QString username;
+};
+[[nodiscard]] HashtagWithUsername HashtagWithUsernameFromQuery(
+	QStringView query);
 
 [[nodiscard]] QString ReactionEntityData(const ReactionId &id);
 

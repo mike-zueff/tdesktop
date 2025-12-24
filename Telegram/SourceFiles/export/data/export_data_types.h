@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "scheme.h"
 #include "base/optional.h"
 #include "base/variant.h"
+#include "core/credits_amount.h"
 #include "data/data_peer_id.h"
 
 #include <QtCore/QSize>
@@ -43,6 +44,39 @@ inline auto NumberToString(Type value, int length = 0, char filler = '0')
 		length,
 		filler).replace(',', '.');
 }
+
+struct TextPart {
+	enum class Type {
+		Text,
+		Unknown,
+		Mention,
+		Hashtag,
+		BotCommand,
+		Url,
+		Email,
+		Bold,
+		Italic,
+		Code,
+		Pre,
+		TextUrl,
+		MentionName,
+		Phone,
+		Cashtag,
+		Underline,
+		Strike,
+		Blockquote,
+		BankCard,
+		Spoiler,
+		CustomEmoji,
+	};
+	Type type = Type::Text;
+	Utf8String text;
+	Utf8String additional;
+
+	[[nodiscard]] static Utf8String UnavailableEmoji() {
+		return "(unavailable)";
+	}
+};
 
 struct UserpicsInfo {
 	int count = 0;
@@ -119,6 +153,7 @@ uint8 ContactColorIndex(const ContactInfo &data);
 struct Photo {
 	uint64 id = 0;
 	TimeId date = 0;
+	bool spoilered = false;
 
 	Image image;
 };
@@ -146,6 +181,7 @@ struct Document {
 	bool isVoiceMessage = false;
 	bool isVideoFile = false;
 	bool isAudioFile = false;
+	bool spoilered = false;
 };
 
 struct SharedContact {
@@ -182,26 +218,69 @@ struct Invoice {
 	int32 receiptMsgId = 0;
 };
 
+struct Media;
+struct PaidMedia {
+	PaidMedia() = default;
+	PaidMedia(PaidMedia &&) = default;
+	PaidMedia &operator=(PaidMedia &&) = default;
+	PaidMedia(const PaidMedia &) = delete;
+	PaidMedia &operator=(const PaidMedia &) = delete;
+
+	uint64 stars = 0;
+	std::vector<std::unique_ptr<Media>> extended;
+};
+
 struct Poll {
 	struct Answer {
-		Utf8String text;
+		std::vector<TextPart> text;
 		QByteArray option;
 		int votes = 0;
 		bool my = false;
 	};
 
 	uint64 id = 0;
-	Utf8String question;
+	std::vector<TextPart> question;
 	std::vector<Answer> answers;
 	int totalVotes = 0;
 	bool closed = false;
 };
 
+struct TodoListItem {
+	std::vector<TextPart> text;
+	int id = 0;
+};
+
+struct TodoList {
+	bool othersCanAppend = false;
+	bool othersCanComplete = false;
+	std::vector<TextPart> title;
+	std::vector<TodoListItem> items;
+};
+
 struct GiveawayStart {
+	std::vector<QString> countries;
 	std::vector<ChannelId> channels;
+	QString additionalPrize;
 	TimeId untilDate = 0;
+	uint64 credits = 0;
 	int quantity = 0;
 	int months = 0;
+	bool all = false;
+};
+
+struct GiveawayResults {
+	ChannelId channel = 0;
+	std::vector<PeerId> winners;
+	QString additionalPrize;
+	TimeId untilDate = 0;
+	int32 launchId = 0;
+	int additionalPeersCount = 0;
+	int winnersCount = 0;
+	int unclaimedCount = 0;
+	int months = 0;
+	uint64 credits = 0;
+	bool refunded = false;
+	bool all = false;
 };
 
 struct UserpicsSlice {
@@ -222,6 +301,7 @@ struct User {
 	bool isBot = false;
 	bool isSelf = false;
 	bool isReplies = false;
+	bool isVerifyCodes = false;
 
 	MTPInputUser input = MTP_inputUserEmpty();
 
@@ -239,14 +319,19 @@ struct Chat {
 	Utf8String title;
 	Utf8String username;
 	uint8 colorIndex = 0;
+	bool isMonoforum = false;
 	bool isBroadcast = false;
 	bool isSupergroup = false;
+	bool isMonoforumAdmin = false;
+	bool hasMonoforumAdminRights = false;
+	bool isMonoforumOfPublicBroadcast = false;
+	BareId monoforumLinkId = 0;
 
 	MTPInputPeer input = MTP_inputPeerEmpty();
+	MTPInputPeer monoforumBroadcastInput = MTP_inputPeerEmpty();
 };
 
 Chat ParseChat(const MTPChat &data);
-std::map<PeerId, Chat> ParseChatsList(const MTPVector<MTPChat> &data);
 
 struct Peer {
 	PeerId id() const;
@@ -336,7 +421,10 @@ struct Media {
 		Game,
 		Invoice,
 		Poll,
+		TodoList,
 		GiveawayStart,
+		GiveawayResults,
+		PaidMedia,
 		UnsupportedMedia> content;
 	TimeId ttl = 0;
 
@@ -428,14 +516,19 @@ struct ActionPaymentSent {
 };
 
 struct ActionPhoneCall {
-	enum class DiscardReason {
+	enum class State {
 		Unknown,
 		Missed,
 		Disconnect,
 		Hangup,
 		Busy,
+		MigrateConferenceCall,
+		Invitation,
+		Active,
 	};
-	DiscardReason discardReason = DiscardReason::Unknown;
+
+	uint64 conferenceId = 0;
+	State state = State::Unknown;
 	int duration = 0;
 };
 
@@ -516,7 +609,7 @@ struct ActionWebViewDataSent {
 
 struct ActionGiftPremium {
 	Utf8String cost;
-	int months;
+	int months = 0;
 };
 
 struct ActionTopicCreate {
@@ -557,6 +650,74 @@ struct ActionGiveawayLaunch {
 struct ActionGiveawayResults {
 	int winners = 0;
 	int unclaimed = 0;
+	bool credits = false;
+};
+
+struct ActionBoostApply {
+	int boosts = 0;
+};
+
+struct ActionPaymentRefunded {
+	PeerId peerId = 0;
+	Utf8String currency;
+	uint64 amount = 0;
+	Utf8String transactionId;
+};
+
+struct ActionGiftCredits {
+	Utf8String cost;
+	CreditsAmount amount;
+};
+
+struct ActionPrizeStars {
+	PeerId peerId = 0;
+	uint64 amount = 0;
+	Utf8String transactionId;
+	int32 giveawayMsgId = 0;
+	bool isUnclaimed = false;
+};
+
+struct ActionStarGift {
+	uint64 giftId = 0;
+	int64 stars = 0;
+	std::vector<TextPart> text;
+	bool anonymous = false;
+	bool limited = false;
+};
+
+struct ActionPaidMessagesRefunded {
+	int messages = 0;
+	int64 stars = 0;
+};
+
+struct ActionPaidMessagesPrice {
+	int stars = 0;
+	bool broadcastAllowed = false;
+};
+
+struct ActionTodoCompletions {
+	std::vector<int> completed;
+	std::vector<int> incompleted;
+};
+
+struct ActionTodoAppendTasks {
+	std::vector<TodoListItem> items;
+};
+
+struct ActionSuggestedPostApproval {
+	Utf8String rejectComment;
+	TimeId scheduleDate = 0;
+	CreditsAmount price;
+	bool rejected = false;
+	bool balanceTooLow = false;
+};
+
+struct ActionSuggestedPostSuccess {
+	CreditsAmount price;
+};
+
+struct ActionSuggestedPostRefund {
+	bool payerInitiated = false;
 };
 
 struct ServiceAction {
@@ -599,7 +760,19 @@ struct ServiceAction {
 		ActionSetChatWallPaper,
 		ActionGiftCode,
 		ActionGiveawayLaunch,
-		ActionGiveawayResults> content;
+		ActionGiveawayResults,
+		ActionBoostApply,
+		ActionPaymentRefunded,
+		ActionGiftCredits,
+		ActionPrizeStars,
+		ActionStarGift,
+		ActionPaidMessagesRefunded,
+		ActionPaidMessagesPrice,
+		ActionTodoCompletions,
+		ActionTodoAppendTasks,
+		ActionSuggestedPostApproval,
+		ActionSuggestedPostSuccess,
+		ActionSuggestedPostRefund> content;
 };
 
 ServiceAction ParseServiceAction(
@@ -607,37 +780,28 @@ ServiceAction ParseServiceAction(
 	const MTPMessageAction &data,
 	const QString &mediaFolder);
 
-struct TextPart {
+struct Reaction {
 	enum class Type {
-		Text,
-		Unknown,
-		Mention,
-		Hashtag,
-		BotCommand,
-		Url,
-		Email,
-		Bold,
-		Italic,
-		Code,
-		Pre,
-		TextUrl,
-		MentionName,
-		Phone,
-		Cashtag,
-		Underline,
-		Strike,
-		Blockquote,
-		BankCard,
-		Spoiler,
+		Empty,
+		Emoji,
 		CustomEmoji,
+		Paid,
 	};
-	Type type = Type::Text;
-	Utf8String text;
-	Utf8String additional;
 
-	[[nodiscard]] static Utf8String UnavailableEmoji() {
-		return "(unavailable)";
-	}
+	[[nodiscard]] static Utf8String TypeToString(const Reaction &);
+
+	[[nodiscard]] static Utf8String Id(const Reaction &);
+
+	struct Recent {
+		PeerId peerId = 0;
+		TimeId date = 0;
+	};
+
+	Type type;
+	QString emoji;
+	Utf8String documentId;
+	uint32 count = 0;
+	std::vector<Recent> recent;
 };
 
 struct MessageId {
@@ -683,7 +847,10 @@ struct HistoryMessageMarkupButton {
 		UserProfile,
 		WebView,
 		SimpleWebView,
+		CopyText,
 	};
+
+	static QByteArray TypeToString(const HistoryMessageMarkupButton &);
 
 	Type type;
 	QString text;
@@ -710,6 +877,7 @@ struct Message {
 	int32 replyToMsgId = 0;
 	PeerId replyToPeerId = 0;
 	std::vector<TextPart> text;
+	std::vector<Reaction> reactions;
 	Media media;
 	ServiceAction action;
 	bool out = false;
@@ -767,6 +935,7 @@ struct DialogInfo {
 		Unknown,
 		Self,
 		Replies,
+		VerifyCodes,
 		Personal,
 		Bot,
 		PrivateGroup,
@@ -788,12 +957,15 @@ struct DialogInfo {
 	MTPInputPeer migratedFromInput = MTP_inputPeerEmpty();
 	ChannelId migratedToChannelId = 0;
 
+	MTPInputPeer monoforumBroadcastInput = MTP_inputPeerEmpty();
+
 	// User messages splits which contained that dialog.
 	std::vector<int> splits;
 
 	// Filled after the whole dialogs list is accumulated.
 	bool onlyMyMessages = false;
 	bool isLeftChannel = false;
+	bool isMonoforum = false;
 	QString relativePath;
 
 	// Filled when requesting dialog messages.

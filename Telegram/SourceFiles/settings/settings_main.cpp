@@ -7,47 +7,60 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/settings_main.h"
 
-#include "settings/settings_codes.h"
+#include "api/api_credits.h"
+#include "core/application.h"
+#include "core/click_handler_types.h"
+#include "settings/cloud_password/settings_cloud_password_input.h"
+#include "settings/settings_advanced.h"
+#include "settings/settings_business.h"
+#include "settings/settings_calls.h"
 #include "settings/settings_chat.h"
+#include "settings/settings_codes.h"
+#include "settings/settings_credits.h"
+#include "settings/settings_folders.h"
 #include "settings/settings_information.h"
 #include "settings/settings_notifications.h"
-#include "settings/settings_privacy_security.h"
-#include "settings/settings_advanced.h"
-#include "settings/settings_folders.h"
-#include "settings/settings_calls.h"
 #include "settings/settings_power_saving.h"
 #include "settings/settings_premium.h"
+#include "settings/settings_privacy_security.h"
 #include "settings/settings_scale_preview.h"
 #include "boxes/language_box.h"
 #include "boxes/username_box.h"
 #include "boxes/about_box.h"
+#include "boxes/star_gift_box.h"
 #include "ui/basic_click_handlers.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/controls/userpic_button.h"
-#include "ui/wrap/vertical_layout.h"
+#include "ui/effects/premium_graphics.h"
+#include "ui/effects/premium_top_bar.h" // Ui::Premium::ColorizedSvg.
 #include "ui/wrap/slide_wrap.h"
-#include "ui/wrap/padding_wrap.h"
-#include "ui/widgets/labels.h"
+#include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/continuous_sliders.h"
-#include "ui/widgets/buttons.h"
+#include "ui/widgets/popup_menu.h"
+#include "ui/text/format_values.h"
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
 #include "ui/new_badges.h"
+#include "ui/rect.h"
 #include "ui/vertical_list.h"
+#include "info/channel_statistics/earn/earn_icons.h"
 #include "info/profile/info_profile_badge.h"
 #include "info/profile/info_profile_emoji_status_panel.h"
+#include "data/components/credits.h"
+#include "data/components/promo_suggestions.h"
 #include "data/data_user.h"
 #include "data/data_session.h"
 #include "data/data_cloud_themes.h"
 #include "data/data_chat_filters.h"
-#include "data/data_peer_values.h" // Data::AmPremiumValue
 #include "lang/lang_cloud_manager.h"
-#include "lang/lang_keys.h"
 #include "lang/lang_instance.h"
+#include "lang/lang_keys.h"
+#include "lottie/lottie_icon.h"
 #include "storage/localstorage.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
 #include "main/main_account.h"
+#include "main/main_domain.h"
 #include "main/main_app_config.h"
 #include "apiwrap.h"
 #include "api/api_peer_photo.h"
@@ -58,14 +71,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/profile/info_profile_values.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
-#include "core/file_utilities.h"
-#include "core/application.h"
 #include "base/call_delayed.h"
-#include "base/unixtime.h"
 #include "base/platform/base_platform_info.h"
+#include "styles/style_chat.h"
 #include "styles/style_settings.h"
-#include "styles/style_boxes.h"
 #include "styles/style_info.h"
+#include "styles/style_layers.h" // boxLabel
 #include "styles/style_menu_icons.h"
 
 #include <QtGui/QGuiApplication>
@@ -74,6 +85,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Settings {
 namespace {
+
+constexpr auto kSugValidatePhone = "VALIDATE_PHONE_NUMBER"_cs;
 
 class Cover final : public Ui::FixedHeightWidget {
 public:
@@ -117,7 +130,8 @@ Cover::Cover(
 , _badge(
 	this,
 	st::infoPeerBadge,
-	user,
+	&user->session(),
+	Info::Profile::BadgeContentForPeer(user),
 	&_emojiStatusPanel,
 	[=] {
 		return controller->isGifPausedAtLeastFor(
@@ -142,6 +156,20 @@ Cover::Cover(
 
 	_phone->setSelectable(true);
 	_phone->setContextCopyText(tr::lng_profile_copy_phone(tr::now));
+	const auto hook = [=](Ui::FlatLabel::ContextMenuRequest request) {
+		if (request.selection.empty()) {
+			const auto c = [=] {
+				auto phone = rpl::variable<TextWithEntities>(
+					Info::Profile::PhoneValue(_user)).current().text;
+				phone.replace(' ', QString()).replace('-', QString());
+				TextUtilities::SetClipboardText({ phone });
+			};
+			request.menu->addAction(tr::lng_profile_copy_phone(tr::now), c);
+		} else {
+			_phone->fillContextMenu(request);
+		}
+	};
+	_phone->setContextMenuHook(hook);
 
 	initViewers();
 	setupChildGeometry();
@@ -211,7 +239,10 @@ void Cover::initViewers() {
 	}, lifetime());
 
 	_username->overrideLinkClickHandler([=] {
-		const auto username = _user->userName();
+		if (_controller->showFrozenError()) {
+			return;
+		}
+		const auto username = _user->username();
 		if (username.isEmpty()) {
 			_controller->show(Box(UsernamesBox, _user));
 		} else {
@@ -258,6 +289,85 @@ void Cover::refreshUsernameGeometry(int newWidth) {
 	_username->moveToLeft(usernameLeft, usernameTop, newWidth);
 }
 
+[[nodiscard]] not_null<Ui::SettingsButton*> AddPremiumStar(
+		not_null<Ui::SettingsButton*> button,
+		bool credits,
+		Fn<bool()> isPaused) {
+	const auto stops = credits
+		? Ui::Premium::CreditsIconGradientStops()
+		: Ui::Premium::ButtonGradientStops();
+
+	const auto ministarsContainer = Ui::CreateChild<Ui::RpWidget>(button);
+	const auto &buttonSt = button->st();
+	const auto fullHeight = buttonSt.height
+		+ rect::m::sum::v(buttonSt.padding);
+	using MiniStars = Ui::Premium::ColoredMiniStars;
+	const auto ministars = button->lifetime().make_state<MiniStars>(
+		ministarsContainer,
+		false);
+	ministars->setColorOverride(stops);
+
+	const auto isPausedValue
+		= button->lifetime().make_state<rpl::variable<bool>>(isPaused());
+	isPausedValue->value() | rpl::start_with_next([=](bool value) {
+		ministars->setPaused(value);
+	}, ministarsContainer->lifetime());
+
+	ministarsContainer->paintRequest(
+	) | rpl::start_with_next([=] {
+		(*isPausedValue) = isPaused();
+		auto p = QPainter(ministarsContainer);
+		{
+			constexpr auto kScale = 0.35;
+			const auto r = ministarsContainer->rect();
+			p.translate(r.center());
+			p.scale(kScale, kScale);
+			p.translate(-r.center());
+		}
+		ministars->paint(p);
+	}, ministarsContainer->lifetime());
+
+	const auto badge = Ui::CreateChild<Ui::RpWidget>(button.get());
+
+	auto star = [&] {
+		const auto factor = style::DevicePixelRatio();
+		const auto size = Size(st::settingsButtonNoIcon.style.font->ascent);
+		auto image = QImage(
+			size * factor,
+			QImage::Format_ARGB32_Premultiplied);
+		image.setDevicePixelRatio(factor);
+		image.fill(Qt::transparent);
+		{
+			auto p = QPainter(&image);
+			auto star = QSvgRenderer(Ui::Premium::ColorizedSvg(stops));
+			star.render(&p, Rect(size));
+		}
+		return image;
+	}();
+	badge->resize(star.size() / style::DevicePixelRatio());
+	badge->paintRequest(
+	) | rpl::start_with_next([=] {
+		auto p = QPainter(badge);
+		p.drawImage(0, 0, star);
+	}, badge->lifetime());
+
+	button->sizeValue(
+	) | rpl::start_with_next([=](const QSize &s) {
+		badge->moveToLeft(
+			button->st().iconLeft
+				+ (st::menuIconShop.width() - badge->width()) / 2,
+			(s.height() - badge->height()) / 2);
+		ministarsContainer->moveToLeft(
+			badge->x() - (fullHeight - badge->height()) / 2,
+			0);
+	}, badge->lifetime());
+
+	ministarsContainer->resize(fullHeight, fullHeight);
+	ministars->setCenter(ministarsContainer->rect());
+
+	return button;
+}
+
 } // namespace
 
 void SetupPowerSavingButton(
@@ -297,12 +407,210 @@ void SetupLanguageButton(
 	});
 }
 
+void SetupValidatePhoneNumberSuggestion(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container,
+		Fn<void(Type)> showOther) {
+	if (!controller->session().promoSuggestions().current(
+			kSugValidatePhone.utf8())) {
+		return;
+	}
+	const auto mainWrap = container->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			container,
+			object_ptr<Ui::VerticalLayout>(container)));
+	const auto content = mainWrap->entity();
+	Ui::AddSubsectionTitle(
+		content,
+		tr::lng_settings_suggestion_phone_number_title(
+			lt_phone,
+			rpl::single(
+				Ui::FormatPhone(controller->session().user()->phone()))),
+		QMargins(
+			st::boxRowPadding.left()
+				- st::defaultSubsectionTitlePadding.left(),
+			0,
+			0,
+			0));
+	const auto label = content->add(
+		object_ptr<Ui::FlatLabel>(
+			content,
+			tr::lng_settings_suggestion_phone_number_about(
+				lt_link,
+				tr::lng_collectible_learn_more(
+				) | Ui::Text::ToLink(
+					tr::lng_settings_suggestion_phone_number_about_link(
+						tr::now)),
+				Ui::Text::WithEntities),
+			st::boxLabel),
+		st::boxRowPadding);
+	label->setClickHandlerFilter([=, weak = base::make_weak(controller)](
+			const auto &...) {
+		UrlClickHandler::Open(
+			tr::lng_settings_suggestion_phone_number_about_link(tr::now),
+			QVariant::fromValue(ClickHandlerContext{
+				.sessionWindow = weak,
+			}));
+		return false;
+	});
+
+	Ui::AddSkip(content);
+	Ui::AddSkip(content);
+
+	const auto wrap = content->add(
+		object_ptr<Ui::FixedHeightWidget>(
+			content,
+			st::inviteLinkButton.height),
+		st::inviteLinkButtonsPadding);
+	const auto yes = Ui::CreateChild<Ui::RoundButton>(
+		wrap,
+		tr::lng_box_yes(),
+		st::inviteLinkButton);
+	yes->setTextTransform(Ui::RoundButton::TextTransform::NoTransform);
+	yes->setClickedCallback([=] {
+		controller->session().promoSuggestions().dismiss(
+			kSugValidatePhone.utf8());
+		mainWrap->toggle(false, anim::type::normal);
+	});
+	const auto no = Ui::CreateChild<Ui::RoundButton>(
+		wrap,
+		tr::lng_box_no(),
+		st::inviteLinkButton);
+	no->setTextTransform(Ui::RoundButton::TextTransform::NoTransform);
+	no->setClickedCallback([=] {
+		const auto sharedLabel = std::make_shared<base::weak_qptr<Ui::FlatLabel>>();
+		const auto height = st::boxLabel.style.font->height;
+		const auto customEmojiFactory = [=](
+			QStringView data,
+			const Ui::Text::MarkedContext &context
+		) -> std::unique_ptr<Ui::Text::CustomEmoji> {
+			auto repaint = [=] {
+				if (*sharedLabel) {
+					(*sharedLabel)->update();
+				}
+			};
+			return Lottie::MakeEmoji(
+				{ .name = u"change_number"_q, .sizeOverride = Size(height) },
+				std::move(repaint));
+		};
+
+		controller->uiShow()->show(Box([=](not_null<Ui::GenericBox*> box) {
+			box->addButton(tr::lng_box_ok(), [=] { box->closeBox(); });
+			*sharedLabel = box->verticalLayout()->add(
+				object_ptr<Ui::FlatLabel>(
+					box->verticalLayout(),
+					tr::lng_settings_suggestion_phone_number_change(
+						lt_emoji,
+						rpl::single(Ui::Text::SingleCustomEmoji(u"@"_q)),
+						Ui::Text::WithEntities),
+					st::boxLabel,
+					st::defaultPopupMenu,
+					Ui::Text::MarkedContext{
+						.customEmojiFactory = customEmojiFactory,
+					}),
+				st::boxPadding);
+		}));
+	});
+
+	wrap->widthValue() | rpl::start_with_next([=](int width) {
+		const auto buttonWidth = (width - st::inviteLinkButtonsSkip) / 2;
+		yes->setFullWidth(buttonWidth);
+		no->setFullWidth(buttonWidth);
+		yes->moveToLeft(0, 0, width);
+		no->moveToRight(0, 0, width);
+	}, wrap->lifetime());
+	Ui::AddSkip(content);
+	Ui::AddSkip(content);
+	Ui::AddDivider(content);
+	Ui::AddSkip(content);
+}
+
+void SetupValidatePasswordSuggestion(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container,
+		Fn<void(Type)> showOther) {
+	if (!controller->session().promoSuggestions().current(
+			Data::PromoSuggestions::SugValidatePassword())
+		|| controller->session().promoSuggestions().current(
+			kSugValidatePhone.utf8())) {
+		return;
+	}
+	const auto mainWrap = container->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			container,
+			object_ptr<Ui::VerticalLayout>(container)));
+	const auto content = mainWrap->entity();
+	Ui::AddSubsectionTitle(
+		content,
+		tr::lng_settings_suggestion_password_title(),
+		QMargins(
+			st::boxRowPadding.left()
+				- st::defaultSubsectionTitlePadding.left(),
+			0,
+			0,
+			0));
+	content->add(
+		object_ptr<Ui::FlatLabel>(
+			content,
+			tr::lng_settings_suggestion_password_about(),
+			st::boxLabel),
+		st::boxRowPadding);
+
+	Ui::AddSkip(content);
+	Ui::AddSkip(content);
+
+	const auto wrap = content->add(
+		object_ptr<Ui::FixedHeightWidget>(
+			content,
+			st::inviteLinkButton.height),
+		st::inviteLinkButtonsPadding);
+	const auto yes = Ui::CreateChild<Ui::RoundButton>(
+		wrap,
+		tr::lng_settings_suggestion_password_yes(),
+		st::inviteLinkButton);
+	yes->setTextTransform(Ui::RoundButton::TextTransform::NoTransform);
+	yes->setClickedCallback([=] {
+		controller->session().promoSuggestions().dismiss(
+			Data::PromoSuggestions::SugValidatePassword());
+		mainWrap->toggle(false, anim::type::normal);
+	});
+	const auto no = Ui::CreateChild<Ui::RoundButton>(
+		wrap,
+		tr::lng_settings_suggestion_password_no(),
+		st::inviteLinkButton);
+	no->setTextTransform(Ui::RoundButton::TextTransform::NoTransform);
+	no->setClickedCallback([=] {
+		showOther(Settings::CloudPasswordSuggestionInputId());
+	});
+
+	wrap->widthValue() | rpl::start_with_next([=](int width) {
+		const auto buttonWidth = (width - st::inviteLinkButtonsSkip) / 2;
+		yes->setFullWidth(buttonWidth);
+		no->setFullWidth(buttonWidth);
+		yes->moveToLeft(0, 0, width);
+		no->moveToRight(0, 0, width);
+	}, wrap->lifetime());
+	Ui::AddSkip(content);
+	Ui::AddSkip(content);
+	Ui::AddDivider(content);
+	Ui::AddSkip(content);
+}
+
 void SetupSections(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container,
 		Fn<void(Type)> showOther) {
 	Ui::AddDivider(container);
 	Ui::AddSkip(container);
+
+	SetupValidatePhoneNumberSuggestion(
+		controller,
+		container,
+		showOther);
+	SetupValidatePasswordSuggestion(
+		controller,
+		container,
+		showOther);
 
 	const auto addSection = [&](
 			rpl::producer<QString> label,
@@ -362,7 +670,7 @@ void SetupSections(
 	} else {
 		const auto enabled = [=] {
 			const auto result = account->appConfig().get<bool>(
-				"dialog_filters_enabled",
+				u"dialog_filters_enabled"_q,
 				false);
 			if (result) {
 				preload();
@@ -390,9 +698,9 @@ void SetupSections(
 		Advanced::Id(),
 		{ &st::menuIconManage });
 	addSection(
-		tr::lng_settings_section_call_settings(),
+		tr::lng_settings_section_devices(),
 		Calls::Id(),
-		{ &st::menuIconPhone });
+		{ &st::menuIconUnmute });
 
 	SetupPowerSavingButton(&controller->window(), container);
 	SetupLanguageButton(&controller->window(), container);
@@ -410,15 +718,76 @@ void SetupPremium(
 	Ui::AddDivider(container);
 	Ui::AddSkip(container);
 
-	AddButtonWithIcon(
-		container,
-		tr::lng_premium_summary_title(),
-		st::settingsButton,
-		{ .icon = &st::menuIconPremium }
+	const auto isPaused = Window::PausedIn(
+		controller,
+		Window::GifPauseReason::Any);
+
+	AddPremiumStar(
+		AddButtonWithIcon(
+			container,
+			tr::lng_premium_summary_title(),
+			st::settingsButton),
+		false,
+		isPaused
 	)->addClickHandler([=] {
 		controller->setPremiumRef("settings");
 		showOther(PremiumId());
 	});
+	{
+		controller->session().credits().load();
+		AddPremiumStar(
+			AddButtonWithLabel(
+				container,
+				tr::lng_settings_credits(),
+				controller->session().credits().balanceValue(
+				) | rpl::map([=](CreditsAmount c) {
+					return c
+						? Lang::FormatCreditsAmountToShort(c).string
+						: QString();
+				}),
+				st::settingsButton),
+			true,
+			isPaused
+		)->addClickHandler([=] {
+			controller->setPremiumRef("settings");
+			showOther(CreditsId());
+		});
+	}
+	{
+		const auto wrap = container->add(
+			object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+				container,
+				object_ptr<Ui::VerticalLayout>(container)));
+		wrap->toggleOn(
+			controller->session().credits().tonBalanceValue(
+			) | rpl::map([](CreditsAmount c) -> bool { return !c.empty(); }));
+		wrap->finishAnimating();
+		controller->session().credits().tonLoad();
+		const auto button = AddButtonWithLabel(
+			wrap->entity(),
+			tr::lng_settings_currency(),
+			controller->session().credits().tonBalanceValue(
+			) | rpl::map([=](CreditsAmount c) {
+				return c
+					? Lang::FormatCreditsAmountToShort(c).string
+					: QString();
+			}),
+			st::settingsButton,
+			{ &st::menuIconTon });
+		button->addClickHandler([=] {
+			controller->setPremiumRef("settings");
+			showOther(CurrencyId());
+		});
+	}
+	const auto button = AddButtonWithIcon(
+		container,
+		tr::lng_business_title(),
+		st::settingsButton,
+		{ .icon = &st::menuIconShop });
+	button->addClickHandler([=] {
+		showOther(BusinessId());
+	});
+
 	if (controller->session().premiumCanBuy()) {
 		const auto button = AddButtonWithIcon(
 			container,
@@ -426,13 +795,11 @@ void SetupPremium(
 			st::settingsButton,
 			{ .icon = &st::menuIconGiftPremium }
 		);
+		Ui::NewBadge::AddToRight(button);
+
 		button->addClickHandler([=] {
-			controller->showGiftPremiumsBox(u"gift"_q);
+			Ui::ChooseStarGiftRecipient(controller);
 		});
-		constexpr auto kNewExpiresAt = int(1735689600);
-		if (base::unixtime::now() < kNewExpiresAt) {
-			Ui::NewBadge::AddToRight(button);
-		}
 	}
 	Ui::AddSkip(container);
 }
@@ -493,7 +860,8 @@ void SetupInterfaceScale(
 		st::settingsScale,
 		st::settingsScaleLabel,
 		st::normalFont->spacew * 2,
-		st::settingsScaleLabel.style.font->width("300%"));
+		st::settingsScaleLabel.style.font->width("300%"),
+		true);
 	container->add(
 		std::move(sliderWithLabel.widget),
 		icon ? st::settingsScalePadding : st::settingsBigScalePadding);
@@ -592,26 +960,20 @@ void SetupInterfaceScale(
 	}
 }
 
-void OpenFaq() {
-	File::OpenUrl(telegramFaqLink());
-}
-
-void SetupFaq(not_null<Ui::VerticalLayout*> container, bool icon) {
-	AddButtonWithIcon(
-		container,
-		tr::lng_settings_faq(),
-		icon ? st::settingsButton : st::settingsButtonNoIcon,
-		{ icon ? &st::menuIconFaq : nullptr }
-	)->addClickHandler(OpenFaq);
-}
-
 void SetupHelp(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container) {
 	Ui::AddDivider(container);
 	Ui::AddSkip(container);
 
-	SetupFaq(container);
+	AddButtonWithIcon(
+		container,
+		tr::lng_settings_faq(),
+		st::settingsButton,
+		{ &st::menuIconFaq }
+	)->addClickHandler([=] {
+		OpenFaq(controller);
+	});
 
 	AddButtonWithIcon(
 		container,
@@ -655,7 +1017,10 @@ void SetupHelp(
 		auto box = Ui::MakeConfirmBox({
 			.text = tr::lng_settings_ask_sure(),
 			.confirmed = sure,
-			.cancelled = OpenFaq,
+			.cancelled = [=](Fn<void()> close) {
+				OpenFaq(controller);
+				close();
+			},
 			.confirmText = tr::lng_settings_ask_ok(),
 			.cancelText = tr::lng_settings_faq_button(),
 			.strictCancel = true,
@@ -677,6 +1042,28 @@ rpl::producer<QString> Main::title() {
 	return tr::lng_menu_settings();
 }
 
+void Main::fillTopBarMenu(const Ui::Menu::MenuCallback &addAction) {
+	const auto &list = Core::App().domain().accounts();
+	if (list.size() < Core::App().domain().maxAccounts()) {
+		addAction(tr::lng_menu_add_account(tr::now), [=] {
+			Core::App().domain().addActivated(MTP::Environment{});
+		}, &st::menuIconAddAccount);
+	}
+	if (!_controller->session().supportMode()) {
+		addAction(
+			tr::lng_settings_information(tr::now),
+			[=] { showOther(Information::Id()); },
+			&st::menuIconEdit);
+	}
+	const auto window = &_controller->window();
+	addAction({
+		.text = tr::lng_settings_logout(tr::now),
+		.handler = [=] { window->showLogoutConfirmation(); },
+		.icon = &st::menuIconLeaveAttention,
+		.isAttention = true,
+	});
+}
+
 void Main::keyPressEvent(QKeyEvent *e) {
 	crl::on_main(this, [=, text = e->text()]{
 		CodesFeedString(_controller, text);
@@ -692,18 +1079,14 @@ void Main::setupContent(not_null<Window::SessionController*> controller) {
 		controller,
 		controller->session().user()));
 
-	SetupSections(controller, content, [=](Type type) {
-		_showOther.fire_copy(type);
-	});
+	SetupSections(controller, content, showOtherMethod());
 	if (HasInterfaceScale()) {
 		Ui::AddDivider(content);
 		Ui::AddSkip(content);
 		SetupInterfaceScale(&controller->window(), content);
 		Ui::AddSkip(content);
 	}
-	SetupPremium(controller, content, [=](Type type) {
-		_showOther.fire_copy(type);
-	});
+	SetupPremium(controller, content, showOtherMethod());
 	SetupHelp(controller, content);
 
 	Ui::ResizeFitChild(this, content);
@@ -716,8 +1099,12 @@ void Main::setupContent(not_null<Window::SessionController*> controller) {
 	controller->session().data().cloudThemes().refresh();
 }
 
-rpl::producer<Type> Main::sectionShowOther() {
-	return _showOther.events();
+void OpenFaq(base::weak_ptr<Window::SessionController> weak) {
+	UrlClickHandler::Open(
+		tr::lng_settings_faq_link(tr::now),
+		QVariant::fromValue(ClickHandlerContext{
+			.sessionWindow = weak,
+		}));
 }
 
 } // namespace Settings

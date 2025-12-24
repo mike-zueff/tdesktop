@@ -81,7 +81,9 @@ introNextButton: RoundButton(defaultActiveButton) {
 	height: 42px;
 	radius: 6px;
 	textTop: 11px;
-	font: font(boxFontSize semibold);
+	style: TextStyle(semiboldTextStyle) {
+		font: font(boxFontSize semibold);
+	}
 }
 introFragmentIcon: icon{{ "fragment", activeButtonFg }};
 introFragmentIconOver: icon{{ "fragment", activeButtonFgOver }};
@@ -96,7 +98,9 @@ introPhoneTop: 6px;
 introLinkTop: 24px;
 introCountry: InputField(defaultInputField) {
 	textMargins: margins(3px, 27px, 3px, 6px);
-	font: font(16px);
+	style: TextStyle(defaultTextStyle) {
+		font: font(16px);
+	}
 	width: 300px;
 	heightMin: 61px;
 }
@@ -119,7 +123,6 @@ introCodeDigitFont: font(20px);
 introCodeDigitHeight: 50px;
 introCodeDigitBorderWidth: 4px;
 introCodeDigitSkip: 10px;
-introCodeDigitAnimatioDuration: 120;
 
 introPasswordHint: FlatLabel(introDescription) {
 	textFg: windowFg;
@@ -162,9 +165,7 @@ introBackButton: IconButton(defaultIconButton) {
 
 	rippleAreaPosition: point(8px, 8px);
 	rippleAreaSize: 40px;
-	ripple: RippleAnimation(defaultRippleAnimation) {
-		color: windowBgOver;
-	}
+	ripple: defaultRippleAnimationBgOver;
 }
 
 introQrTop: -18px;
@@ -185,7 +186,7 @@ introQrTitle: FlatLabel(defaultFlatLabel) {
 introQrErrorTop: 336px;
 introQrTitleTop: 196px;
 introQrStep: FlatLabel(defaultFlatLabel) {
-	minWidth: introQrLabelsWidth;
+	minWidth: 200px;
 }
 introQrStepsTop: 232px;
 introQrStepMargins: margins(20px, 8px, 0px, 0px);

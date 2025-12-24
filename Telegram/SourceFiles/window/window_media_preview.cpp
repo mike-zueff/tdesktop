@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/media/history_view_sticker.h"
 #include "ui/image/image.h"
 #include "ui/emoji_config.h"
+#include "ui/ui_utility.h"
 #include "lottie/lottie_single_player.h"
 #include "main/main_session.h"
 #include "window/window_session_controller.h"
@@ -40,7 +41,7 @@ MediaPreviewWidget::MediaPreviewWidget(
 	not_null<Window::SessionController*> controller)
 : RpWidget(parent)
 , _controller(controller)
-, _emojiSize(Ui::Emoji::GetSizeLarge() / cIntRetinaFactor()) {
+, _emojiSize(Ui::Emoji::GetSizeLarge() / style::DevicePixelRatio()) {
 	setAttribute(Qt::WA_TransparentForMouseEvents);
 	_controller->session().downloaderTaskFinished(
 	) | rpl::start_with_next([=] {
@@ -72,7 +73,7 @@ void MediaPreviewWidget::paintEvent(QPaintEvent *e) {
 	auto p = QPainter(this);
 
 	const auto r = e->rect();
-	const auto factor = cIntRetinaFactor();
+	const auto factor = style::DevicePixelRatio();
 	const auto dimensions = currentDimensions();
 	const auto frame = (_lottie && _lottie->ready())
 		? _lottie->frameInfo({
@@ -266,7 +267,7 @@ QSize MediaPreviewWidget::currentDimensions() const {
 		return _cachedSize;
 	}
 	if (!_document && !_photo) {
-		_cachedSize = QSize(_cache.width() / cIntRetinaFactor(), _cache.height() / cIntRetinaFactor());
+		_cachedSize = _cache.size() * style::DevicePixelRatio();
 		return _cachedSize;
 	}
 
@@ -325,7 +326,7 @@ void MediaPreviewWidget::createLottieIfReady(
 void MediaPreviewWidget::setupLottie() {
 	Expects(_document != nullptr);
 
-	const auto factor = cIntRetinaFactor();
+	const auto factor = style::DevicePixelRatio();
 	if (_document->isPremiumSticker()) {
 		const auto size = HistoryView::Sticker::Size(_document);
 		_cachedSize = size;
@@ -339,7 +340,7 @@ void MediaPreviewWidget::setupLottie() {
 			_document,
 			_documentMedia->videoThumbnailContent(),
 			QString(),
-			true);
+			Stickers::EffectType::PremiumSticker);
 	} else {
 		const auto size = currentDimensions();
 		_lottie = std::make_unique<Lottie::SinglePlayer>(

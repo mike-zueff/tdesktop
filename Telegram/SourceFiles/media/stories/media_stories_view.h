@@ -9,6 +9,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 class ClickHandlerHost;
 
+namespace ChatHelpers {
+class Show;
+} // namespace ChatHelpers
+
 namespace Data {
 class Story;
 struct StoriesContext;
@@ -112,7 +116,7 @@ public:
 	void shareRequested();
 	void deleteRequested();
 	void reportRequested();
-	void togglePinnedRequested(bool pinned);
+	void toggleInProfileRequested(bool inProfile);
 
 	[[nodiscard]] bool ignoreWindowMove(QPoint position) const;
 	void tryProcessKeyInput(not_null<QKeyEvent*> e);
@@ -124,6 +128,8 @@ public:
 	[[nodiscard]] AttachStripResult attachReactionsToMenu(
 		not_null<Ui::PopupMenu*> menu,
 		QPoint desiredPosition);
+
+	[[nodiscard]] std::shared_ptr<ChatHelpers::Show> uiShow() const;
 
 	[[nodiscard]] rpl::lifetime &lifetime();
 

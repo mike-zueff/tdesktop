@@ -55,8 +55,8 @@ struct Feature {
 			TextWithEntities{ TimeLeftText(left) },
 			Ui::Text::RichLangValue),
 		.st = &st::storiesStealthToast,
-		.duration = kAlreadyToastDuration,
 		.adaptive = true,
+		.duration = kAlreadyToastDuration,
 	};
 }
 
@@ -67,8 +67,8 @@ struct Feature {
 			tr::now,
 			Ui::Text::RichLangValue),
 		.st = &st::storiesStealthToast,
-		.duration = kAlreadyToastDuration,
 		.adaptive = true,
+		.duration = kAlreadyToastDuration,
 	};
 }
 
@@ -78,8 +78,8 @@ struct Feature {
 			tr::now,
 			Ui::Text::RichLangValue),
 		.st = &st::storiesStealthToast,
-		.duration = kAlreadyToastDuration,
 		.adaptive = true,
+		.duration = kAlreadyToastDuration,
 	};
 }
 
@@ -327,8 +327,8 @@ struct Feature {
 		box->setWidth(st::boxWideWidth);
 		box->setStyle(st::storiesStealthBox);
 		box->addRow(MakeLogo(box));
-		box->addRow(MakeTitle(box));
-		box->addRow(MakeAbout(box, data->state.value()));
+		box->addRow(MakeTitle(box), style::al_top);
+		box->addRow(MakeAbout(box, data->state.value()), style::al_top);
 		box->addRow(MakeFeature(box, FeaturePast()));
 		box->addRow(
 			MakeFeature(box, FeatureNext()),
@@ -350,9 +350,8 @@ struct Feature {
 				box->closeBox();
 			} else if (!now.premium) {
 				data->requested = false;
-				const auto usage = ChatHelpers::WindowUsage::PremiumPromo;
-				if (const auto window = show->resolveWindow(usage)) {
-					ShowPremiumPreviewBox(window, PremiumPreview::Stories);
+				if (const auto window = show->resolveWindow()) {
+					ShowPremiumPreviewBox(window, PremiumFeature::Stories);
 					window->window().activate();
 				}
 			} else if (now.mode.cooldownTill > now.now) {

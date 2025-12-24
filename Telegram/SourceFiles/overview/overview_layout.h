@@ -31,8 +31,7 @@ namespace Ui {
 class SpoilerAnimation;
 } // namespace Ui
 
-namespace Overview {
-namespace Layout {
+namespace Overview::Layout {
 
 class Checkbox;
 class ItemBase;
@@ -71,7 +70,12 @@ public:
 
 	void invalidateCache();
 
+	virtual void itemDataChanged() {
+	}
 	virtual void clearHeavyPart() {
+	}
+
+	virtual void maybeClearSensitiveSpoiler() {
 	}
 
 protected:
@@ -179,13 +183,17 @@ private:
 
 };
 
-struct Info : public RuntimeComponent<Info, LayoutItemBase> {
+struct Info : RuntimeComponent<Info, LayoutItemBase> {
 	int top = 0;
 };
 
 struct MediaOptions {
 	bool spoiler = false;
 	bool story = false;
+	bool storyPinned = false;
+	bool storyShowPinned = false;
+	bool storyHidden = false;
+	bool storyShowHidden = false;
 };
 
 class Photo final : public ItemBase {
@@ -204,21 +212,32 @@ public:
 		QPoint point,
 		StateRequest request) const override;
 
+	void itemDataChanged() override;
 	void clearHeavyPart() override;
+
+	void maybeClearSensitiveSpoiler() override;
 
 private:
 	void ensureDataMediaCreated() const;
 	void setPixFrom(not_null<Image*> image);
+	[[nodiscard]] ClickHandlerPtr makeOpenPhotoHandler();
 	void clearSpoiler();
 
 	const not_null<PhotoData*> _data;
 	mutable std::shared_ptr<Data::PhotoMedia> _dataMedia;
-	ClickHandlerPtr _link;
 	std::unique_ptr<Ui::SpoilerAnimation> _spoiler;
 
-	QPixmap _pix;
-	bool _goodLoaded = false;
-	bool _story = false;
+	QImage _pix;
+	QImage _hiddenBgCache;
+	bool _goodLoaded : 1 = false;
+	bool _sensitiveSpoiler : 1 = false;
+	bool _story : 1 = false;
+	bool _storyPinned : 1 = false;
+	bool _storyShowPinned : 1 = false;
+	bool _storyHidden : 1 = false;
+	bool _storyShowHidden : 1 = false;
+
+	ClickHandlerPtr _link;
 
 };
 
@@ -243,6 +262,9 @@ public:
 
 	void clearHeavyPart() override;
 	void setPosition(int32 position) override;
+
+	void clearSpoiler() override;
+	void maybeClearSensitiveSpoiler() override;
 
 protected:
 	float64 dataProgress() const override;
@@ -274,9 +296,11 @@ private:
 	const not_null<DocumentData*> _data;
 	mutable std::shared_ptr<Data::DocumentMedia> _dataMedia;
 	StatusText _status;
+	std::unique_ptr<Ui::SpoilerAnimation> _spoiler;
 
 	QImage _thumb;
 	bool _thumbGood = false;
+	bool _sensitiveSpoiler = false;
 
 };
 
@@ -296,8 +320,11 @@ public:
 		QPoint point,
 		StateRequest request) const override;
 
+	void itemDataChanged() override;
 	void clearHeavyPart() override;
 	void clearSpoiler() override;
+
+	void maybeClearSensitiveSpoiler() override;
 
 protected:
 	float64 dataProgress() const override;
@@ -310,15 +337,23 @@ private:
 	void updateStatusText();
 
 	const not_null<DocumentData*> _data;
+	PhotoData *_videoCover = nullptr;
 	mutable std::shared_ptr<Data::DocumentMedia> _dataMedia;
+	mutable std::shared_ptr<Data::PhotoMedia> _videoCoverMedia;
 	StatusText _status;
 
 	QString _duration;
 	std::unique_ptr<Ui::SpoilerAnimation> _spoiler;
 
-	QPixmap _pix;
-	bool _pixBlurred = true;
-	bool _story = false;
+	QImage _pix;
+	QImage _hiddenBgCache;
+	bool _pixBlurred : 1 = true;
+	bool _sensitiveSpoiler : 1 = false;
+	bool _story : 1 = false;
+	bool _storyPinned : 1 = false;
+	bool _storyShowPinned : 1 = false;
+	bool _storyHidden : 1 = false;
+	bool _storyShowHidden : 1 = false;
 
 };
 
@@ -355,7 +390,9 @@ private:
 
 	const style::OverviewFileLayout &_st;
 
-	Ui::Text::String _name, _details;
+	Ui::Text::String _name;
+	Ui::Text::String _details;
+	Ui::Text::String _caption;
 	int _nameVersion = 0;
 
 	void updateName();
@@ -474,5 +511,4 @@ private:
 
 };
 
-} // namespace Layout
-} // namespace Overview
+} // namespace Overview::Layout

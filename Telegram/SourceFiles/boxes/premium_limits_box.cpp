@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/boxes/confirm_box.h"
 #include "ui/controls/peer_list_dummy.h"
+#include "ui/effects/premium_bubble.h"
 #include "ui/effects/premium_graphics.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/wrap/padding_wrap.h"
@@ -68,6 +69,8 @@ public:
 	void prepare() override;
 	void rowClicked(not_null<PeerListRow*> row) override;
 
+	[[nodiscard]] rpl::producer<int> countValue() const;
+
 private:
 	void appendRow(not_null<PeerData*> peer, TimeId date);
 	[[nodiscard]] std::unique_ptr<PeerListRow> createRow(
@@ -75,6 +78,7 @@ private:
 		TimeId date) const;
 
 	const not_null<Main::Session*> _session;
+	rpl::variable<int> _count;
 	mtpRequestId _requestId = 0;
 
 };
@@ -91,12 +95,15 @@ public:
 	void rowClicked(not_null<PeerListRow*> row) override;
 	void rowRightActionClicked(not_null<PeerListRow*> row) override;
 
+	[[nodiscard]] rpl::producer<int> countValue() const;
+
 private:
 	void appendRow(not_null<PeerData*> peer);
 	[[nodiscard]] std::unique_ptr<PeerListRow> createRow(
 		not_null<PeerData*> peer) const;
 
 	const not_null<Window::SessionNavigation*> _navigation;
+	rpl::variable<int> _count;
 	Fn<void()> _closeBox;
 	mtpRequestId _requestId = 0;
 
@@ -129,6 +136,12 @@ private:
 	rpl::event_stream<int> _selectedCountChanges;
 
 };
+
+[[nodiscard]] Ui::Premium::BubbleType ChooseBubbleType(bool premium) {
+	return premium
+		? Ui::Premium::BubbleType::Premium
+		: Ui::Premium::BubbleType::NoPremium;
+}
 
 void InactiveDelegate::peerListSetTitle(rpl::producer<QString> title) {
 }
@@ -210,22 +223,26 @@ void InactiveController::prepare() {
 	_requestId = _session->api().request(MTPchannels_GetInactiveChannels(
 	)).done([=](const MTPmessages_InactiveChats &result) {
 		_requestId = 0;
-		result.match([&](const MTPDmessages_inactiveChats &data) {
-			_session->data().processUsers(data.vusers());
-			const auto &list = data.vchats().v;
-			const auto &dates = data.vdates().v;
-			for (auto i = 0, count = int(list.size()); i != count; ++i) {
-				const auto peer = _session->data().processChat(list[i]);
-				const auto date = (i < dates.size()) ? dates[i].v : TimeId();
-				appendRow(peer, date);
-			}
-			delegate()->peerListRefreshRows();
-		});
+		const auto &data = result.data();
+		_session->data().processUsers(data.vusers());
+		const auto &list = data.vchats().v;
+		const auto &dates = data.vdates().v;
+		for (auto i = 0, count = int(list.size()); i != count; ++i) {
+			const auto peer = _session->data().processChat(list[i]);
+			const auto date = (i < dates.size()) ? dates[i].v : TimeId();
+			appendRow(peer, date);
+		}
+		delegate()->peerListRefreshRows();
+		_count = delegate()->peerListFullRowsCount();
 	}).send();
 }
 
 void InactiveController::rowClicked(not_null<PeerListRow*> row) {
 	delegate()->peerListSetRowChecked(row, !row->checked());
+}
+
+rpl::producer<int> InactiveController::countValue() const {
+	return _count.value();
 }
 
 void InactiveController::appendRow(
@@ -296,6 +313,10 @@ Main::Session &PublicsController::session() const {
 	return _navigation->session();
 }
 
+rpl::producer<int> PublicsController::countValue() const {
+	return _count.value();
+}
+
 void PublicsController::prepare() {
 	_requestId = _navigation->session().api().request(
 		MTPchannels_GetAdminedPublicChannels(MTP_flags(0))
@@ -308,13 +329,14 @@ void PublicsController::prepare() {
 		auto &owner = _navigation->session().data();
 		for (const auto &chat : chats) {
 			if (const auto peer = owner.processChat(chat)) {
-				if (!peer->isChannel() || peer->userName().isEmpty()) {
+				if (!peer->isChannel() || peer->username().isEmpty()) {
 					continue;
 				}
 				appendRow(peer);
 			}
 			delegate()->peerListRefreshRows();
 		}
+		_count = delegate()->peerListFullRowsCount();
 	}).send();
 }
 
@@ -331,7 +353,7 @@ void PublicsController::rowRightActionClicked(not_null<PeerListRow*> row) {
 	const auto text = textMethod(
 		tr::now,
 		lt_link,
-		peer->session().createInternalLink(peer->userName()),
+		peer->session().createInternalLink(peer->username()),
 		lt_group,
 		peer->name());
 	const auto confirmText = tr::lng_channels_too_much_public_revoke(
@@ -374,7 +396,7 @@ std::unique_ptr<PeerListRow> PublicsController::createRow(
 	auto result = std::make_unique<PeerListRowWithLink>(peer);
 	result->setActionLink(tr::lng_channels_too_much_public_revoke(tr::now));
 	result->setCustomStatus(
-		_navigation->session().createInternalLink(peer->userName()));
+		_navigation->session().createInternalLink(peer->username()));
 	return result;
 }
 
@@ -403,8 +425,10 @@ void SimpleLimitBox(
 		BoxShowFinishes(box),
 		0,
 		descriptor.current,
-		descriptor.premiumLimit,
-		premiumPossible,
+		(descriptor.complexRatio
+			? descriptor.premiumLimit
+			: 2 * descriptor.current),
+		ChooseBubbleType(premiumPossible),
 		descriptor.phrase,
 		descriptor.icon);
 	Ui::AddSkip(top, st::premiumLineTextSkip);
@@ -561,17 +585,17 @@ void ChannelsLimitBox(
 
 	const auto content = box->addRow(
 		object_ptr<PeerListContent>(box, controller),
-		{});
+		style::margins());
 	delegate->setContent(content);
 	controller->setDelegate(delegate);
 
 	const auto count = 100;
 	const auto placeholder = box->addRow(
 		object_ptr<PeerListDummy>(box, count, st::defaultPeerList),
-		{});
+		style::margins());
 
 	using namespace rpl::mappers;
-	content->heightValue(
+	controller->countValue(
 	) | rpl::filter(_1 > 0) | rpl::start_with_next([=] {
 		delete placeholder;
 	}, placeholder->lifetime());
@@ -652,17 +676,17 @@ void PublicLinksLimitBox(
 
 	const auto content = box->addRow(
 		object_ptr<PeerListContent>(box, controller),
-		{});
+		style::margins());
 	delegate->setContent(content);
 	controller->setDelegate(delegate);
 
 	const auto count = defaultLimit;
 	const auto placeholder = box->addRow(
 		object_ptr<PeerListDummy>(box, count, st::defaultPeerList),
-		{});
+		style::margins());
 
 	using namespace rpl::mappers;
-	content->heightValue(
+	controller->countValue(
 	) | rpl::filter(_1 > 0) | rpl::start_with_next([=] {
 		delete placeholder;
 	}, placeholder->lifetime());
@@ -754,7 +778,7 @@ void FilterLinksLimitBox(
 			premiumLimit,
 			&st::premiumIconChats,
 			std::nullopt,
-			true });
+			/*true */}); // Don't use real ratio, "Free" doesn't fit.
 }
 
 
@@ -841,7 +865,7 @@ void ShareableFiltersLimitBox(
 			premiumLimit,
 			&st::premiumIconFolders,
 			std::nullopt,
-			true });
+			/*true*/ }); // Don't use real ratio, "Free" doesn't fit.
 }
 
 void FilterPinsLimitBox(
@@ -883,6 +907,7 @@ void PinsLimitBox(
 		limits.dialogsPinnedPremium(),
 		PinsCount(session->data().chatsList()));
 }
+
 void SublistsPinsLimitBox(
 		not_null<Ui::GenericBox*> box,
 		not_null<Main::Session*> session) {
@@ -1092,7 +1117,7 @@ void AccountsLimitBox(
 			: (current > defaultLimit)
 			? (current + 1)
 			: (defaultLimit * 2)),
-		premiumPossible,
+		ChooseBubbleType(premiumPossible),
 		std::nullopt,
 		&st::premiumIconAccounts);
 	Ui::AddSkip(top, st::premiumLineTextSkip);
@@ -1127,7 +1152,7 @@ void AccountsLimitBox(
 		const auto ref = QString();
 
 		const auto wasAccount = &session->account();
-		const auto nowAccount = accounts[group->value()];
+		const auto nowAccount = accounts[group->current()];
 		if (wasAccount == nowAccount) {
 			Settings::ShowPremium(session, ref);
 			return;

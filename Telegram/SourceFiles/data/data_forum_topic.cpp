@@ -26,12 +26,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item.h"
 #include "history/history_unread_things.h"
 #include "history/view/history_view_item_preview.h"
-#include "history/view/history_view_replies_section.h"
+#include "history/view/history_view_chat_section.h"
 #include "main/main_session.h"
 #include "base/unixtime.h"
 #include "ui/painter.h"
 #include "ui/color_int_conversion.h"
 #include "ui/text/text_custom_emoji.h"
+#include "ui/text/text_utilities.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_chat_helpers.h"
 
@@ -143,7 +144,7 @@ QImage ForumTopicIconFrame(
 	return background;
 }
 
-QImage ForumTopicGeneralIconFrame(int size, const style::color &color) {
+QImage ForumTopicGeneralIconFrame(int size, const QColor &color) {
 	const auto ratio = style::DevicePixelRatio();
 	auto svg = QSvgRenderer(ForumTopicIconPath(u"general"_q));
 	auto result = QImage(
@@ -152,10 +153,10 @@ QImage ForumTopicGeneralIconFrame(int size, const style::color &color) {
 	result.setDevicePixelRatio(ratio);
 	result.fill(Qt::transparent);
 
-	const auto use = size * 0.8;
-	const auto skip = size * 0.1;
+	const auto use = size * 1.;
+	const auto skip = size * 0.;
 	auto p = QPainter(&result);
-	svg.render(&p, QRectF(skip, 0, use, use));
+	svg.render(&p, QRectF(skip, skip, use, use));
 	p.end();
 
 	return style::colorizeImage(result, color);
@@ -165,11 +166,68 @@ TextWithEntities ForumTopicIconWithTitle(
 		MsgId rootId,
 		DocumentId iconId,
 		const QString &title) {
+	const auto wrapped = st::wrap_rtl(title);
 	return (rootId == ForumTopic::kGeneralId)
-		? TextWithEntities{ u"# "_q + title }
+		? TextWithEntities{ u"# "_q + wrapped }
 		: iconId
-		? Data::SingleCustomEmoji(iconId).append(' ').append(title)
-		: TextWithEntities{ title };
+		? Data::SingleCustomEmoji(iconId).append(' ').append(wrapped)
+		: TextWithEntities{ wrapped };
+}
+
+QString ForumGeneralIconTitle() {
+	return QChar(0) + u"general"_q;
+}
+
+bool IsForumGeneralIconTitle(const QString &title) {
+	return !title.isEmpty() && !title[0].unicode();
+}
+
+int32 ForumGeneralIconColor(const QColor &color) {
+	return int32(uint32(color.red()) << 16
+		| uint32(color.green()) << 8
+		| uint32(color.blue())
+		| (uint32(color.alpha() == 255 ? 0 : color.alpha()) << 24));
+}
+
+QColor ParseForumGeneralIconColor(int32 value) {
+	const auto alpha = uint32(value) >> 24;
+	return QColor(
+		(value >> 16) & 0xFF,
+		(value >> 8) & 0xFF,
+		value & 0xFF,
+		alpha ? alpha : 255);
+}
+
+QString TopicIconEmojiEntity(TopicIconDescriptor descriptor) {
+	return IsForumGeneralIconTitle(descriptor.title)
+		? u"topic_general:"_q + QString::number(uint32(descriptor.colorId))
+		: (u"topic_icon:"_q
+			+ QString::number(uint32(descriptor.colorId))
+			+ ' '
+			+ ExtractNonEmojiLetter(descriptor.title));
+}
+
+TopicIconDescriptor ParseTopicIconEmojiEntity(QStringView entity) {
+	if (!entity.startsWith(u"topic_")) {
+		return {};
+	}
+	const auto general = u"topic_general:"_q;
+	const auto normal = u"topic_icon:"_q;
+	if (entity.startsWith(general)) {
+		return {
+			.title = ForumGeneralIconTitle(),
+			.colorId = int32(entity.mid(general.size()).toUInt()),
+		};
+	} else if (entity.startsWith(normal)) {
+		const auto parts = entity.mid(normal.size()).split(' ');
+		if (parts.size() == 2) {
+			return {
+				.title = parts[1].toString(),
+				.colorId = int32(parts[0].toUInt()),
+			};
+		}
+	}
+	return {};
 }
 
 ForumTopic::ForumTopic(not_null<Forum*> forum, MsgId rootId)
@@ -305,8 +363,8 @@ void ForumTopic::subscribeToUnreadChanges() {
 	) | rpl::filter([=] {
 		return inChatList();
 	}) | rpl::start_with_next([=](
-		std::optional<int> previous,
-		std::optional<int> now) {
+			std::optional<int> previous,
+			std::optional<int> now) {
 		if (previous.value_or(0) != now.value_or(0)) {
 			_forum->recentTopicsInvalidate(this);
 		}
@@ -349,6 +407,7 @@ void ForumTopic::applyTopic(const MTPDforumTopic &data) {
 					&session(),
 					channel()->id,
 					_rootId,
+					PeerId(),
 					data);
 			}, [](const MTPDdraftMessageEmpty&) {});
 		}
@@ -640,7 +699,7 @@ void ForumTopic::validateGeneralIcon(
 		: context.selected
 		? st::dialogsTextFgOver
 		: st::dialogsTextFg;
-	_defaultIcon = ForumTopicGeneralIconFrame(size, color);
+	_defaultIcon = ForumTopicGeneralIconFrame(size, color->c);
 	_flags = (_flags & ~mask) | flags;
 }
 
@@ -652,7 +711,7 @@ void ForumTopic::requestChatListMessage() {
 
 TimeId ForumTopic::adjustedChatListTimeId() const {
 	const auto result = chatListTimeId();
-	if (const auto draft = history()->cloudDraft(_rootId)) {
+	if (const auto draft = history()->cloudDraft(_rootId, PeerId())) {
 		if (!Data::DraftIsNull(draft) && !session().supportMode()) {
 			return std::max(result, draft->date);
 		}
@@ -696,6 +755,16 @@ QString ForumTopic::title() const {
 
 TextWithEntities ForumTopic::titleWithIcon() const {
 	return ForumTopicIconWithTitle(_rootId, _iconId, _title);
+}
+
+TextWithEntities ForumTopic::titleWithIconOrLogo() const {
+	if (_iconId || isGeneral()) {
+		return titleWithIcon();
+	}
+	return Ui::Text::SingleCustomEmoji(Data::TopicIconEmojiEntity({
+		.title = _title,
+		.colorId = _colorId,
+	})).append(' ').append(_title);
 }
 
 int ForumTopic::titleVersion() const {
@@ -810,7 +879,7 @@ void ForumTopic::setMuted(bool muted) {
 	session().changes().topicUpdated(this, UpdateFlag::Notifications);
 }
 
-not_null<HistoryView::SendActionPainter*> ForumTopic::sendActionPainter() {
+HistoryView::SendActionPainter *ForumTopic::sendActionPainter() {
 	return _sendActionPainter.get();
 }
 

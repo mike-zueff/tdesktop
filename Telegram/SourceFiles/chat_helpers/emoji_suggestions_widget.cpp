@@ -38,7 +38,6 @@ namespace {
 
 constexpr auto kShowExactDelay = crl::time(300);
 constexpr auto kMaxNonScrolledEmoji = 7;
-constexpr auto kAnimationDuration = crl::time(120);
 
 } // namespace
 
@@ -528,7 +527,7 @@ void SuggestionsWidget::setSelected(int selected, anim::type animated) {
 			[=] { update(); },
 			_selected,
 			selected,
-			kAnimationDuration,
+			st::universalDuration,
 			anim::sineInOut);
 		if (_scrollMax > 0) {
 			const auto selectedMax = int(_rows.size()) - 3;
@@ -560,7 +559,7 @@ void SuggestionsWidget::scrollTo(int value, anim::type animated) {
 			[=] { update(); },
 			_scrollValue,
 			value,
-			kAnimationDuration,
+			st::universalDuration,
 			anim::sineInOut);
 	}
 	_scrollValue = value;
@@ -705,20 +704,22 @@ void SuggestionsWidget::enterEventHook(QEnterEvent *e) {
 	if (!inner().contains(mapToInner(QCursor::pos()))) {
 		clearMouseSelection();
 	}
-	return TWidget::enterEventHook(e);
+	return RpWidget::enterEventHook(e);
 }
 
 void SuggestionsWidget::leaveEventHook(QEvent *e) {
 	clearMouseSelection();
-	return TWidget::leaveEventHook(e);
+	return RpWidget::leaveEventHook(e);
 }
 
 SuggestionsController::SuggestionsController(
+	not_null<QWidget*> parent,
 	not_null<QWidget*> outer,
 	not_null<QTextEdit*> field,
 	not_null<Main::Session*> session,
 	const Options &options)
-: _st(options.st ? *options.st : st::defaultEmojiSuggestions)
+: QObject(parent)
+, _st(options.st ? *options.st : st::defaultEmojiSuggestions)
 , _field(field)
 , _session(session)
 , _showExactTimer([=] { showWithQuery(getEmojiQuery()); })
@@ -983,7 +984,7 @@ void SuggestionsController::replaceCurrent(
 	const auto position = cursor.position();
 	const auto suggestion = getEmojiQuery();
 	if (v::is<EmojiPtr>(suggestion)) {
-		const auto weak = Ui::MakeWeak(_container.get());
+		const auto weak = base::make_weak(_container.get());
 		const auto count = std::max(_emojiQueryLength, 1);
 		for (auto i = 0; i != count; ++i) {
 			const auto start = position - count + i;

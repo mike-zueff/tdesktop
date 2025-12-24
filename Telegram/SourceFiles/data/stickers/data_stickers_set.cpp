@@ -53,9 +53,10 @@ StickersSetFlags ParseStickersSetFlags(const MTPDstickerSet &data) {
 		| (data.is_masks() ? Flag::Masks : Flag())
 		| (data.is_emojis() ? Flag::Emoji : Flag())
 		| (data.vinstalled_date() ? Flag::Installed : Flag())
-		| (data.is_videos() ? Flag::Webm : Flag())
+		//| (data.is_videos() ? Flag::Webm : Flag())
 		| (data.is_text_color() ? Flag::TextColor : Flag())
-		| (data.is_channel_emoji_status() ? Flag::ChannelStatus : Flag());
+		| (data.is_channel_emoji_status() ? Flag::ChannelStatus : Flag())
+		| (data.is_creator() ? Flag::AmCreator : Flag());
 }
 
 StickersSet::StickersSet(
@@ -118,7 +119,10 @@ bool StickersSet::channelStatus() const {
 	return flags & StickersSetFlag::ChannelStatus;
 }
 
-void StickersSet::setThumbnail(const ImageWithLocation &data) {
+void StickersSet::setThumbnail(
+		const ImageWithLocation &data,
+		StickerType type) {
+	_thumbnailType = type;
 	Data::UpdateCloudFile(
 		_thumbnail,
 		data,
@@ -137,6 +141,10 @@ void StickersSet::setThumbnail(const ImageWithLocation &data) {
 
 bool StickersSet::hasThumbnail() const {
 	return _thumbnail.location.valid();
+}
+
+StickerType StickersSet::thumbnailType() const {
+	return _thumbnailType;
 }
 
 bool StickersSet::thumbnailLoading() const {

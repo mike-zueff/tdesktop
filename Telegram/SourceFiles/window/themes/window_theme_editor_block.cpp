@@ -134,9 +134,9 @@ void EditorBlock::Row::setValue(QColor value) {
 void EditorBlock::Row::fillValueString() {
 	auto addHex = [=](int code) {
 		if (code >= 0 && code < 10) {
-			_valueString.append('0' + code);
+			_valueString.append(QChar('0' + code));
 		} else if (code >= 10 && code < 16) {
-			_valueString.append('a' + (code - 10));
+			_valueString.append(QChar('a' + (code - 10)));
 		}
 	};
 	auto addCode = [=](int code) {
@@ -331,9 +331,8 @@ void EditorBlock::activateRow(const Row &row) {
 			const auto state = editor->lifetime().make_state<State>();
 
 			const auto save = crl::guard(this, [=] {
-				saveEditing(editor->color());
 				state->cancelLifetime.destroy();
-				box->closeBox();
+				saveEditing(editor->color());
 			});
 			box->boxClosing(
 			) | rpl::start_with_next(crl::guard(this, [=] {

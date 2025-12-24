@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+class QKeyEvent;
+class QShortcutEvent;
+
 namespace Shortcuts {
 
 enum class Command {
@@ -38,6 +41,13 @@ enum class Command {
 	ChatPinned7,
 	ChatPinned8,
 
+	ShowAccount1,
+	ShowAccount2,
+	ShowAccount3,
+	ShowAccount4,
+	ShowAccount5,
+	ShowAccount6,
+
 	ShowAllChats,
 	ShowFolder1,
 	ShowFolder2,
@@ -50,6 +60,8 @@ enum class Command {
 	FolderNext,
 	FolderPrevious,
 
+	ShowScheduled,
+
 	ShowArchive,
 	ShowContacts,
 
@@ -57,9 +69,16 @@ enum class Command {
 	SendSilentMessage,
 	ScheduleMessage,
 
+	RecordVoice,
+	RecordRound,
+
 	ReadChat,
+	ArchiveChat,
 
 	MediaViewerFullscreen,
+
+	ShowChatMenu,
+	ShowChatPreview,
 
 	SupportReloadTemplates,
 	SupportToggleMuted,
@@ -77,6 +96,15 @@ enum class Command {
 	Command::ShowFolder5,
 	Command::ShowFolder6,
 	Command::ShowFolderLast,
+};
+
+[[maybe_unused]] constexpr auto kShowAccount = {
+	Command::ShowAccount1,
+	Command::ShowAccount2,
+	Command::ShowAccount3,
+	Command::ShowAccount4,
+	Command::ShowAccount5,
+	Command::ShowAccount6,
 };
 
 [[nodiscard]] FnMut<bool()> RequestHandler(Command command);
@@ -97,7 +125,7 @@ private:
 
 };
 
-rpl::producer<not_null<Request*>> Requests();
+[[nodiscard]] rpl::producer<not_null<Request*>> Requests();
 
 void Start();
 void Finish();
@@ -107,7 +135,15 @@ void Listen(not_null<QWidget*> widget);
 bool Launch(Command command);
 bool HandleEvent(not_null<QObject*> object, not_null<QShortcutEvent*> event);
 
-const QStringList &Errors();
+bool HandlePossibleChatSwitch(not_null<QKeyEvent*> event);
+
+struct ChatSwitchRequest {
+	Qt::Key action = Qt::Key_Tab; // Key_Tab, Key_Backtab or Key_Escape.
+	bool started = false;
+};
+[[nodiscard]] rpl::producer<ChatSwitchRequest> ChatSwitchRequests();
+
+[[nodiscard]] const QStringList &Errors();
 
 // Media shortcuts are not enabled by default, because other
 // applications also use them. They are enabled only when
@@ -117,5 +153,22 @@ void ToggleMediaShortcuts(bool toggled);
 // Support shortcuts are not enabled by default, because they
 // have some conflicts with default input shortcuts, like Ctrl+Delete.
 void ToggleSupportShortcuts(bool toggled);
+
+void Pause();
+void Unpause();
+
+[[nodiscard]] auto KeysDefaults()
+-> base::flat_map<QKeySequence, base::flat_set<Command>>;
+[[nodiscard]] auto KeysCurrents()
+-> base::flat_map<QKeySequence, base::flat_set<Command>>;
+
+void Change(
+	QKeySequence was,
+	QKeySequence now,
+	Command command,
+	std::optional<Command> restore = {});
+void ResetToDefaults();
+
+[[nodiscard]] bool AllowWithoutModifiers(int key);
 
 } // namespace Shortcuts

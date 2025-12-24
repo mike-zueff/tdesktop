@@ -28,10 +28,6 @@ inline bool SkipTaskbarSupported() {
 	return true;
 }
 
-inline bool RunInBackground() {
-	return false;
-}
-
 inline bool PreventsQuit(Core::QuitReason reason) {
 	return false;
 }
@@ -47,6 +43,10 @@ void SetWindowPriority(not_null<QWidget*> window, uint32 priority);
 // Activate window with windowId (if found) or the largest priority.
 void ActivateOtherProcess(uint64 processId, uint64 windowId);
 
+inline QString ApplicationIconName() {
+	return {};
+}
+
 inline QString ExecutablePathForShortcuts() {
 	return cExeDir() + cExeName();
 }
@@ -54,9 +54,6 @@ inline QString ExecutablePathForShortcuts() {
 namespace ThirdParty {
 
 void start();
-
-inline void finish() {
-}
 
 } // namespace ThirdParty
 } // namespace Platform

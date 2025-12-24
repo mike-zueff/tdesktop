@@ -16,8 +16,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/admin_log/history_admin_log_item.h"
 #include "history/history.h"
 #include "history/history_item.h"
-#include "history/view/history_view_element.h"
 #include "history/view/reactions/history_view_reactions_strip.h"
+#include "history/view/history_view_element.h"
+#include "history/view/history_view_fake_items.h"
 #include "lang/lang_keys.h"
 #include "boxes/premium_preview_box.h"
 #include "main/main_session.h"
@@ -42,58 +43,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_settings.h"
 
 namespace {
-
-PeerId GenerateUser(not_null<History*> history, const QString &name) {
-	Expects(history->peer->isUser());
-
-	const auto peerId = Data::FakePeerIdForJustName(name);
-	history->owner().processUser(MTP_user(
-		MTP_flags(MTPDuser::Flag::f_first_name | MTPDuser::Flag::f_min),
-		peerToBareMTPInt(peerId),
-		MTP_long(0),
-		MTP_string(tr::lng_settings_chat_message_reply_from(tr::now)),
-		MTPstring(), // last name
-		MTPstring(), // username
-		MTPstring(), // phone
-		MTPUserProfilePhoto(), // profile photo
-		MTPUserStatus(), // status
-		MTP_int(0), // bot info version
-		MTPVector<MTPRestrictionReason>(), // restrictions
-		MTPstring(), // bot placeholder
-		MTPstring(), // lang code
-		MTPEmojiStatus(),
-		MTPVector<MTPUsername>(),
-		MTPint(), // stories_max_id
-		MTPPeerColor(), // color
-		MTPPeerColor())); // profile_color
-	return peerId;
-}
-
-AdminLog::OwnedItem GenerateItem(
-		not_null<HistoryView::ElementDelegate*> delegate,
-		not_null<History*> history,
-		PeerId from,
-		FullMsgId replyTo,
-		const QString &text) {
-	Expects(history->peer->isUser());
-
-	const auto item = history->addNewLocalMessage(
-		history->nextNonHistoryEntryId(),
-		(MessageFlag::FakeHistoryItem
-			| MessageFlag::HasFromId
-			| MessageFlag::HasReplyInfo),
-		UserId(), // via
-		FullReplyTo{ .messageId = replyTo },
-		base::unixtime::now(), // date
-		from,
-		QString(), // postAuthor
-		TextWithEntities{ .text = text },
-		MTP_messageMediaEmpty(),
-		HistoryMessageMarkupData(),
-		uint64(0)); // groupedId
-
-	return AdminLog::OwnedItem(delegate, item);
-}
 
 void AddMessage(
 		not_null<Ui::VerticalLayout*> container,
@@ -140,15 +89,15 @@ void AddMessage(
 
 	const auto history = controller->session().data().history(
 		PeerData::kServiceNotificationsId);
-	state->reply = GenerateItem(
+	state->reply = HistoryView::GenerateItem(
 		state->delegate.get(),
 		history,
-		GenerateUser(
+		HistoryView::GenerateUser(
 			history,
 			tr::lng_settings_chat_message_reply_from(tr::now)),
 		FullMsgId(),
 		tr::lng_settings_chat_message_reply(tr::now));
-	auto message = GenerateItem(
+	auto message = HistoryView::GenerateItem(
 		state->delegate.get(),
 		history,
 		history->peer->id,
@@ -507,7 +456,6 @@ void ReactionsSettingsBox(
 	};
 
 	auto firstCheckedButton = (Ui::RpWidget*)(nullptr);
-	const auto premiumPossible = controller->session().premiumPossible();
 	auto list = reactions.list(Data::Reactions::Type::Active);
 	if (const auto favorite = reactions.favorite()) {
 		if (favorite->id.custom()) {
@@ -519,11 +467,6 @@ void ReactionsSettingsBox(
 			container,
 			rpl::single<QString>(base::duplicate(r.title)),
 			st::settingsButton));
-
-		const auto premium = r.premium;
-		if (premium && !premiumPossible) {
-			continue;
-		}
 
 		const auto iconSize = st::settingsReactionSize;
 		const auto left = button->st().iconLeft;
@@ -556,12 +499,6 @@ void ReactionsSettingsBox(
 				&button->lifetime());
 		}
 		button->setClickedCallback([=, id = r.id] {
-			if (premium && !controller->session().premium()) {
-				ShowPremiumPreviewBox(
-					controller,
-					PremiumPreview::InfiniteReactions);
-				return;
-			}
 			checkButton(button);
 			state->selectedId = id;
 		});

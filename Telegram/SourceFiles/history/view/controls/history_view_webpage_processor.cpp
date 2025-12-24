@@ -158,11 +158,15 @@ void WebpageResolver::request(const QString &link, bool force) {
 			MTP_flags(0),
 			MTP_string(link),
 			MTPVector<MTPMessageEntity>()
-	)).done([=](const MTPMessageMedia &result, mtpRequestId requestId) {
+	)).done([=](
+			const MTPmessages_WebPagePreview &result,
+			mtpRequestId requestId) {
 		if (_requestId == requestId) {
 			_requestId = 0;
 		}
-		result.match([=](const MTPDmessageMediaWebPage &data) {
+		const auto &data = result.data();
+		_session->data().processUsers(data.vusers());
+		data.vmedia().match([=](const MTPDmessageMediaWebPage &data) {
 			done(data);
 		}, [&](const auto &d) {
 			fail();
@@ -257,6 +261,7 @@ void WebpageProcessor::apply(Data::WebPageDraft draft, bool reparse) {
 	const auto was = _link;
 	if (draft.removed) {
 		_draft = draft;
+		_parsedLinks = _parser.list().current();
 		if (_parsedLinks.empty()) {
 			_draft.removed = false;
 		}

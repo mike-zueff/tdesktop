@@ -60,7 +60,13 @@ base::unique_qptr<Ui::PopupMenu> FillContextMenu(
 void CopyPostLink(
 	not_null<Window::SessionController*> controller,
 	FullMsgId itemId,
-	Context context);
+	Context context,
+	std::optional<TimeId> videoTimestamp = {});
+void CopyPostLink(
+	std::shared_ptr<Main::SessionShow> show,
+	FullMsgId itemId,
+	Context context,
+	std::optional<TimeId> videoTimestamp = {});
 void CopyStoryLink(
 	std::shared_ptr<Main::SessionShow> show,
 	FullStoryId storyId);
@@ -80,6 +86,10 @@ void AddWhoReactedAction(
 	not_null<QWidget*> context,
 	not_null<HistoryItem*> item,
 	not_null<Window::SessionController*> controller);
+void MaybeAddWhenEditedForwardedAction(
+	not_null<Ui::PopupMenu*> menu,
+	not_null<HistoryItem*> item,
+	not_null<Window::SessionController*> controller);
 void ShowWhoReactedMenu(
 	not_null<base::unique_qptr<Ui::PopupMenu>*> menu,
 	QPoint position,
@@ -88,11 +98,22 @@ void ShowWhoReactedMenu(
 	const Data::ReactionId &id,
 	not_null<Window::SessionController*> controller,
 	rpl::lifetime &lifetime);
+void ShowTagInListMenu(
+	not_null<base::unique_qptr<Ui::PopupMenu>*> menu,
+	QPoint position,
+	not_null<QWidget*> context,
+	const Data::ReactionId &id,
+	not_null<Window::SessionController*> controller);
+void AddCopyFilename(
+	not_null<Ui::PopupMenu*> menu,
+	not_null<DocumentData*> document,
+	Fn<bool()> showCopyRestrictionForSelected);
 
 enum class EmojiPacksSource {
 	Message,
 	Reaction,
 	Reactions,
+	Tag,
 };
 [[nodiscard]] std::vector<StickerSetIdentifier> CollectEmojiPacks(
 	not_null<HistoryItem*> item,
@@ -107,7 +128,13 @@ void AddEmojiPacksAction(
 	not_null<HistoryItem*> item,
 	EmojiPacksSource source,
 	not_null<Window::SessionController*> controller);
+void AddSelectRestrictionAction(
+	not_null<Ui::PopupMenu*> menu,
+	not_null<HistoryItem*> item,
+	bool addIcon);
 
 [[nodiscard]] TextWithEntities TransribedText(not_null<HistoryItem*> item);
+
+[[nodiscard]] bool ItemHasTtl(HistoryItem *item);
 
 } // namespace HistoryView

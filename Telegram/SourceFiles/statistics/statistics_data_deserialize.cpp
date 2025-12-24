@@ -9,6 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/debug_log.h"
 #include "data/data_statistics_chart.h"
+#include "statistics/statistics_types.h"
+#include "ui/text/format_values.h" // kCreditsCurrency.
 
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
@@ -39,6 +41,18 @@ Data::StatisticalChart StatisticalChartFromJSON(const QByteArray &json) {
 	}) | ranges::to_vector;
 
 	auto result = Data::StatisticalChart();
+
+	{
+		const auto tickFormatIt = root.constFind(u"yTickFormatter"_q);
+		if (tickFormatIt != root.constEnd()) {
+			const auto tickFormat = tickFormatIt->toString();
+			if (tickFormat.contains(u"TON"_q)) {
+				result.currency = Data::StatisticalCurrency::Ton;
+			} else if (tickFormat.contains(Ui::kCreditsCurrency)) {
+				result.currency = Data::StatisticalCurrency::Credits;
+			}
+		}
+	}
 	auto columnIdCount = 0;
 	for (const auto &column : columns) {
 		const auto array = column.toArray();
@@ -49,9 +63,9 @@ Data::StatisticalChart StatisticalChartFromJSON(const QByteArray &json) {
 		const auto columnId = array.first().toString();
 		if (columnId == u"x"_q) {
 			const auto length = array.size() - 1;
-			result.x.resize(length);
+			result.x.reserve(length);
 			for (auto i = 0; i < length; i++) {
-				result.x[i] = array.at(i + 1).toDouble();
+				result.x.push_back(array.at(i + 1).toDouble());
 			}
 		} else {
 			auto line = Data::StatisticalChart::Line();
@@ -61,7 +75,10 @@ Data::StatisticalChart StatisticalChartFromJSON(const QByteArray &json) {
 			line.isHiddenOnStart = ranges::contains(hiddenLines, columnId);
 			line.y.resize(length);
 			for (auto i = 0; i < length; i++) {
-				const auto value = array.at(i + 1).toInt();
+				const auto multiplier = 1;
+				const auto value = ChartValue(
+						base::SafeRound(array.at(i + 1).toDouble()))
+					* multiplier;
 				line.y[i] = value;
 				if (value > line.maxValue) {
 					line.maxValue = value;
@@ -73,7 +90,7 @@ Data::StatisticalChart StatisticalChartFromJSON(const QByteArray &json) {
 			result.lines.push_back(std::move(line));
 		}
 		if (result.x.size() > 1) {
-			result.timeStep = result.x[1] - result.x[0];
+			result.timeStep = std::max(1., result.x[1] - result.x[0]);
 		} else {
 			constexpr auto kOneDay = 3600 * 24 * 1000;
 			result.timeStep = kOneDay;

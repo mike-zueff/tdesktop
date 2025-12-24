@@ -19,18 +19,31 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/update_checker.h"
 #include "core/application.h"
 #include "core/click_handler_types.h"
+#include "dialogs/ui/dialogs_suggestions.h"
 #include "boxes/background_preview_box.h"
 #include "ui/boxes/confirm_box.h"
+#include "ui/boxes/edit_birthday_box.h"
+#include "ui/integration.h"
+#include "payments/payments_non_panel_process.h"
+#include "boxes/peers/edit_peer_info_box.h"
 #include "boxes/share_box.h"
 #include "boxes/connection_box.h"
+#include "boxes/gift_premium_box.h"
+#include "boxes/edit_privacy_box.h"
+#include "boxes/premium_preview_box.h"
 #include "boxes/sticker_set_box.h"
-#include "boxes/sessions_box.h"
+#include "boxes/star_gift_box.h"
 #include "boxes/language_box.h"
 #include "passport/passport_form_controller.h"
+#include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
-#include "data/data_session.h"
-#include "data/data_document.h"
+#include "ui/vertical_list.h"
+#include "data/components/credits.h"
+#include "data/data_birthday.h"
 #include "data/data_channel.h"
+#include "data/data_document.h"
+#include "data/data_session.h"
+#include "data/data_user.h"
 #include "media/player/media_player_instance.h"
 #include "media/view/media_view_open_common.h"
 #include "window/window_session_controller.h"
@@ -39,18 +52,26 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_peer_menu.h"
 #include "window/themes/window_theme_editor_box.h" // GenerateSlug.
 #include "payments/payments_checkout_process.h"
+#include "settings/settings_active_sessions.h"
+#include "settings/settings_credits.h"
+#include "settings/settings_credits_graphics.h"
 #include "settings/settings_information.h"
 #include "settings/settings_global_ttl.h"
 #include "settings/settings_folders.h"
 #include "settings/settings_main.h"
+#include "settings/settings_privacy_controllers.h"
 #include "settings/settings_privacy_security.h"
 #include "settings/settings_chat.h"
 #include "settings/settings_premium.h"
+#include "storage/storage_account.h"
 #include "mainwidget.h"
 #include "main/main_account.h"
+#include "main/main_app_config.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
+#include "info/info_controller.h"
+#include "info/info_memento.h"
 #include "inline_bots/bot_attach_web_view.h"
 #include "history/history.h"
 #include "history/history_item.h"
@@ -62,6 +83,161 @@ namespace Core {
 namespace {
 
 using Match = qthelp::RegularExpressionMatch;
+
+class PersonalChannelController final : public PeerListController {
+public:
+	explicit PersonalChannelController(
+		not_null<Window::SessionController*> window);
+	~PersonalChannelController();
+
+	Main::Session &session() const override;
+	void prepare() override;
+	void rowClicked(not_null<PeerListRow*> row) override;
+	[[nodiscard]] rpl::producer<not_null<ChannelData*>> chosen() const;
+
+private:
+	const not_null<Window::SessionController*> _window;
+	rpl::event_stream<not_null<ChannelData*>> _chosen;
+	mtpRequestId _requestId = 0;
+
+};
+
+PersonalChannelController::PersonalChannelController(
+	not_null<Window::SessionController*> window)
+: _window(window) {
+}
+
+PersonalChannelController::~PersonalChannelController() {
+	if (_requestId) {
+		_window->session().api().request(_requestId).cancel();
+	}
+}
+
+Main::Session &PersonalChannelController::session() const {
+	return _window->session();
+}
+
+void PersonalChannelController::prepare() {
+	setDescription(object_ptr<Ui::FlatLabel>(
+		nullptr,
+		tr::lng_contacts_loading(),
+		computeListSt().about));
+
+	using Flag = MTPchannels_GetAdminedPublicChannels::Flag;
+	_requestId = _window->session().api().request(
+		MTPchannels_GetAdminedPublicChannels(
+			MTP_flags(Flag::f_for_personal))
+	).done([=](const MTPmessages_Chats &result) {
+		_requestId = 0;
+
+		setDescription(nullptr);
+		const auto &chats = result.match([](const auto &data) {
+			return data.vchats().v;
+		});
+		const auto owner = &_window->session().data();
+		for (const auto &chat : chats) {
+			if (const auto peer = owner->processChat(chat)) {
+				const auto rowId = peer->id.value;
+				const auto channel = peer->asChannel();
+				if (channel && !delegate()->peerListFindRow(rowId)) {
+					auto row = std::make_unique<PeerListRow>(peer);
+					row->setCustomStatus(tr::lng_chat_status_subscribers(
+						tr::now,
+						lt_count,
+						channel->membersCount()));
+					delegate()->peerListAppendRow(std::move(row));
+				}
+			}
+		}
+		if (!delegate()->peerListFullRowsCount()) {
+			auto none = rpl::combine(
+				tr::lng_settings_channel_no_yet(Ui::Text::WithEntities),
+				tr::lng_settings_channel_start()
+			) | rpl::map([](TextWithEntities &&text, const QString &link) {
+				return text.append('\n').append(Ui::Text::Link(link));
+			});
+			auto label = object_ptr<Ui::FlatLabel>(
+				nullptr,
+				std::move(none),
+				computeListSt().about);
+			label->setClickHandlerFilter([=](const auto &...) {
+				_window->showNewChannel();
+				return false;
+			});
+			setDescription(std::move(label));
+		}
+		delegate()->peerListRefreshRows();
+	}).send();
+}
+
+void PersonalChannelController::rowClicked(not_null<PeerListRow*> row) {
+	if (const auto channel = row->peer()->asChannel()) {
+		_chosen.fire_copy(channel);
+	}
+}
+
+auto PersonalChannelController::chosen() const
+-> rpl::producer<not_null<ChannelData*>> {
+	return _chosen.events();
+}
+
+Window::SessionController *ApplyAccountIndex(
+		not_null<Window::SessionController*> controller,
+		int accountIndex) {
+	if (accountIndex <= 0) {
+		return nullptr;
+	}
+	const auto list = Core::App().domain().orderedAccounts();
+	if (accountIndex > int(list.size())) {
+		return nullptr;
+	}
+	const auto account = list[accountIndex - 1];
+	if (account == &controller->session().account()) {
+		return controller;
+	} else if (const auto window = Core::App().windowFor({ account })) {
+		if (&window->account() != account) {
+			Core::App().domain().maybeActivate(account);
+			if (&window->account() != account) {
+				return nullptr;
+			}
+		}
+		const auto session = window->sessionController();
+		if (session) {
+			return session;
+		}
+	}
+	return nullptr;
+}
+
+void SavePersonalChannel(
+		not_null<Window::SessionController*> window,
+		ChannelData *channel) {
+	const auto self = window->session().user();
+	const auto history = channel
+		? channel->owner().history(channel->id).get()
+		: nullptr;
+	const auto item = history
+		? history->lastServerMessage()
+		: nullptr;
+	const auto channelId = channel
+		? peerToChannel(channel->id)
+		: ChannelId();
+	const auto messageId = item ? item->id : MsgId();
+	if (self->personalChannelId() != channelId
+		|| (messageId
+			&& self->personalChannelMessageId() != messageId)) {
+		self->setPersonalChannel(channelId, messageId);
+		self->session().api().request(MTPaccount_UpdatePersonalChannel(
+			channel ? channel->inputChannel : MTP_inputChannelEmpty()
+		)).done(crl::guard(window, [=] {
+			window->showToast((channel
+				? tr::lng_settings_channel_saved
+				: tr::lng_settings_channel_removed)(tr::now));
+		})).fail(crl::guard(window, [=](const MTP::Error &error) {
+			window->showToast(u"Error: "_q + error.type());
+		})).send();
+	}
+}
 
 bool JoinGroupByHash(
 		Window::SessionController *controller,
@@ -125,6 +301,42 @@ bool ShowTheme(
 void ShowLanguagesBox(Window::SessionController *controller) {
 	static auto Guard = base::binary_guard();
 	Guard = LanguageBox::Show(controller);
+}
+
+void ShowPhonePrivacyBox(Window::SessionController *controller) {
+	static auto Guard = base::binary_guard();
+	auto guard = base::binary_guard();
+
+	using Privacy = Api::UserPrivacy;
+	const auto key = Privacy::Key::PhoneNumber;
+	controller->session().api().userPrivacy().reload(key);
+
+	const auto weak = base::make_weak(controller);
+	auto shared = std::make_shared<base::binary_guard>(
+		guard.make_guard());
+	auto lifetime = std::make_shared<rpl::lifetime>();
+	controller->session().api().userPrivacy().value(
+		key
+	) | rpl::take(
+		1
+	) | rpl::start_with_next([=](const Privacy::Rule &value) mutable {
+		using namespace ::Settings;
+		const auto show = shared->alive();
+		if (lifetime) {
+			base::take(lifetime)->destroy();
+		}
+		if (show) {
+			if (const auto controller = weak.get()) {
+				controller->show(Box<EditPrivacyBox>(
+					controller,
+					std::make_unique<PhoneNumberPrivacyController>(
+						controller),
+					value));
+			}
+		}
+	}, *lifetime);
+
+	Guard = std::move(guard);
 }
 
 bool SetLanguage(
@@ -192,21 +404,6 @@ bool ConfirmPhone(
 	return true;
 }
 
-bool ShareGameScore(
-		Window::SessionController *controller,
-		const Match &match,
-		const QVariant &context) {
-	if (!controller) {
-		return false;
-	}
-	const auto params = url_parse_params(
-		match->captured(1),
-		qthelp::UrlParamNameTransform::ToLower);
-	ShareGameScoreByHash(controller, params.value(u"hash"_q));
-	controller->window().activate();
-	return true;
-}
-
 bool ApplySocksProxy(
 		Window::SessionController *controller,
 		const Match &match,
@@ -215,6 +412,7 @@ bool ApplySocksProxy(
 		match->captured(1),
 		qthelp::UrlParamNameTransform::ToLower);
 	ProxiesBoxController::ShowApplyConfirmation(
+		controller,
 		MTP::ProxyData::Type::Socks5,
 		params);
 	if (controller) {
@@ -231,6 +429,7 @@ bool ApplyMtprotoProxy(
 		match->captured(1),
 		qthelp::UrlParamNameTransform::ToLower);
 	ProxiesBoxController::ShowApplyConfirmation(
+		controller,
 		MTP::ProxyData::Type::Mtproto,
 		params);
 	if (controller) {
@@ -321,6 +520,8 @@ bool ShowWallPaper(
 			result |= ChatAdminRight::AddAdmins;
 		} else if (element == u"manage_video_chats"_q) {
 			result |= ChatAdminRight::ManageCall;
+		} else if (element == u"manage_direct_messages"_q) {
+			result |= ChatAdminRight::ManageDirect;
 		} else if (element == u"anonymous"_q) {
 			result |= ChatAdminRight::Anonymous;
 		} else if (element == u"manage_chat"_q) {
@@ -342,6 +543,20 @@ bool ResolveUsernameOrPhone(
 	const auto params = url_parse_params(
 		match->captured(1),
 		qthelp::UrlParamNameTransform::ToLower);
+
+	if (params.contains(u"acc"_q)) {
+		const auto switched = ApplyAccountIndex(
+			controller,
+			params.value(u"acc"_q).toInt());
+		if (switched) {
+			controller = switched;
+		} else {
+			controller->showToast(u"Could not activate account %1."_q.arg(
+				params.value(u"acc"_q)));
+			return false;
+		}
+	}
+
 	const auto domainParam = params.value(u"domain"_q);
 	const auto appnameParam = params.value(u"appname"_q);
 	const auto myContext = context.value<ClickHandlerContext>();
@@ -381,10 +596,23 @@ bool ResolveUsernameOrPhone(
 		return false;
 	}
 	using ResolveType = Window::ResolveType;
-	auto resolveType = ResolveType::Default;
+	auto resolveType = params.contains(u"profile"_q)
+		? ResolveType::Profile
+		: ResolveType::Default;
 	auto startToken = params.value(u"start"_q);
+	auto referral = params.value(u"ref"_q);
 	if (!startToken.isEmpty()) {
 		resolveType = ResolveType::BotStart;
+		if (referral.isEmpty()) {
+			const auto appConfig = &controller->session().appConfig();
+			const auto &prefixes = appConfig->startRefPrefixes();
+			for (const auto &prefix : prefixes) {
+				if (startToken.startsWith(prefix)) {
+					referral = startToken.mid(prefix.size());
+					break;
+				}
+			}
+		}
 	} else if (params.contains(u"startgroup"_q)) {
 		resolveType = ResolveType::AddToGroup;
 		startToken = params.value(u"startgroup"_q);
@@ -405,6 +633,10 @@ bool ResolveUsernameOrPhone(
 	}
 	const auto storyParam = params.value(u"story"_q);
 	const auto storyId = storyParam.toInt();
+	const auto storyAlbumParam = params.value(u"album"_q);
+	const auto storyAlbumId = storyAlbumParam.toInt();
+	const auto giftCollectionParam = params.value(u"collection"_q);
+	const auto giftCollectionId = giftCollectionParam.toInt();
 	const auto appname = webChannelPreviewLink ? QString() : appnameParam;
 	const auto commentParam = params.value(u"comment"_q);
 	const auto commentId = commentParam.toInt();
@@ -413,6 +645,10 @@ bool ResolveUsernameOrPhone(
 	const auto threadParam = params.value(u"thread"_q);
 	const auto threadId = topicId ? topicId : threadParam.toInt();
 	const auto gameParam = params.value(u"game"_q);
+	const auto videot = params.value(u"t"_q);
+	if (params.contains(u"direct"_q)) {
+		resolveType = ResolveType::ChannelDirect;
+	}
 	if (!gameParam.isEmpty() && validDomain(gameParam)) {
 		startToken = gameParam;
 		resolveType = ResolveType::ShareGame;
@@ -429,6 +665,12 @@ bool ResolveUsernameOrPhone(
 		.phone = phone,
 		.messageId = post,
 		.storyId = storyId,
+		.storyAlbumId = storyAlbumId,
+		.giftCollectionId = giftCollectionId,
+		.videoTimestamp = (!videot.isEmpty()
+			? ParseVideoTimestamp(videot)
+			: std::optional<TimeId>()),
+		.text = params.value(u"text"_q),
 		.repliesInfo = commentId
 			? Window::RepliesByLinkInfo{
 				Window::CommentId{ commentId }
@@ -439,19 +681,24 @@ bool ResolveUsernameOrPhone(
 			}
 			: Window::RepliesByLinkInfo{ v::null },
 		.resolveType = resolveType,
+		.referral = referral,
 		.startToken = startToken,
 		.startAdminRights = adminRights,
 		.startAutoSubmit = myContext.botStartAutoSubmit,
 		.botAppName = (appname.isEmpty() ? postParam : appname),
 		.botAppForceConfirmation = myContext.mayShowConfirmation,
+		.botAppFullScreen = (params.value(u"mode"_q) == u"fullscreen"_q),
 		.attachBotUsername = params.value(u"attach"_q),
 		.attachBotToggleCommand = (params.contains(u"startattach"_q)
 			? params.value(u"startattach"_q)
 			: (appname.isEmpty() && params.contains(u"startapp"_q))
 			? params.value(u"startapp"_q)
 			: std::optional<QString>()),
-		.attachBotMenuOpen = (appname.isEmpty()
+		.attachBotMainOpen = (appname.isEmpty()
 			&& params.contains(u"startapp"_q)),
+		.attachBotMainCompact = (appname.isEmpty()
+			&& params.contains(u"startapp"_q)
+			&& (params.value(u"mode"_q) == u"compact"_q)),
 		.attachBotChooseTypes = InlineBots::ParseChooseTypes(
 			params.value(u"choose"_q)),
 		.voicechatHash = (params.contains(u"livestream"_q)
@@ -462,7 +709,9 @@ bool ResolveUsernameOrPhone(
 			? std::make_optional(params.value(u"voicechat"_q))
 			: std::nullopt),
 		.clickFromMessageId = myContext.itemId,
-		.clickFromAttachBotWebviewUrl = myContext.attachBotWebviewUrl,
+		.clickFromBotWebviewContext = myContext.botWebviewContext,
+		.historyInNewWindow =
+			(params.value(u"tdesktop_target"_q) == u"blank"_q),
 	});
 	return true;
 }
@@ -503,7 +752,7 @@ bool ResolvePrivatePost(
 			}
 			: Window::RepliesByLinkInfo{ v::null },
 		.clickFromMessageId = my.itemId,
-		.clickFromAttachBotWebviewUrl = my.attachBotWebviewUrl,
+		.clickFromBotWebviewContext = my.botWebviewContext,
 	});
 	controller->window().activate();
 	return true;
@@ -517,6 +766,9 @@ bool ResolveSettings(
 	const auto type = [&]() -> std::optional<::Settings::Type> {
 		if (section == u"language"_q) {
 			ShowLanguagesBox(controller);
+			return {};
+		} else if (section == u"phone_privacy"_q) {
+			ShowPhonePrivacyBox(controller);
 			return {};
 		} else if (section == u"devices"_q) {
 			return ::Settings::Sessions::Id();
@@ -586,8 +838,8 @@ bool OpenMediaTimestamp(
 	if (!controller) {
 		return false;
 	}
-	const auto time = match->captured(2).toInt();
-	if (time < 0) {
+	const auto position = match->captured(2).toInt();
+	if (position < 0) {
 		return false;
 	}
 	const auto base = match->captured(1);
@@ -600,19 +852,18 @@ bool OpenMediaTimestamp(
 		const auto session = &controller->session();
 		const auto document = session->data().document(documentId);
 		const auto context = session->data().message(itemId);
-		const auto timeMs = time * crl::time(1000);
+		const auto time = position * crl::time(1000);
 		if (document->isVideoFile()) {
 			controller->window().openInMediaView(Media::View::OpenRequest(
 				controller,
 				document,
 				context,
 				context ? context->topicRootId() : MsgId(0),
+				context ? context->sublistPeerId() : PeerId(0),
 				false,
-				timeMs));
+				time));
 		} else if (document->isSong() || document->isVoiceMessage()) {
-			session->settings().setMediaLastPlaybackPosition(
-				documentId,
-				timeMs);
+			session->local().setMediaLastPlaybackPosition(documentId, time);
 			Media::Player::instance()->play({ document, itemId });
 		}
 		return true;
@@ -650,10 +901,296 @@ bool CopyPeerId(
 		Window::SessionController *controller,
 		const Match &match,
 		const QVariant &context) {
-	TextUtilities::SetClipboardText(TextForMimeData{ match->captured(1) });
+	TextUtilities::SetClipboardText({ match->captured(1) });
 	if (controller) {
-		controller->showToast(tr::lng_text_copied(tr::now));
+		controller->showToast(u"ID copied to clipboard."_q);
 	}
+	return true;
+}
+
+bool ShowSearchTagsPromo(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	ShowPremiumPreviewBox(controller, PremiumFeature::TagsForMessages);
+	return true;
+}
+
+bool ShowEditBirthday(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	} else if (controller->showFrozenError()) {
+		return true;
+	}
+	const auto user = controller->session().user();
+	const auto save = [=](Data::Birthday result) {
+		user->setBirthday(result);
+
+		using Flag = MTPaccount_UpdateBirthday::Flag;
+		using BFlag = MTPDbirthday::Flag;
+		user->session().api().request(MTPaccount_UpdateBirthday(
+			MTP_flags(result ? Flag::f_birthday : Flag()),
+			MTP_birthday(
+				MTP_flags(result.year() ? BFlag::f_year : BFlag()),
+				MTP_int(result.day()),
+				MTP_int(result.month()),
+				MTP_int(result.year()))
+		)).done(crl::guard(controller, [=] {
+			controller->showToast(tr::lng_settings_birthday_saved(tr::now));
+		})).fail(crl::guard(controller, [=](const MTP::Error &error) {
+			const auto type = error.type();
+			controller->showToast(type.startsWith(u"FLOOD_WAIT_"_q)
+				? tr::lng_flood_error(tr::now)
+				: (u"Error: "_q + error.type()));
+		})).handleFloodErrors().send();
+	};
+	if (match->captured(1).isEmpty()) {
+		controller->show(Box(Ui::EditBirthdayBox, user->birthday(), save));
+	} else {
+		controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+			Ui::EditBirthdayBox(box, user->birthday(), save);
+
+			const auto container = box->verticalLayout();
+			const auto session = &user->session();
+			const auto key = Api::UserPrivacy::Key::Birthday;
+			session->api().userPrivacy().reload(key);
+			auto isExactlyContacts = session->api().userPrivacy().value(
+				key
+			) | rpl::map([=](const Api::UserPrivacy::Rule &value) {
+				return (value.option == Api::UserPrivacy::Option::Contacts)
+					&& value.always.peers.empty()
+					&& !value.always.premiums
+					&& value.never.peers.empty();
+			}) | rpl::distinct_until_changed();
+			Ui::AddSkip(container);
+			const auto link = u"internal:edit_privacy_birthday:from_box"_q;
+			Ui::AddDividerText(container, rpl::conditional(
+				std::move(isExactlyContacts),
+				tr::lng_settings_birthday_contacts(
+					lt_link,
+					tr::lng_settings_birthday_contacts_link(
+					) | Ui::Text::ToLink(link),
+					Ui::Text::WithEntities),
+				tr::lng_settings_birthday_about(
+					lt_link,
+					tr::lng_settings_birthday_about_link(
+					) | Ui::Text::ToLink(link),
+					Ui::Text::WithEntities)));
+		}));
+
+	}
+	return true;
+}
+
+bool ShowEditBirthdayPrivacy(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto isFromBox = !match->captured(1).isEmpty();
+	auto syncLifetime = controller->session().api().userPrivacy().value(
+		Api::UserPrivacy::Key::Birthday
+	) | rpl::take(
+		1
+	) | rpl::start_with_next([=](const Api::UserPrivacy::Rule &value) {
+		if (isFromBox) {
+			using namespace ::Settings;
+			class Controller final : public BirthdayPrivacyController {
+				object_ptr<Ui::RpWidget> setupAboveWidget(
+					not_null<Window::SessionController*> controller,
+					not_null<QWidget*> parent,
+					rpl::producer<Option> optionValue,
+					not_null<QWidget*> outerContainer) override {
+					return { nullptr };
+				}
+			};
+			controller->show(Box<EditPrivacyBox>(
+				controller,
+				std::make_unique<Controller>(),
+				value));
+			return;
+		}
+		controller->show(Box<EditPrivacyBox>(
+			controller,
+			std::make_unique<::Settings::BirthdayPrivacyController>(),
+			value));
+	});
+	return true;
+}
+
+bool ShowEditPersonalChannel(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	} else if (controller->showFrozenError()) {
+		return true;
+	}
+
+	auto listController = std::make_unique<PersonalChannelController>(
+		controller);
+	const auto rawController = listController.get();
+	auto initBox = [=](not_null<PeerListBox*> box) {
+		box->setTitle(tr::lng_settings_channel_label());
+		box->addButton(tr::lng_box_done(), [=] {
+			box->closeBox();
+		});
+
+		const auto save = [=](ChannelData *channel) {
+			SavePersonalChannel(controller, channel);
+			box->closeBox();
+		};
+
+		rawController->chosen(
+		) | rpl::start_with_next([=](not_null<ChannelData*> channel) {
+			save(channel);
+		}, box->lifetime());
+
+		if (controller->session().user()->personalChannelId()) {
+			box->addLeftButton(tr::lng_settings_channel_remove(), [=] {
+				save(nullptr);
+			});
+		}
+	};
+	controller->show(Box<PeerListBox>(
+		std::move(listController),
+		std::move(initBox)));
+	return true;
+}
+
+bool ShowCollectiblePhone(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto phone = match->captured(1);
+	const auto peerId = PeerId(match->captured(2).toULongLong());
+	controller->resolveCollectible(
+		peerId,
+		phone.startsWith('+') ? phone : '+' + phone);
+	return true;
+}
+
+bool ShowCollectibleUsername(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto username = match->captured(1);
+	const auto peerId = PeerId(match->captured(2).toULongLong());
+	const auto weak = base::make_weak(controller);
+	controller->resolveCollectible(peerId, username, [=](const QString &e) {
+		if (e == u"COLLECTIBLE_NOT_FOUND"_q) {
+			if (const auto strong = weak.get()) {
+				TextUtilities::SetClipboardText({
+					strong->session().createInternalLinkFull(username)
+				});
+				strong->showToast(tr::lng_username_copied(tr::now));
+			}
+		}
+	});
+	return true;
+}
+
+bool CopyUsernameLink(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto username = match->captured(1);
+	TextUtilities::SetClipboardText({
+		controller->session().createInternalLinkFull(username)
+	});
+	controller->showToast(tr::lng_username_copied(tr::now));
+	return true;
+}
+
+bool CopyUsername(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto username = match->captured(1);
+	TextUtilities::SetClipboardText({ '@' + username });
+	controller->showToast(tr::lng_username_text_copied(tr::now));
+	return true;
+}
+
+bool EditPaidMessagesFee(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto peerId = PeerId(match->captured(1).toULongLong());
+	if (const auto id = peerToChannel(peerId)) {
+		const auto channel = controller->session().data().channelLoaded(id);
+		if (channel && channel->canEditPermissions()) {
+			ShowEditChatPermissions(controller, channel);
+		}
+	} else {
+		controller->show(Box(EditMessagesPrivacyBox, controller));
+	}
+	return true;
+}
+
+bool ShowCommonGroups(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto peerId = PeerId(match->captured(1).toULongLong());
+	if (const auto id = peerToUser(peerId)) {
+		const auto user = controller->session().data().userLoaded(id);
+		if (user) {
+			controller->showSection(
+				std::make_shared<Info::Memento>(
+					user,
+					Info::Section::Type::CommonGroups));
+		}
+	}
+	return true;
+}
+
+bool ShowStarsExamples(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	controller->show(Dialogs::StarsExamplesBox(controller));
+	return true;
+}
+
+bool ShowPopularAppsAbout(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	controller->show(Dialogs::PopularAppsAboutBox(controller));
 	return true;
 }
 
@@ -783,8 +1320,9 @@ bool ResolveTestChatTheme(
 		qthelp::UrlParamNameTransform::ToLower);
 	if (const auto history = controller->activeChatCurrent().history()) {
 		controller->clearCachedChatThemes();
-		const auto theme = history->owner().cloudThemes().updateThemeFromLink(
-			history->peer->themeEmoji(),
+		const auto owner = &history->owner();
+		const auto theme = owner->cloudThemes().updateThemeFromLink(
+			history->peer->themeToken(),
 			params);
 		if (theme) {
 			if (!params["export"].isEmpty()) {
@@ -823,7 +1361,8 @@ bool ResolveInvoice(
 	Payments::CheckoutProcess::Start(
 		&controller->session(),
 		slug,
-		crl::guard(window, [=](auto) { window->activate(); }));
+		crl::guard(window, [=](auto) { window->activate(); }),
+		Payments::ProcessNonPanelPaymentFormFactory(controller));
 	return true;
 }
 
@@ -852,10 +1391,7 @@ bool ResolvePremiumMultigift(
 	if (!controller) {
 		return false;
 	}
-	const auto params = url_parse_params(
-		match->captured(1).mid(1),
-		qthelp::UrlParamNameTransform::ToLower);
-	controller->showGiftPremiumsBox(params.value(u"ref"_q, u"gift_url"_q));
+	Ui::ChooseStarGiftRecipient(controller);
 	controller->window().activate();
 	return true;
 }
@@ -907,6 +1443,126 @@ bool ResolveBoost(
 	return true;
 }
 
+bool ResolveTopUp(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto params = url_parse_params(
+		match->captured(1),
+		qthelp::UrlParamNameTransform::ToLower);
+	const auto amount = std::clamp(
+		params.value(u"balance"_q).toULongLong(),
+		qulonglong(1),
+		qulonglong(1'000'000));
+	const auto purpose = params.value(u"purpose"_q);
+	const auto weak = base::make_weak(controller);
+	const auto done = [=](::Settings::SmallBalanceResult result) {
+		if (result == ::Settings::SmallBalanceResult::Already) {
+			if (const auto strong = weak.get()) {
+				const auto filter = [=](const auto &...) {
+					strong->showSettings(::Settings::CreditsId());
+					return false;
+				};
+				strong->showToast(Ui::Toast::Config{
+					.text = tr::lng_credits_enough(
+						tr::now,
+						lt_link,
+						Ui::Text::Link(
+							Ui::Text::Bold(
+								tr::lng_credits_enough_link(tr::now))),
+						Ui::Text::RichLangValue),
+					.filter = filter,
+					.duration = 4 * crl::time(1000),
+				});
+			}
+		}
+	};
+	::Settings::MaybeRequestBalanceIncrease(
+		controller->uiShow(),
+		amount,
+		::Settings::SmallBalanceDeepLink{ .purpose = purpose },
+		done);
+	return true;
+}
+
+
+bool ResolveChatLink(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto myContext = context.value<ClickHandlerContext>();
+	const auto slug = match->captured(1);
+	controller->window().activate();
+	controller->showPeerByLink(Window::PeerByLinkInfo{
+		.chatLinkSlug = match->captured(1),
+		.clickFromMessageId = myContext.itemId,
+		.clickFromBotWebviewContext = myContext.botWebviewContext,
+	});
+	return true;
+}
+
+bool ResolveUniqueGift(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto slug = match->captured(1);
+	if (slug.isEmpty()) {
+		return false;
+	}
+	ResolveAndShowUniqueGift(controller->uiShow(), slug);
+	return true;
+}
+
+bool ResolveConferenceCall(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto slug = match->captured(1);
+	if (slug.isEmpty()) {
+		return false;
+	}
+	const auto myContext = context.value<ClickHandlerContext>();
+	controller->window().activate();
+	controller->resolveConferenceCall(match->captured(1), myContext.itemId);
+	return true;
+}
+
+bool ResolveStarsSettings(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	controller->showSettings(::Settings::CreditsId());
+	controller->window().activate();
+	return true;
+}
+
+bool ResolveTonSettings(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	controller->showSettings(::Settings::CurrencyId());
+	controller->window().activate();
+	return true;
+}
+
 } // namespace
 
 const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
@@ -940,10 +1596,6 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 			ConfirmPhone
 		},
 		{
-			u"^share_game_score/?\\?(.+)(#|$)"_q,
-			ShareGameScore
-		},
-		{
 			u"^socks/?\\?(.+)(#|$)"_q,
 			ApplySocksProxy
 		},
@@ -968,7 +1620,7 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 			ResolvePrivatePost
 		},
 		{
-			u"^settings(/language|/devices|/folders|/privacy|/themes|/change_number|/auto_delete|/information|/edit_profile)?$"_q,
+			u"^settings(/language|/devices|/folders|/privacy|/themes|/change_number|/auto_delete|/information|/edit_profile|/phone_privacy)?$"_q,
 			ResolveSettings
 		},
 		{
@@ -976,11 +1628,11 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 			ResolveTestChatTheme,
 		},
 		{
-			u"invoice/?\\?(.+)(#|$)"_q,
+			u"^invoice/?\\?(.+)(#|$)"_q,
 			ResolveInvoice,
 		},
 		{
-			u"premium_offer/?(\\?.+)?(#|$)"_q,
+			u"^premium_offer/?(\\?.+)?(#|$)"_q,
 			ResolvePremiumOffer,
 		},
 		{
@@ -994,6 +1646,30 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 		{
 			u"^boost/?\\?(.+)(#|$)"_q,
 			ResolveBoost,
+		},
+		{
+			u"^message/?\\?slug=([a-zA-Z0-9\\.\\_\\-]+)(&|$)"_q,
+			ResolveChatLink
+		},
+		{
+			u"^stars_topup/?\\?(.+)(#|$)"_q,
+			ResolveTopUp
+		},
+		{
+			u"^nft/?\\?slug=([a-zA-Z0-9\\.\\_\\-]+)(&|$)"_q,
+			ResolveUniqueGift
+		},
+		{
+			u"^call/?\\?slug=([a-zA-Z0-9\\.\\_\\-]+)(&|$)"_q,
+			ResolveConferenceCall
+		},
+		{
+			u"^stars/?(^\\?.*)?(#|$)"_q,
+			ResolveStarsSettings
+		},
+		{
+			u"^ton/?(^\\?.*)?(#|$)"_q,
+			ResolveTonSettings
 		},
 		{
 			u"^([^\\?]+)(\\?|#|$)"_q,
@@ -1020,7 +1696,55 @@ const std::vector<LocalUrlHandler> &InternalUrlHandlers() {
 		{
 			u"^copy:(.+)$"_q,
 			CopyPeerId
-		}
+		},
+		{
+			u"^about_tags$"_q,
+			ShowSearchTagsPromo
+		},
+		{
+			u"^edit_birthday(.*)$"_q,
+			ShowEditBirthday,
+		},
+		{
+			u"^edit_privacy_birthday(.*)$"_q,
+			ShowEditBirthdayPrivacy,
+		},
+		{
+			u"^edit_personal_channel$"_q,
+			ShowEditPersonalChannel,
+		},
+		{
+			u"^collectible_phone/([\\+0-9\\-\\s]+)@([0-9]+)$"_q,
+			ShowCollectiblePhone,
+		},
+		{
+			u"^collectible_username/([a-zA-Z0-9\\-\\_\\.]+)@([0-9]+)$"_q,
+			ShowCollectibleUsername,
+		},
+		{
+			u"^username_link/([a-zA-Z0-9\\-\\_\\.]+)@([0-9]+)$"_q,
+			CopyUsernameLink,
+		},
+		{
+			u"^username_regular/([a-zA-Z0-9\\-\\_\\.]+)@([0-9]+)$"_q,
+			CopyUsername,
+		},
+		{
+			u"^edit_paid_messages_fee/([0-9]+)$"_q,
+			EditPaidMessagesFee,
+		},
+		{
+			u"^common_groups/([0-9]+)$"_q,
+			ShowCommonGroups,
+		},
+		{
+			u"^stars_examples$"_q,
+			ShowStarsExamples,
+		},
+		{
+			u"^about_popular_apps$"_q,
+			ShowPopularAppsAbout,
+		},
 	};
 	return Result;
 }
@@ -1032,6 +1756,13 @@ QString TryConvertUrlToLocal(QString url) {
 
 	using namespace qthelp;
 	auto matchOptions = RegExOption::CaseInsensitive;
+	auto tonsiteMatch = (url.indexOf(u".ton") >= 0)
+		? regex_match(u"^(https?://)?[^/@:]+\\.ton($|/)"_q, url, matchOptions)
+		: RegularExpressionMatch(QRegularExpressionMatch());
+	if (tonsiteMatch) {
+		const auto protocol = tonsiteMatch->captured(1);
+		return u"tonsite://"_q + url.mid(protocol.size());
+	}
 	auto subdomainMatch = regex_match(u"^(https?://)?([a-zA-Z0-9\\_]+)\\.t\\.me(/\\d+)?/?(\\?.+)?"_q, url, matchOptions);
 	if (subdomainMatch) {
 		const auto name = subdomainMatch->captured(2);
@@ -1094,6 +1825,15 @@ QString TryConvertUrlToLocal(QString url) {
 				? "gradient"
 				: "slug";
 			return u"tg://bg?"_q + type + '=' + bg + (params.isEmpty() ? QString() : '&' + params);
+		} else if (const auto chatlinkMatch = regex_match(u"^m/([a-zA-Z0-9\\.\\_\\-]+)(\\?|$)"_q, query, matchOptions)) {
+			const auto slug = chatlinkMatch->captured(1);
+			return u"tg://message?slug="_q + slug;
+		} else if (const auto nftMatch = regex_match(u"^nft/([a-zA-Z0-9\\.\\_\\-]+)(\\?|$)"_q, query, matchOptions)) {
+			const auto slug = nftMatch->captured(1);
+			return u"tg://nft?slug="_q + slug;
+		} else if (const auto callMatch = regex_match(u"^call/([a-zA-Z0-9\\.\\_\\-]+)(\\?|$)"_q, query, matchOptions)) {
+			const auto slug = callMatch->captured(1);
+			return u"tg://call?slug="_q + slug;
 		} else if (const auto privateMatch = regex_match(u"^"
 			"c/(\\-?\\d+)"
 			"("
@@ -1124,6 +1864,8 @@ QString TryConvertUrlToLocal(QString url) {
 				"/[a-zA-Z0-9\\.\\_\\-]+/?(\\?|$)|"
 				"/\\d+/?(\\?|$)|"
 				"/s/\\d+/?(\\?|$)|"
+				"/a/\\d+/?(\\?|$)|"
+				"/c/\\d+/?(\\?|$)|"
 				"/\\d+/\\d+/?(\\?|$)"
 			")"_q, query, matchOptions)) {
 			const auto domain = usernameMatch->captured(1);
@@ -1146,6 +1888,10 @@ QString TryConvertUrlToLocal(QString url) {
 				added = u"&post="_q + postMatch->captured(1);
 			} else if (const auto storyMatch = regex_match(u"^/s/(\\d+)(/?\\?|/?$)"_q, usernameMatch->captured(2))) {
 				added = u"&story="_q + storyMatch->captured(1);
+			} else if (const auto albumMatch = regex_match(u"^/a/(\\d+)(/?\\?|/?$)"_q, usernameMatch->captured(2))) {
+				added = u"&album="_q + albumMatch->captured(1);
+			} else if (const auto collectionMatch = regex_match(u"^/c/(\\d+)(/?\\?|/?$)"_q, usernameMatch->captured(2))) {
+				added = u"&collection="_q + collectionMatch->captured(1);
 			} else if (const auto appNameMatch = regex_match(u"^/([a-zA-Z0-9\\.\\_\\-]+)(/?\\?|/?$)"_q, usernameMatch->captured(2))) {
 				added = u"&appname="_q + appNameMatch->captured(1);
 			}
@@ -1185,6 +1931,68 @@ bool StartUrlRequiresActivate(const QString &url) {
 	return Core::App().passcodeLocked()
 		? true
 		: !InternalPassportLink(url);
+}
+
+void ResolveAndShowUniqueGift(
+		std::shared_ptr<ChatHelpers::Show> show,
+		const QString &slug,
+		::Settings::CreditsEntryBoxStyleOverrides st) {
+	struct Request {
+		base::weak_ptr<Main::Session> weak;
+		QString slug;
+		mtpRequestId id = 0;
+	};
+	static auto request = Request();
+
+	const auto session = &show->session();
+	if (request.weak.get() == session && request.slug == slug) {
+		return;
+	} else if (const auto strong = request.weak.get()) {
+		strong->api().request(request.id).cancel();
+	}
+	request.weak = session;
+	request.slug = slug;
+	const auto clear = [=] {
+		if (request.weak.get() == session && request.slug == slug) {
+			request = {};
+		}
+	};
+	request.id = session->api().request(
+		MTPpayments_GetUniqueStarGift(MTP_string(slug))
+	).done([=](const MTPpayments_UniqueStarGift &result) {
+		clear();
+
+		const auto &data = result.data();
+		session->data().processUsers(data.vusers());
+		if (const auto gift = Api::FromTL(session, data.vgift())) {
+			using namespace ::Settings;
+			show->show(Box(
+				GlobalStarGiftBox,
+				show,
+				*gift,
+				StarGiftResaleInfo(),
+				st));
+		}
+	}).fail([=](const MTP::Error &error) {
+		clear();
+		show->showToast(u"Error: "_q + error.type());
+	}).send();
+}
+
+void ResolveAndShowUniqueGift(
+		std::shared_ptr<ChatHelpers::Show> show,
+		const QString &slug) {
+	ResolveAndShowUniqueGift(std::move(show), slug, {});
+}
+
+TimeId ParseVideoTimestamp(QStringView value) {
+	const auto kExp = u"^(?:(\\d+)h)?(?:(\\d+)m)?(?:(\\d+)s)?$"_q;
+	const auto m = QRegularExpression(kExp).match(value);
+	return m.hasMatch()
+		? (m.capturedView(1).toInt() * 3600
+			+ m.capturedView(2).toInt() * 60
+			+ m.capturedView(3).toInt())
+		: value.toInt();
 }
 
 } // namespace Core

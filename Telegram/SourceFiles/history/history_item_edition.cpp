@@ -11,9 +11,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 
 HistoryMessageEdition::HistoryMessageEdition(
-		not_null<Main::Session*> session,
-		const MTPDmessage &message) {
+	not_null<Main::Session*> session,
+	const MTPDmessage &message)
+: suggest(HistoryMessageSuggestInfo(message.vsuggested_post())) {
 	isEditHide = message.is_edit_hide();
+	isMediaUnread = message.is_media_unread();
 	editDate = message.vedit_date().value_or(-1);
 	textWithEntities = TextWithEntities{
 		qs(message.vmessage()),
@@ -24,6 +26,7 @@ HistoryMessageEdition::HistoryMessageEdition(
 	replyMarkup = HistoryMessageMarkupData(message.vreply_markup());
 	mtpMedia = message.vmedia();
 	mtpReactions = message.vreactions();
+	mtpFactcheck = message.vfactcheck();
 	views = message.vviews().value_or(-1);
 	forwards = message.vforwards().value_or(-1);
 	if (const auto mtpReplies = message.vreplies()) {

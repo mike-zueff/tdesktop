@@ -198,7 +198,7 @@ void ChooseSendAsBox(
 
 	controller->clicked(
 	) | rpl::start_with_next([=](not_null<PeerData*> peer) {
-		const auto weak = MakeWeak(box);
+		const auto weak = base::make_weak(box);
 		if (done(peer) && weak) {
 			box->closeBox();
 		}
@@ -263,9 +263,9 @@ void SetupSendAsButton(
 
 	auto userpic = current->value(
 	) | rpl::filter([=](PeerData *peer) {
-		return peer && peer->isMegagroup();
+		return peer && peer->isChannel();
 	}) | rpl::map([=](not_null<PeerData*> peer) {
-		const auto channel = peer->asMegagroup();
+		const auto channel = peer->asChannel();
 
 		auto updates = rpl::single(
 			rpl::empty

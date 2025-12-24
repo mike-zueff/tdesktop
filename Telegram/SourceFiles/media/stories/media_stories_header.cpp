@@ -26,6 +26,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/fade_wrap.h"
 #include "ui/painter.h"
 #include "ui/rp_widget.h"
+#include "ui/ui_utility.h"
 #include "styles/style_media_view.h"
 
 #include <QtGui/QGuiApplication>
@@ -255,21 +256,34 @@ struct MadePrivacyBadge {
 		result.text.append(
 			QString::fromUtf8(" \xE2\x80\xA2 ") + tr::lng_edited(tr::now));
 	}
-	if (!data.repostFrom.isEmpty()) {
+	if (data.fromPeer || !data.repostFrom.isEmpty()) {
 		result.text = QString::fromUtf8("\xE2\x80\xA2 ")
 			+ result.text;
 	}
 	return result;
 }
 
+[[nodiscard]] TextWithEntities FromNameValue(not_null<PeerData*> from) {
+	auto result = Ui::Text::SingleCustomEmoji(
+		from->owner().customEmojiManager().peerUserpicEmojiData(
+			from,
+			st::storiesRepostUserpicPadding));
+	result.append(from->name());
+	return Ui::Text::Link(result);
+}
+
 [[nodiscard]] TextWithEntities RepostNameValue(
 		not_null<Data::Session*> owner,
+		PeerData *peer,
 		QString name) {
-	const auto result = Ui::Text::SingleCustomEmoji(
-		owner->customEmojiManager().registerInternalEmoji(
-			st::storiesRepostIcon,
-			st::storiesRepostIconPadding)
-	).append(name);
+	auto result = Ui::Text::IconEmoji(&st::storiesRepostIcon);
+	if (peer) {
+		result.append(Ui::Text::SingleCustomEmoji(
+			owner->customEmojiManager().peerUserpicEmojiData(
+				peer,
+				st::storiesRepostUserpicPadding)));
+	}
+	result.append(name);
 	return Ui::Text::Link(result);
 }
 
@@ -371,24 +385,25 @@ void Header::show(HeaderData data) {
 	_date->widthValue(
 	) | rpl::start_with_next(updateInfoGeometry, _date->lifetime());
 
-	if (data.repostFrom.isEmpty()) {
+	if (!data.fromPeer && data.repostFrom.isEmpty()) {
 		_repost = nullptr;
 	} else {
 		_repost = std::make_unique<Ui::FlatLabel>(
 			_widget.get(),
 			st::storiesHeaderDate);
-		const auto repostName = RepostNameValue(
-			&data.peer->owner(),
-			data.repostFrom);
+		const auto prefixName = data.fromPeer
+			? FromNameValue(data.fromPeer)
+			: RepostNameValue(
+				&data.peer->owner(),
+				data.repostPeer,
+				data.repostFrom);
+		const auto prefix = data.fromPeer ? data.fromPeer : data.repostPeer;
 		_repost->setMarkedText(
-			data.repostPeer ? Ui::Text::Link(repostName) : repostName,
-			Core::MarkedTextContext{
-				.session = &data.peer->session(),
-				.customEmojiRepaint = [=] { _repost->update(); },
-			});
-		if (const auto peer = data.repostPeer) {
+			(prefix ? Ui::Text::Link(prefixName) : prefixName),
+			Core::TextContext({ .session = &data.peer->session() }));
+		if (prefix) {
 			_repost->setClickHandlerFilter([=](const auto &...) {
-				_controller->uiShow()->show(PrepareShortInfoBox(peer));
+				_controller->uiShow()->show(PrepareShortInfoBox(prefix));
 				return false;
 			});
 		}
@@ -723,9 +738,9 @@ void Header::toggleTooltip(Tooltip type, bool show) {
 			st::storiesInfoTooltipLabel),
 		st::storiesInfoTooltip);
 	const auto tooltip = _tooltip.get();
-	const auto weak = QPointer<QWidget>(tooltip);
+	const auto weak = base::make_weak(tooltip);
 	const auto destroy = [=] {
-		delete weak.data();
+		delete weak.get();
 	};
 	tooltip->setAttribute(Qt::WA_TransparentForMouseEvents);
 	tooltip->setHiddenCallback(destroy);

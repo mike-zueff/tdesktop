@@ -37,7 +37,7 @@ QString UserPhone(not_null<UserData*> user) {
 }
 
 void SendRequest(
-		QPointer<Ui::GenericBox> box,
+		base::weak_qptr<Ui::GenericBox> box,
 		not_null<UserData*> user,
 		bool sharePhone,
 		const QString &first,
@@ -61,11 +61,11 @@ void SendRequest(
 			user->nameOrPhone,
 			user->username());
 		user->session().api().applyUpdates(result);
-		if (const auto settings = user->settings()) {
-			const auto flags = PeerSetting::AddContact
-				| PeerSetting::BlockContact
-				| PeerSetting::ReportSpam;
-			user->setSettings(*settings & ~flags);
+		if (const auto settings = user->barSettings()) {
+			const auto flags = PeerBarSetting::AddContact
+				| PeerBarSetting::BlockContact
+				| PeerBarSetting::ReportSpam;
+			user->setBarSettings(*settings & ~flags);
 		}
 		if (box) {
 			if (!wasContact) {
@@ -219,7 +219,7 @@ void Controller::initNameFields(
 			}
 		};
 		SendRequest(
-			Ui::MakeWeak(_box),
+			base::make_weak(_box),
 			user,
 			_sharePhone && _sharePhone->checked(),
 			firstValue,
@@ -258,9 +258,9 @@ void Controller::setupWarning() {
 }
 
 void Controller::setupSharePhoneNumber() {
-	const auto settings = _user->settings();
+	const auto settings = _user->barSettings();
 	if (!settings
-		|| !((*settings) & PeerSetting::NeedContactsException)) {
+		|| !((*settings) & PeerBarSetting::NeedContactsException)) {
 		return;
 	}
 	_sharePhone = _box->addRow(

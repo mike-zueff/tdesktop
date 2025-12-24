@@ -86,6 +86,11 @@ ReactionFlyAnimation::ReactionFlyAnimation(
 		_customSize = esize;
 		_centerSizeMultiplier = _customSize / float64(size);
 		aroundAnimation = owner->chooseGenericAnimation(document);
+	} else if (args.id.paid()) {
+		const auto fake = owner->lookupPaid();
+		centerIcon = fake->centerIcon;
+		aroundAnimation = owner->choosePaidReactionAnimation();
+		_centerSizeMultiplier = 0.5;
 	} else {
 		const auto i = ranges::find(list, args.id, &::Data::Reaction::id);
 		if (i == end(list)/* || !i->centerIcon*/) {
@@ -380,10 +385,10 @@ int ReactionFlyAnimation::computeParabolicTop(
 
 void ReactionFlyAnimation::startAnimations() {
 	if (const auto center = _center.get()) {
-		_center->animate(callback());
+		center->animate(callback());
 	}
 	if (const auto effect = _effect.get()) {
-		_effect->animate(callback());
+		effect->animate(callback());
 	} else if (_scaleOutDuration > 0) {
 		_noEffectScaleStarted = true;
 		_noEffectScaleAnimation.start(callback(), 1, 0, _scaleOutDuration);

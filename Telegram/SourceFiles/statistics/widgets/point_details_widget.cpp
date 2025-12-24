@@ -7,8 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "statistics/widgets/point_details_widget.h"
 
+#include "info/channel_statistics/earn/earn_format.h"
+#include "lang/lang_keys.h"
 #include "statistics/statistics_common.h"
 #include "statistics/statistics_format_values.h"
+#include "statistics/statistics_graphics.h"
 #include "statistics/view/stack_linear_chart_common.h"
 #include "ui/cached_round_corners.h"
 #include "ui/effects/ripple_animation.h"
@@ -78,7 +81,7 @@ void PaintDetails(
 		line.name);
 	auto value = Ui::Text::String(
 		st::statisticsDetailsPopupStyle,
-		QString("%L1").arg(absoluteValue));
+		Lang::FormatCountDecimal(absoluteValue));
 	const auto nameWidth = name.maxWidth();
 	const auto valueWidth = value.maxWidth();
 
@@ -126,14 +129,12 @@ void PaintDetails(
 PointDetailsWidget::PointDetailsWidget(
 	not_null<Ui::RpWidget*> parent,
 	const Data::StatisticalChart &chartData,
-	float64 maxAbsoluteValue,
 	bool zoomEnabled)
 : Ui::AbstractButton(parent)
 , _zoomEnabled(zoomEnabled)
 , _chartData(chartData)
 , _textStyle(st::statisticsDetailsPopupStyle)
 , _headerStyle(st::statisticsDetailsPopupHeaderStyle) {
-
 	if (zoomEnabled) {
 		rpl::single(rpl::empty_value()) | rpl::then(
 			style::PaletteChanged()
@@ -170,13 +171,50 @@ PointDetailsWidget::PointDetailsWidget(
 		return 0;
 	}();
 
-	const auto calculatedWidth = [&]{
+	const auto hasUsdLine = (_chartData.currencyRate != 0)
+		&& (_chartData.currency != Data::StatisticalCurrency::None)
+		&& (_chartData.lines.size() == 1);
+
+	const auto maxValueTextWidth = [&] {
+		if (hasUsdLine) {
+			auto maxValueWidth = 0;
+			const auto multiplier = float64(kOneStarInNano);
+			for (const auto &value : _chartData.lines.front().y) {
+				const auto valueText = Ui::Text::String(
+					_textStyle,
+					Lang::FormatExactCountDecimal(value / multiplier));
+				const auto usdText = Ui::Text::String(
+					_textStyle,
+					Info::ChannelEarn::ToUsd(
+						value / multiplier,
+						_chartData.currencyRate,
+						0));
+				const auto width = std::max(
+					usdText.maxWidth(),
+					valueText.maxWidth());
+				if (width > maxValueWidth) {
+					maxValueWidth = width;
+				}
+			}
+			return maxValueWidth;
+		}
+		const auto maxAbsoluteValue = [&] {
+			auto maxValue = ChartValue(0);
+			for (const auto &l : _chartData.lines) {
+				maxValue = std::max(l.maxValue, maxValue);
+			}
+			return maxValue;
+		}();
 		const auto maxValueText = Ui::Text::String(
 			_textStyle,
-			QString("%L1").arg(maxAbsoluteValue));
-		const auto maxValueTextWidth = maxValueText.maxWidth();
+			Lang::FormatCountDecimal(maxAbsoluteValue));
+		return maxValueText.maxWidth();
+	}();
 
+	const auto calculatedWidth = [&]{
 		auto maxNameTextWidth = 0;
+		const auto isCredits
+			= _chartData.currency == Data::StatisticalCurrency::Credits;
 		for (const auto &dataLine : _chartData.lines) {
 			const auto maxNameText = Ui::Text::String(
 				_textStyle,
@@ -184,6 +222,21 @@ PointDetailsWidget::PointDetailsWidget(
 			maxNameTextWidth = std::max(
 				maxNameText.maxWidth(),
 				maxNameTextWidth);
+			if (hasUsdLine) {
+				const auto text = isCredits
+					? tr::lng_channel_earn_chart_overriden_detail_credits
+					: tr::lng_channel_earn_chart_overriden_detail_currency;
+				const auto currency = Ui::Text::String(
+					_textStyle,
+					text(tr::now));
+				const auto usd = Ui::Text::String(
+					_textStyle,
+					tr::lng_channel_earn_chart_overriden_detail_usd(
+						tr::now));
+				maxNameTextWidth = std::max(
+					std::max(currency.maxWidth(), usd.maxWidth()),
+					maxNameTextWidth);
+			}
 		}
 		{
 			const auto maxHeaderText = Ui::Text::String(
@@ -201,6 +254,9 @@ PointDetailsWidget::PointDetailsWidget(
 			+ rect::m::sum::h(st::statisticsDetailsPopupPadding)
 			+ st::statisticsDetailsPopupPadding.left() // Between strings.
 			+ maxNameTextWidth
+			+ (_valueIcon.isNull()
+				? 0
+				: _valueIcon.width() / style::DevicePixelRatio())
 			+ _maxPercentageWidth;
 	}();
 	sizeValue(
@@ -234,7 +290,7 @@ void PointDetailsWidget::setLineAlpha(int lineId, float64 alpha) {
 void PointDetailsWidget::resizeHeight() {
 	resize(
 		width(),
-		lineYAt(_chartData.lines.size())
+		lineYAt(_chartData.lines.size() + (_chartData.currencyRate ? 1 : 0))
 			+ st::statisticsDetailsPopupMargins.bottom());
 }
 
@@ -247,6 +303,7 @@ void PointDetailsWidget::setXIndex(int xIndex) {
 	if (xIndex < 0) {
 		return;
 	}
+	Assert(xIndex < _chartData.x.size());
 	{
 		constexpr auto kOneDay = 3600 * 24 * 1000;
 		const auto timestamp = _chartData.x[xIndex];
@@ -268,8 +325,11 @@ void PointDetailsWidget::setXIndex(int xIndex) {
 			nullptr,
 			{ float64(xIndex), float64(xIndex) }).parts
 		: std::vector<PiePartData::Part>();
+	const auto isCredits
+		= (_chartData.currency == Data::StatisticalCurrency::Credits);
 	for (auto i = 0; i < _chartData.lines.size(); i++) {
 		const auto &dataLine = _chartData.lines[i];
+		Assert(xIndex < dataLine.y.size());
 		auto textLine = Line();
 		textLine.id = dataLine.id;
 		if (_maxPercentageWidth) {
@@ -278,10 +338,41 @@ void PointDetailsWidget::setXIndex(int xIndex) {
 		textLine.name.setText(_textStyle, dataLine.name);
 		textLine.value.setText(
 			_textStyle,
-			QString("%L1").arg(dataLine.y[xIndex]));
+			Lang::FormatCountDecimal(dataLine.y[xIndex]));
 		hasPositiveValues |= (dataLine.y[xIndex] > 0);
 		textLine.valueColor = QColor(dataLine.color);
+		if (_chartData.currencyRate) {
+			auto copy = Line();
+			copy.id = dataLine.id * 100;
+			copy.valueColor = QColor(dataLine.color);
+			copy.name.setText(
+				_textStyle,
+				(isCredits
+					? tr::lng_channel_earn_chart_overriden_detail_credits
+					: tr::lng_channel_earn_chart_overriden_detail_currency)(
+						tr::now));
+			const auto provided = dataLine.y[xIndex];
+			const auto value = isCredits
+				? CreditsAmount(provided, CreditsType::Stars)
+				: CreditsAmount(
+					provided / kOneStarInNano,
+					provided % kOneStarInNano,
+					CreditsType::Ton);
+			copy.value.setText(
+				_textStyle,
+				Lang::FormatCreditsAmountDecimal(value));
+			_lines.push_back(std::move(copy));
+			textLine.name.setText(
+				_textStyle,
+				tr::lng_channel_earn_chart_overriden_detail_usd(tr::now));
+			textLine.value.setText(
+				_textStyle,
+				Info::ChannelEarn::ToUsd(value, _chartData.currencyRate, 0));
+		}
 		_lines.push_back(std::move(textLine));
+	}
+	if (_chartData.currencyRate && _valueIcon.isNull()) {
+		_valueIcon = ChartCurrencyIcon(_chartData, _lines.front().valueColor);
 	}
 	const auto clickable = _zoomEnabled && hasPositiveValues;
 	_hasPositiveValues = hasPositiveValues;
@@ -381,6 +472,13 @@ void PointDetailsWidget::paintEvent(QPaintEvent *e) {
 				.outerWidth = _textRect.width(),
 				.availableWidth = valueWidth,
 			};
+			if (!i && !_valueIcon.isNull()) {
+				p.drawImage(
+					valueContext.position.x()
+						- _valueIcon.width() / style::DevicePixelRatio(),
+					lineY + st::lineWidth,
+					_valueIcon);
+			}
 			const auto nameContext = Ui::Text::PaintContext{
 				.position = QPoint(
 					_textRect.x() + _maxPercentageWidth,

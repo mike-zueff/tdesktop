@@ -140,6 +140,10 @@ public:
 	void restartedByTimeout(ShiftedDcId shiftedDcId);
 	[[nodiscard]] rpl::producer<ShiftedDcId> restartsByTimeout() const;
 
+	[[nodiscard]] auto nonPremiumDelayedRequests() const
+		-> rpl::producer<mtpRequestId>;
+	[[nodiscard]] rpl::producer<> frozenErrorReceived() const;
+
 	void syncHttpUnixtime();
 
 	void sendAnything(ShiftedDcId shiftedDcId = 0, crl::time msCanWait = 0);

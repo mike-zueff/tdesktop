@@ -57,6 +57,28 @@ struct FileReferenceAccumulator {
 			push(data.vstory());
 		}, [&](const MTPDwebPageAttributeTheme &data) {
 			push(data.vdocuments());
+		}, [&](const MTPDwebPageAttributeStickerSet &data) {
+			push(data.vstickers());
+		}, [&](const MTPDwebPageAttributeUniqueStarGift &data) {
+			push(data.vgift());
+		}, [&](const MTPDwebPageAttributeStarGiftCollection &data) {
+			push(data.vicons());
+		});
+	}
+	void push(const MTPStarGift &data) {
+		data.match([&](const MTPDstarGift &data) {
+			push(data.vsticker());
+		}, [&](const MTPDstarGiftUnique &data) {
+			push(data.vattributes());
+		});
+	}
+	void push(const MTPStarGiftAttribute &data) {
+		data.match([&](const MTPDstarGiftAttributeModel &data) {
+			push(data.vdocument());
+		}, [&](const MTPDstarGiftAttributePattern &data) {
+			push(data.vdocument());
+		}, [&](const MTPDstarGiftAttributeBackdrop &data) {
+		}, [&](const MTPDstarGiftAttributeOriginalDetails &data) {
 		});
 	}
 	void push(const MTPWebPage &data) {
@@ -74,15 +96,27 @@ struct FileReferenceAccumulator {
 		}, [](const auto &data) {
 		});
 	}
+	void push(const MTPMessageExtendedMedia &data) {
+		data.match([&](const MTPDmessageExtendedMediaPreview &data) {
+		}, [&](const MTPDmessageExtendedMedia &data) {
+			push(data.vmedia());
+		});
+	}
 	void push(const MTPMessageMedia &data) {
 		data.match([&](const MTPDmessageMediaPhoto &data) {
 			push(data.vphoto());
 		}, [&](const MTPDmessageMediaDocument &data) {
 			push(data.vdocument());
+			push(data.vvideo_cover());
+			push(data.valt_documents());
 		}, [&](const MTPDmessageMediaWebPage &data) {
 			push(data.vwebpage());
 		}, [&](const MTPDmessageMediaGame &data) {
 			push(data.vgame());
+		}, [&](const MTPDmessageMediaInvoice &data) {
+			push(data.vextended_media());
+		}, [&](const MTPDmessageMediaPaidMedia &data) {
+			push(data.vextended_media());
 		}, [](const auto &data) {
 		});
 	}
@@ -164,8 +198,17 @@ struct FileReferenceAccumulator {
 	void push(const MTPhelp_PremiumPromo &data) {
 		push(data.data().vvideos());
 	}
+	void push(const MTPmessages_WebPage &data) {
+		push(data.data().vwebpage());
+	}
 	void push(const MTPstories_Stories &data) {
 		push(data.data().vstories());
+	}
+	void push(const MTPusers_SavedMusic &data) {
+		data.match([&](const MTPDusers_savedMusic &data) {
+			push(data.vdocuments());
+		}, [](const MTPDusers_savedMusicNotModified &data) {
+		});
 	}
 
 	UpdatedFileReferences result;
@@ -228,7 +271,15 @@ UpdatedFileReferences GetFileReferences(const MTPhelp_PremiumPromo &data) {
 	return GetFileReferencesHelper(data);
 }
 
+UpdatedFileReferences GetFileReferences(const MTPmessages_WebPage &data) {
+	return GetFileReferencesHelper(data);
+}
+
 UpdatedFileReferences GetFileReferences(const MTPstories_Stories &data) {
+	return GetFileReferencesHelper(data);
+}
+
+UpdatedFileReferences GetFileReferences(const MTPusers_SavedMusic &data) {
 	return GetFileReferencesHelper(data);
 }
 

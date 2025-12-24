@@ -36,6 +36,9 @@ using Options = base::flags<Option>;
 
 namespace Data {
 
+struct FileOrigin;
+struct EmojiStatusCollectible;
+
 struct UploadState {
 	explicit UploadState(int64 size) : size(size) {
 	}
@@ -57,8 +60,6 @@ constexpr auto kStickerCacheTag = uint8(0x02);
 constexpr auto kVoiceMessageCacheTag = uint8(0x03);
 constexpr auto kVideoMessageCacheTag = uint8(0x04);
 constexpr auto kAnimationCacheTag = uint8(0x05);
-
-struct FileOrigin;
 
 } // namespace Data
 
@@ -109,10 +110,13 @@ using FilterId = int32;
 
 using MessageIdsList = std::vector<FullMsgId>;
 
-PeerId PeerFromMessage(const MTPmessage &message);
-MTPDmessage::Flags FlagsFromMessage(const MTPmessage &message);
-MsgId IdFromMessage(const MTPmessage &message);
-TimeId DateFromMessage(const MTPmessage &message);
+[[nodiscard]] PeerId PeerFromMessage(const MTPmessage &message);
+[[nodiscard]] MTPDmessage::Flags FlagsFromMessage(
+	const MTPmessage &message);
+[[nodiscard]] MsgId IdFromMessage(const MTPmessage &message);
+[[nodiscard]] TimeId DateFromMessage(const MTPmessage &message);
+[[nodiscard]] BusinessShortcutId BusinessShortcutIdFromMessage(
+	const MTPmessage &message);
 
 [[nodiscard]] inline MTPint MTP_int(MsgId id) noexcept {
 	return MTP_int(id.bare);
@@ -124,6 +128,7 @@ struct WebPageData;
 struct GameData;
 struct BotAppData;
 struct PollData;
+struct TodoListData;
 
 using PhotoId = uint64;
 using VideoId = uint64;
@@ -132,9 +137,28 @@ using DocumentId = uint64;
 using WebPageId = uint64;
 using GameId = uint64;
 using PollId = uint64;
+using TodoListId = FullMsgId;
 using WallPaperId = uint64;
 using CallId = uint64;
 using BotAppId = uint64;
+using EffectId = uint64;
+using CollectibleId = uint64;
+
+struct EmojiStatusId {
+	DocumentId documentId = 0;
+	std::shared_ptr<Data::EmojiStatusCollectible> collectible;
+
+	explicit operator bool() const {
+		return documentId || collectible;
+	}
+
+	friend inline auto operator<=>(
+		const EmojiStatusId &,
+		const EmojiStatusId &) = default;
+	friend inline bool operator==(
+		const EmojiStatusId &,
+		const EmojiStatusId &) = default;
+};
 
 constexpr auto CancelledWebPageId = WebPageId(0xFFFFFFFFFFFFFFFFULL);
 
@@ -300,8 +324,8 @@ enum class MessageFlag : uint64 {
 	OnlyEmojiAndSpaces    = (1ULL << 35),
 	OnlyEmojiAndSpacesSet = (1ULL << 36),
 
-	// Fake message with bot cover and information.
-	FakeBotAbout          = (1ULL << 37),
+	// Fake message with some info, like bot cover and information.
+	FakeAboutView         = (1ULL << 37),
 
 	StoryItem             = (1ULL << 38),
 
@@ -309,10 +333,32 @@ enum class MessageFlag : uint64 {
 
 	// If not set then we need to refresh _displayFrom value.
 	DisplayFromChecked    = (1ULL << 40),
+	DisplayFromProfiles   = (1ULL << 41),
 
-	ShowSimilarChannels   = (1ULL << 41),
+	ShowSimilarChannels   = (1ULL << 42),
 
-	Sponsored             = (1ULL << 42),
+	Sponsored             = (1ULL << 43),
+
+	ReactionsAreTags      = (1ULL << 44),
+
+	ShortcutMessage       = (1ULL << 45),
+
+	EffectWatched         = (1ULL << 46),
+
+	SensitiveContent      = (1ULL << 47),
+	HasRestrictions       = (1ULL << 48),
+
+	EstimatedDate         = (1ULL << 49),
+
+	ReactionsAllowed      = (1ULL << 50),
+
+	HideDisplayDate       = (1ULL << 51),
+
+	StarsPaidSuggested    = (1ULL << 52),
+	TonPaidSuggested      = (1ULL << 53),
+
+	StoryInProfile        = (1ULL << 54),
+	SavedMusicItem        = (1ULL << 55),
 };
 inline constexpr bool is_flag_type(MessageFlag) { return true; }
 using MessageFlags = base::flags<MessageFlag>;
@@ -326,3 +372,27 @@ enum class MediaWebPageFlag : uint8 {
 };
 inline constexpr bool is_flag_type(MediaWebPageFlag) { return true; }
 using MediaWebPageFlags = base::flags<MediaWebPageFlag>;
+
+namespace Data {
+
+enum class ForwardOptions {
+	PreserveInfo,
+	NoSenderNames,
+	NoNamesAndCaptions,
+};
+
+struct ForwardDraft {
+	MessageIdsList ids;
+	ForwardOptions options = ForwardOptions::PreserveInfo;
+
+	friend inline auto operator<=>(
+		const ForwardDraft&,
+		const ForwardDraft&) = default;
+};
+
+struct ResolvedForwardDraft {
+	HistoryItemsList items;
+	ForwardOptions options = ForwardOptions::PreserveInfo;
+};
+
+} // namespace Data

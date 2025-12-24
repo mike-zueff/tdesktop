@@ -12,7 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unique_qptr.h"
 
 namespace Window {
-class CounterLayerArgs;
+struct CounterLayerArgs;
 } // namespace Window
 
 namespace Ui {
@@ -59,6 +59,7 @@ public:
 		bool smallIcon,
 		bool monochrome,
 		bool supportMode);
+	[[nodiscard]] static QString QuitJumpListIconPath();
 
 private:
 	base::unique_qptr<QPlatformSystemTrayIcon> _icon;
@@ -72,5 +73,7 @@ private:
 	rpl::lifetime _lifetime;
 
 };
+
+void RefreshTaskbarThemeValue();
 
 } // namespace Platform

@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/rect.h"
 #include "ui/rp_widget.h"
 #include "styles/style_basic.h"
+#include "styles/style_dialogs.h"
 #include "styles/style_widgets.h"
 
 namespace Ui {
@@ -30,21 +31,21 @@ public:
 
 class LoadingText final : public LoadingElement {
 public:
-	LoadingText(const style::FlatLabel &st);
+	LoadingText(const style::TextStyle &st);
 
 	[[nodiscard]] int height() const override;
 	void paint(QPainter &p, int width) override;
 
 private:
-	const style::FlatLabel &_st;
+	const style::TextStyle &_st;
 
 };
 
-LoadingText::LoadingText(const style::FlatLabel &st) : _st(st) {
+LoadingText::LoadingText(const style::TextStyle &st) : _st(st) {
 }
 
 int LoadingText::height() const {
-	return _st.style.lineHeight;
+	return _st.lineHeight;
 }
 
 void LoadingText::paint(QPainter &p, int width) {
@@ -53,19 +54,41 @@ void LoadingText::paint(QPainter &p, int width) {
 	p.setPen(Qt::NoPen);
 
 	p.setBrush(st::windowBgOver);
-	const auto h = _st.style.font->ascent;
+	const auto h = _st.font->ascent;
 	p.drawRoundedRect(
 		0,
-		height() - h - (height() - _st.style.font->height),
+		height() - h - (height() - _st.font->height),
 		width,
 		h,
 		h / 2,
 		h / 2);
 }
 
+[[nodiscard]] const style::PeerListItem &PeerListItemFromDialogRow(
+		rpl::lifetime &lifetime,
+		const style::DialogRow &st) {
+	using namespace style;
+	const auto button = lifetime.make_state<OutlineButton>(OutlineButton{
+		.textBgOver = st::windowBgOver,
+	});
+	const auto item = lifetime.make_state<PeerListItem>(PeerListItem{
+		.height = st.height,
+		.photoPosition = QPoint(st.padding.left(), st.padding.top()),
+		.namePosition = QPoint(st.nameLeft, st.nameTop),
+		.nameStyle = st::semiboldTextStyle,
+		.statusPosition = QPoint(st.textLeft, st.textTop),
+		.photoSize = st.photoSize,
+		.button = { *button },
+	});
+	return *item;
+}
+
 class LoadingPeerListItem final : public LoadingElement {
 public:
 	LoadingPeerListItem(const style::PeerListItem &st) : _st(st) {
+	}
+	LoadingPeerListItem(const style::DialogRow &st)
+	: _st(PeerListItemFromDialogRow(_lifetime, st)) {
 	}
 
 	[[nodiscard]] int height() const override {
@@ -79,7 +102,7 @@ public:
 			- (style.lineHeight - style.font->height);
 
 		p.setPen(Qt::NoPen);
-		p.setBrush(st::windowBgOver);
+		p.setBrush(_st.button.textBgOver);
 
 		p.drawEllipse(
 			_st.photoPosition.x(),
@@ -114,6 +137,7 @@ public:
 	}
 
 private:
+	rpl::lifetime _lifetime;
 	const style::PeerListItem &_st;
 
 };
@@ -122,6 +146,7 @@ template <typename Element, typename ...ElementArgs>
 object_ptr<Ui::RpWidget> CreateLoadingElementWidget(
 		not_null<Ui::RpWidget*> parent,
 		int lines,
+		QColor bg,
 		rpl::producer<bool> rtl,
 		ElementArgs &&...args) {
 	auto widget = object_ptr<Ui::RpWidget>(parent);
@@ -183,7 +208,7 @@ object_ptr<Ui::RpWidget> CreateLoadingElementWidget(
 	) | rpl::start_with_next([=](int width) {
 		state->glare.width = width;
 		state->glare.validate(
-			st::dialogsBg->c,
+			bg,
 			[=] { raw->update(); },
 			kTimeout,
 			kDuration);
@@ -199,12 +224,13 @@ object_ptr<Ui::RpWidget> CreateLoadingElementWidget(
 
 object_ptr<Ui::RpWidget> CreateLoadingTextWidget(
 		not_null<Ui::RpWidget*> parent,
-		const style::FlatLabel &st,
+		const style::TextStyle &st,
 		int lines,
 		rpl::producer<bool> rtl) {
 	return CreateLoadingElementWidget<LoadingText>(
 		parent,
 		lines,
+		st::dialogsBg->c,
 		std::move(rtl),
 		st);
 }
@@ -212,10 +238,24 @@ object_ptr<Ui::RpWidget> CreateLoadingTextWidget(
 object_ptr<Ui::RpWidget> CreateLoadingPeerListItemWidget(
 		not_null<Ui::RpWidget*> parent,
 		const style::PeerListItem &st,
+		int lines,
+		std::optional<QColor> bgOverride) {
+	return CreateLoadingElementWidget<LoadingPeerListItem>(
+		parent,
+		lines,
+		bgOverride.value_or(st::dialogsBg->c),
+		rpl::single(false),
+		st);
+}
+
+object_ptr<Ui::RpWidget> CreateLoadingDialogRowWidget(
+		not_null<Ui::RpWidget*> parent,
+		const style::DialogRow &st,
 		int lines) {
 	return CreateLoadingElementWidget<LoadingPeerListItem>(
 		parent,
 		lines,
+		st::dialogsBg->c,
 		rpl::single(false),
 		st);
 }

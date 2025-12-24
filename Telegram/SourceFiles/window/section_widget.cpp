@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/section_widget.h"
 
 #include "mainwidget.h"
+#include "mainwindow.h"
 #include "ui/ui_utility.h"
 #include "ui/chat/chat_theme.h"
 #include "ui/painter.h"
@@ -35,13 +36,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Window {
 namespace {
 
-[[nodiscard]] rpl::producer<QString> PeerThemeEmojiValue(
+[[nodiscard]] rpl::producer<QString> PeerThemeTokenValue(
 		not_null<PeerData*> peer) {
 	return peer->session().changes().peerFlagsValue(
 		peer,
-		Data::PeerUpdate::Flag::ChatThemeEmoji
+		Data::PeerUpdate::Flag::ChatThemeToken
 	) | rpl::map([=] {
-		return peer->themeEmoji();
+		return peer->themeToken();
 	});
 }
 
@@ -95,11 +96,11 @@ struct ResolvedPaper {
 [[nodiscard]] auto MaybeChatThemeDataValueFromPeer(
 	not_null<PeerData*> peer)
 -> rpl::producer<std::optional<Data::CloudTheme>> {
-	return PeerThemeEmojiValue(
+	return PeerThemeTokenValue(
 		peer
-	) | rpl::map([=](const QString &emoji)
+	) | rpl::map([=](const QString &token)
 	-> rpl::producer<std::optional<Data::CloudTheme>> {
-		return peer->owner().cloudThemes().themeForEmojiValue(emoji);
+		return peer->owner().cloudThemes().themeForTokenValue(token);
 	}) | rpl::flatten_latest();
 }
 
@@ -201,10 +202,12 @@ rpl::producer<const Data::WallPaper*> WallPaperResolved(
 		return result;
 	}
 	themes->refreshChatThemes();
-	return themes->chatThemesUpdated(
+	return rpl::single<const Data::WallPaper*>(
+		nullptr
+	) | rpl::then(themes->chatThemesUpdated(
 	) | rpl::take(1) | rpl::map([=] {
 		return fromThemes(true);
-	}) | rpl::flatten_latest();
+	}) | rpl::flatten_latest());
 }
 
 AbstractSectionWidget::AbstractSectionWidget(
@@ -261,7 +264,7 @@ void SectionWidget::setGeometryWithTopMoved(
 	_topDelta = topDelta;
 	bool willBeResized = (size() != newGeometry.size());
 	if (geometry() != newGeometry) {
-		auto weak = Ui::MakeWeak(this);
+		auto weak = base::make_weak(this);
 		setGeometry(newGeometry);
 		if (!weak) {
 			return;
@@ -276,6 +279,7 @@ void SectionWidget::setGeometryWithTopMoved(
 void SectionWidget::showAnimated(
 		SlideDirection direction,
 		const SectionSlideParams &params) {
+	validateSubsectionTabs();
 	if (_showAnimation) {
 		return;
 	}
@@ -306,6 +310,7 @@ std::shared_ptr<SectionMemento> SectionWidget::createMemento() {
 }
 
 void SectionWidget::showFast() {
+	validateSubsectionTabs();
 	show();
 	showFinished();
 }
@@ -320,12 +325,33 @@ void SectionWidget::PaintBackground(
 		not_null<Ui::ChatTheme*> theme,
 		not_null<QWidget*> widget,
 		QRect clip) {
+	if (const auto id = theme->background().giftId) {
+		const auto fillHeight = controller->content()->height();
+		const auto fill = QSize(widget->width(), fillHeight);
+		const auto &state = theme->backgroundState(fill);
+		const auto make = [&] {
+			return std::make_unique<Ui::Text::LimitedLoopsEmoji>(
+				controller->session().data().customEmojiManager().create(
+					id,
+					crl::guard(widget, [=] { widget->update(); }),
+					Data::CustomEmojiSizeTag::Isolated),
+				1);
+		};
+		if (!state.was.gift) {
+			state.was.gift = make();
+		}
+		if (!state.now.gift) {
+			state.now.gift = make();
+		}
+	}
+
 	PaintBackground(
 		theme,
 		widget,
 		controller->content()->height(),
 		controller->content()->backgroundFromY(),
-		clip);
+		clip,
+		controller->isGifPausedAtLeastFor(GifPauseReason::Any));
 }
 
 void SectionWidget::PaintBackground(
@@ -333,37 +359,68 @@ void SectionWidget::PaintBackground(
 		not_null<QWidget*> widget,
 		int fillHeight,
 		int fromy,
-		QRect clip) {
+		QRect clip,
+		bool paused) {
 	auto p = QPainter(widget);
 	if (fromy) {
 		p.translate(0, fromy);
 		clip = clip.translated(0, -fromy);
 	}
-	PaintBackground(p, theme, QSize(widget->width(), fillHeight), clip);
+	const auto fill = QSize(widget->width(), fillHeight);
+	PaintBackground(p, theme, fill, clip, paused);
 }
 
 void SectionWidget::PaintBackground(
 		QPainter &p,
 		not_null<Ui::ChatTheme*> theme,
 		QSize fill,
-		QRect clip) {
+		QRect clip,
+		bool paused) {
 	const auto &background = theme->background();
 	if (background.colorForFill) {
 		p.fillRect(clip, *background.colorForFill);
 		return;
 	}
 	const auto &gradient = background.gradientForFill;
-	auto state = theme->backgroundState(fill);
+	const auto &state = theme->backgroundState(fill);
 	const auto paintCache = [&](const Ui::CachedBackground &cache) {
 		const auto to = QRect(
 			QPoint(cache.x, cache.y),
-			cache.pixmap.size() / cIntRetinaFactor());
+			cache.pixmap.size() / style::DevicePixelRatio());
+		const auto paintGift = [&](QRect area) {
+			if (!cache.gift) {
+				return;
+			}
+			auto hq = PainterHighQualityEnabler(p);
+			const auto center = area.center();
+			const auto size = Data::FrameSizeFromTag(
+				Data::CustomEmojiSizeTag::Isolated
+			) / style::DevicePixelRatio();
+			p.save();
+			p.translate(center);
+			p.rotate(cache.giftRotation);
+			p.translate(-center);
+			p.setOpacity(0.5);
+			cache.gift->paint(p, {
+				.textColor = st::windowFg->c,
+				.size = QSize(size, size),
+				.now = crl::now(),
+				.scale = (area.width() / float64(size)),
+				.position = area.topLeft(),
+				.paused = paused,
+				.scaled = true,
+			});
+			p.restore();
+		};
 		if (cache.waitingForNegativePattern) {
 			// While we wait for pattern being loaded we paint just gradient.
 			// But in case of negative patter opacity we just fill-black.
 			p.fillRect(to, Qt::black);
 		} else if (cache.area == fill) {
 			p.drawPixmap(to, cache.pixmap);
+			if (background.giftId && !cache.giftArea.isEmpty()) {
+				paintGift(cache.giftArea.translated(to.topLeft()));
+			}
 		} else {
 			const auto sx = fill.width() / float64(cache.area.width());
 			const auto sy = fill.height() / float64(cache.area.height());
@@ -379,6 +436,13 @@ void SectionWidget::PaintBackground(
 				round((to.x() + to.width()) * sx) - sto.x(),
 				round((to.y() + to.height()) * sy) - sto.y(),
 				cache.pixmap);
+			if (background.giftId && !cache.giftArea.isEmpty()) {
+				paintGift(QRect(
+					(to.x() + cache.giftArea.x()) * sx,
+					(to.y() + cache.giftArea.y()) * sy,
+					cache.giftArea.width() * sx,
+					cache.giftArea.height() * sy));
+			}
 		}
 	};
 	const auto hasNow = !state.now.pixmap.isNull();
@@ -416,8 +480,8 @@ void SectionWidget::PaintBackground(
 		const auto top = clip.top();
 		const auto right = clip.left() + clip.width();
 		const auto bottom = clip.top() + clip.height();
-		const auto w = tiled.width() / cRetinaFactor();
-		const auto h = tiled.height() / cRetinaFactor();
+		const auto w = tiled.width() / float64(style::DevicePixelRatio());
+		const auto h = tiled.height() / float64(style::DevicePixelRatio());
 		const auto sx = qFloor(left / w);
 		const auto sy = qFloor(top / h);
 		const auto cx = qCeil(right / w);
@@ -454,7 +518,11 @@ void SectionWidget::showFinished() {
 	showChildren();
 	showFinishedHook();
 
-	setInnerFocus();
+	if (isAncestorOf(window()->focusWidget())) {
+		setInnerFocus();
+	} else {
+		controller()->widget()->setInnerFocus();
+	}
 }
 
 rpl::producer<int> SectionWidget::desiredHeight() const {
@@ -498,7 +566,7 @@ auto ChatThemeValueFromPeer(
 			std::shared_ptr<Ui::ChatTheme> &&cloud,
 			PeerThemeOverride &&overriden) {
 		return (overriden.peer == peer.get()
-			&& Ui::Emoji::Find(peer->themeEmoji()) != overriden.emoji)
+			&& peer->themeToken() != overriden.token)
 			? std::move(overriden.theme)
 			: std::move(cloud);
 	});
@@ -525,20 +593,20 @@ bool ShowReactPremiumError(
 		not_null<SessionController*> controller,
 		not_null<HistoryItem*> item,
 		const Data::ReactionId &id) {
-	if (controller->session().premium()
+	if (item->reactionsAreTags()) {
+		if (controller->session().premium()) {
+			return false;
+		}
+		ShowPremiumPreviewBox(controller, PremiumFeature::TagsForMessages);
+		return true;
+	} else if (controller->session().premium()
 		|| ranges::contains(item->chosenReactions(), id)
 		|| item->history()->peer->isBroadcast()) {
 		return false;
+	} else if (!id.custom()) {
+		return false;
 	}
-	const auto &list = controller->session().data().reactions().list(
-		Data::Reactions::Type::Active);
-	const auto i = ranges::find(list, id, &Data::Reaction::id);
-	if (i == end(list) || !i->premium) {
-		if (!id.custom()) {
-			return false;
-		}
-	}
-	ShowPremiumPreviewBox(controller, PremiumPreview::InfiniteReactions);
+	ShowPremiumPreviewBox(controller, PremiumFeature::InfiniteReactions);
 	return true;
 }
 

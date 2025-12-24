@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/audio/media_audio_ffmpeg_loader.h"
 #include "media/audio/media_audio.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "core/file_location.h"
 
 #include <al.h>
@@ -141,7 +142,7 @@ void Track::fillFromFile(const QString &filePath) {
 	}
 }
 
-void Track::playWithLooping(bool looping) {
+void Track::playWithLooping(bool looping, float64 volumeOverride) {
 	_active = true;
 	if (failed() || _samples.empty()) {
 		finish();
@@ -151,7 +152,12 @@ void Track::playWithLooping(bool looping) {
 	alSourceStop(_alSource);
 	_looping = looping;
 	alSourcei(_alSource, AL_LOOPING, _looping ? 1 : 0);
-	alSourcef(_alSource, AL_GAIN, _volume);
+	alSourcef(
+		_alSource,
+		AL_GAIN,
+		(volumeOverride > 0)
+			? volumeOverride
+			: float64(Core::App().settings().notificationsVolume()) / 100.);
 	alSourcePlay(_alSource);
 	_instance->trackStarted(this);
 }
@@ -242,7 +248,17 @@ Track::~Track() {
 	_instance->unregisterTrack(this);
 }
 
-Instance::Instance() {
+Instance::Instance()
+: _playbackDeviceId(
+	&Core::App().mediaDevices(),
+	Webrtc::DeviceType::Playback,
+	Webrtc::DeviceIdOrDefault(
+		Core::App().settings().playbackDeviceIdValue()))
+, _captureDeviceId(
+	&Core::App().mediaDevices(),
+	Webrtc::DeviceType::Capture,
+	Webrtc::DeviceIdOrDefault(
+		Core::App().settings().captureDeviceIdValue())) {
 	_updateTimer.setCallback([this] {
 		auto hasActive = false;
 		for (auto track : _tracks) {
@@ -260,6 +276,21 @@ Instance::Instance() {
 		_detachFromDeviceForce = false;
 		Player::internal::DetachFromDevice(this);
 	});
+
+	_playbackDeviceId.changes(
+	) | rpl::start_with_next([=](Webrtc::DeviceResolvedId id) {
+		if (Player::internal::DetachIfDeviceChanged(this, id)) {
+			_detachFromDeviceForce = false;
+		}
+	}, _lifetime);
+}
+
+Webrtc::DeviceResolvedId Instance::playbackDeviceId() const {
+	return _playbackDeviceId.threadSafeCurrent();
+}
+
+Webrtc::DeviceResolvedId Instance::captureDeviceId() const {
+	return _captureDeviceId.current();
 }
 
 std::unique_ptr<Track> Instance::createTrack() {

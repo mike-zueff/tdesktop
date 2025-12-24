@@ -21,8 +21,15 @@ namespace Info::Statistics {
 class Memento;
 class MessagePreview;
 
+enum class LoadingType {
+	Statistic,
+	Boosts,
+	Earn,
+};
+
 void FillLoading(
 	not_null<Ui::VerticalLayout*> container,
+	LoadingType type,
 	rpl::producer<bool> toggleOn,
 	rpl::producer<> showFinished);
 
@@ -54,7 +61,7 @@ public:
 private:
 	void load();
 	void fill();
-	void fillRecentPosts();
+	void fillRecentPosts(not_null<Ui::VerticalLayout*> container);
 
 	not_null<Controller*> _controller;
 	not_null<PeerData*> _peer;

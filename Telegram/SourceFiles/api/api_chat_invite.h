@@ -14,7 +14,7 @@ class ChannelData;
 
 namespace Info::Profile {
 class Badge;
-enum class BadgeType;
+enum class BadgeType : uchar;
 } // namespace Info::Profile
 
 namespace Main {
@@ -38,7 +38,8 @@ namespace Api {
 void CheckChatInvite(
 	not_null<Window::SessionController*> controller,
 	const QString &hash,
-	ChannelData *invitePeekChannel = nullptr);
+	ChannelData *invitePeekChannel = nullptr,
+	Fn<void()> loaded = nullptr);
 
 } // namespace Api
 

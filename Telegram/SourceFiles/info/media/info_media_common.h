@@ -31,6 +31,8 @@ struct ListItemSelectionData {
 	bool canDelete = false;
 	bool canForward = false;
 	bool canToggleStoryPin = false;
+	bool canUnpinStory = false;
+	bool storyInProfile = false;
 
 	friend inline bool operator==(
 		ListItemSelectionData,
@@ -89,7 +91,8 @@ using UniversalMsgId = MsgId;
 bool ChangeItemSelection(
 	ListSelectedMap &selected,
 	not_null<const HistoryItem*> item,
-	ListItemSelectionData selectionData);
+	ListItemSelectionData selectionData,
+	int limit = 0);
 
 class ListSectionDelegate {
 public:
@@ -170,5 +173,7 @@ public:
 
 	virtual ~ListProvider() = default;
 };
+
+[[nodiscard]] int MinItemHeight(Type type, int width);
 
 } // namespace Info::Media

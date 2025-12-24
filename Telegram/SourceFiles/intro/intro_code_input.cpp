@@ -1,9 +1,10 @@
-// This file is part of Desktop App Toolkit,
-// a set of libraries for developing nice desktop applications.
-//
-// For license and copyright information please follow this link:
-// https://github.com/desktop-app/legal/blob/master/LEGAL
-//
+/*
+This file is part of Telegram Desktop,
+the official desktop application for the Telegram messaging service.
+
+For license and copyright information please follow this link:
+https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+*/
 #include "intro/intro_code_input.h"
 
 #include "lang/lang_keys.h"
@@ -12,6 +13,7 @@
 #include "ui/painter.h"
 #include "ui/rect.h"
 #include "ui/widgets/popup_menu.h"
+#include "styles/style_basic.h"
 #include "styles/style_intro.h"
 #include "styles/style_layers.h" // boxRadius
 
@@ -90,7 +92,6 @@ void CodeDigit::setDigit(int digit) {
 	}
 	_dataDigit = digit;
 	if (_viewDigit != digit) {
-		constexpr auto kDuration = st::introCodeDigitAnimatioDuration;
 		_animation.stop();
 		if (digit == kDigitNone) {
 			_animation.start([=](float64 value) {
@@ -98,10 +99,10 @@ void CodeDigit::setDigit(int digit) {
 				if (!value) {
 					_viewDigit = digit;
 				}
-			}, 1., 0., kDuration);
+			}, 1., 0., st::universalDuration);
 		} else {
 			_viewDigit = digit;
-			_animation.start([=] { update(); }, 0., 1., kDuration);
+			_animation.start([=] { update(); }, 0, 1., st::universalDuration);
 		}
 	}
 }
@@ -176,6 +177,7 @@ void CodeInput::setDigitsCountMax(int digitsCount) {
 			+ st::introCodeDigitSkip * (digitsCount - 1)
 			+ padding.right(),
 		st::introCodeDigitHeight);
+	setNaturalWidth(width());
 
 	for (auto i = 0; i < digitsCount; i++) {
 		const auto widget = Ui::CreateChild<CodeDigit>(this);

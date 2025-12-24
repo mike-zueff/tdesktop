@@ -10,10 +10,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/algorithm.h"
 #include "logs.h"
 
-#if !defined TDESKTOP_USE_PACKAGED && !defined Q_OS_WIN && !defined Q_OS_MAC
+#if !defined Q_OS_WIN && !defined Q_OS_MAC
 #include "base/platform/linux/base_linux_library.h"
 #include <deque>
-#endif // !TDESKTOP_USE_PACKAGED && !Q_OS_WIN && !Q_OS_MAC
+#endif // !Q_OS_WIN && !Q_OS_MAC
 
 #include <QImage>
 
@@ -23,7 +23,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 extern "C" {
 #include <libavutil/opt.h>
+#include <libavutil/display.h>
 } // extern "C"
+
+#if !defined Q_OS_WIN && !defined Q_OS_MAC
+extern "C" {
+void _libvdpau_so_tramp_resolve_all(void) __attribute__((weak));
+void _libva_drm_so_tramp_resolve_all(void) __attribute__((weak));
+void _libva_x11_so_tramp_resolve_all(void) __attribute__((weak));
+void _libva_so_tramp_resolve_all(void) __attribute__((weak));
+void _libdrm_so_tramp_resolve_all(void) __attribute__((weak));
+} // extern "C"
+#endif // !Q_OS_WIN && !Q_OS_MAC
 
 namespace FFmpeg {
 namespace {
@@ -90,23 +101,24 @@ void PremultiplyLine(uchar *dst, const uchar *src, int intsCount) {
 #endif // LIB_FFMPEG_USE_QT_PRIVATE_API
 }
 
-#if !defined TDESKTOP_USE_PACKAGED && !defined Q_OS_WIN && !defined Q_OS_MAC
+#if !defined Q_OS_WIN && !defined Q_OS_MAC
 [[nodiscard]] auto CheckHwLibs() {
 	auto list = std::deque{
 		AV_PIX_FMT_CUDA,
 	};
-	if (base::Platform::LoadLibrary("libvdpau.so.1")) {
+	if (!_libvdpau_so_tramp_resolve_all
+			|| base::Platform::LoadLibrary("libvdpau.so.1")) {
 		list.push_front(AV_PIX_FMT_VDPAU);
 	}
 	if ([&] {
 		const auto list = std::array{
-			"libva-drm.so.2",
-			"libva-x11.so.2",
-			"libva.so.2",
-			"libdrm.so.2",
+			std::make_pair(_libva_drm_so_tramp_resolve_all, "libva-drm.so.2"),
+			std::make_pair(_libva_x11_so_tramp_resolve_all, "libva-x11.so.2"),
+			std::make_pair(_libva_so_tramp_resolve_all, "libva.so.2"),
+			std::make_pair(_libdrm_so_tramp_resolve_all, "libdrm.so.2"),
 		};
-		for (const auto lib : list) {
-			if (!base::Platform::LoadLibrary(lib)) {
+		for (const auto &lib : list) {
+			if (lib.first && !base::Platform::LoadLibrary(lib.second)) {
 				return false;
 			}
 		}
@@ -116,7 +128,7 @@ void PremultiplyLine(uchar *dst, const uchar *src, int intsCount) {
 	}
 	return list;
 }
-#endif // !TDESKTOP_USE_PACKAGED && !Q_OS_WIN && !Q_OS_MAC
+#endif // !Q_OS_WIN && !Q_OS_MAC
 
 [[nodiscard]] bool InitHw(AVCodecContext *context, AVHWDeviceType type) {
 	AVCodecContext *parent = static_cast<AVCodecContext*>(context->opaque);
@@ -159,9 +171,7 @@ void PremultiplyLine(uchar *dst, const uchar *src, int intsCount) {
 		}
 		return false;
 	};
-#if !defined TDESKTOP_USE_PACKAGED && !defined Q_OS_WIN && !defined Q_OS_MAC
-	static const auto list = CheckHwLibs();
-#else // !TDESKTOP_USE_PACKAGED && !Q_OS_WIN && !Q_OS_MAC
+#if defined Q_OS_WIN || defined Q_OS_MAC
 	const auto list = std::array{
 #ifdef Q_OS_WIN
 		AV_PIX_FMT_D3D11,
@@ -169,13 +179,11 @@ void PremultiplyLine(uchar *dst, const uchar *src, int intsCount) {
 		AV_PIX_FMT_CUDA,
 #elif defined Q_OS_MAC // Q_OS_WIN
 		AV_PIX_FMT_VIDEOTOOLBOX,
-#else // Q_OS_WIN || Q_OS_MAC
-		AV_PIX_FMT_VAAPI,
-		AV_PIX_FMT_VDPAU,
-		AV_PIX_FMT_CUDA,
 #endif // Q_OS_WIN || Q_OS_MAC
 	};
-#endif // TDESKTOP_USE_PACKAGED || Q_OS_WIN || Q_OS_MAC
+#else // Q_OS_WIN || Q_OS_MAC
+	static const auto list = CheckHwLibs();
+#endif // !Q_OS_WIN && !Q_OS_MAC
 	for (const auto format : list) {
 		if (!has(format)) {
 			continue;
@@ -229,7 +237,11 @@ enum AVPixelFormat GetFormatImplementation(
 IOPointer MakeIOPointer(
 		void *opaque,
 		int(*read)(void *opaque, uint8_t *buffer, int bufferSize),
+#if DA_FFMPEG_CONST_WRITE_CALLBACK
+		int(*write)(void *opaque, const uint8_t *buffer, int bufferSize),
+#else
 		int(*write)(void *opaque, uint8_t *buffer, int bufferSize),
+#endif
 		int64_t(*seek)(void *opaque, int64_t offset, int whence)) {
 	auto buffer = reinterpret_cast<uchar*>(av_malloc(kAvioBlockSize));
 	if (!buffer) {
@@ -262,7 +274,11 @@ void IODeleter::operator()(AVIOContext *value) {
 FormatPointer MakeFormatPointer(
 		void *opaque,
 		int(*read)(void *opaque, uint8_t *buffer, int bufferSize),
+#if DA_FFMPEG_CONST_WRITE_CALLBACK
+		int(*write)(void *opaque, const uint8_t *buffer, int bufferSize),
+#else
 		int(*write)(void *opaque, uint8_t *buffer, int bufferSize),
+#endif
 		int64_t(*seek)(void *opaque, int64_t offset, int whence)) {
 	auto io = MakeIOPointer(opaque, read, write, seek);
 	if (!io) {
@@ -275,10 +291,12 @@ FormatPointer MakeFormatPointer(
 		return {};
 	}
 	result->pb = io.get();
+	result->flags |= AVFMT_FLAG_CUSTOM_IO;
 
 	auto options = (AVDictionary*)nullptr;
 	const auto guard = gsl::finally([&] { av_dict_free(&options); });
 	av_dict_set(&options, "usetoc", "1", 0);
+
 	const auto error = AvErrorWrap(avformat_open_input(
 		&result,
 		nullptr,
@@ -292,6 +310,54 @@ FormatPointer MakeFormatPointer(
 	if (seek) {
 		result->flags |= AVFMT_FLAG_FAST_SEEK;
 	}
+
+	// Now FormatPointer will own and free the IO context.
+	io.release();
+	return FormatPointer(result);
+}
+
+FormatPointer MakeWriteFormatPointer(
+		void *opaque,
+		int(*read)(void *opaque, uint8_t *buffer, int bufferSize),
+#if DA_FFMPEG_CONST_WRITE_CALLBACK
+		int(*write)(void *opaque, const uint8_t *buffer, int bufferSize),
+#else
+		int(*write)(void *opaque, uint8_t *buffer, int bufferSize),
+#endif
+		int64_t(*seek)(void *opaque, int64_t offset, int whence),
+		const QByteArray &format) {
+	const AVOutputFormat *found = nullptr;
+	void *i = nullptr;
+	while ((found = av_muxer_iterate(&i))) {
+		if (found->name == format) {
+			break;
+		}
+	}
+	if (!found) {
+		LogError(
+			"av_muxer_iterate",
+			u"Format %1 not found"_q.arg(QString::fromUtf8(format)));
+		return {};
+	}
+
+	auto io = MakeIOPointer(opaque, read, write, seek);
+	if (!io) {
+		return {};
+	}
+	io->seekable = (seek != nullptr);
+
+	auto result = (AVFormatContext*)nullptr;
+	auto error = AvErrorWrap(avformat_alloc_output_context2(
+		&result,
+		(AVOutputFormat*)found,
+		nullptr,
+		nullptr));
+	if (!result || error) {
+		LogError("avformat_alloc_output_context2", error);
+		return {};
+	}
+	result->pb = io.get();
+	result->flags |= AVFMT_FLAG_CUSTOM_IO;
 
 	// Now FormatPointer will own and free the IO context.
 	io.release();
@@ -439,21 +505,135 @@ SwscalePointer MakeSwscalePointer(
 		existing);
 }
 
+void SwresampleDeleter::operator()(SwrContext *value) {
+	if (value) {
+		swr_free(&value);
+	}
+}
+
+SwresamplePointer MakeSwresamplePointer(
+#if DA_FFMPEG_NEW_CHANNEL_LAYOUT
+		AVChannelLayout *srcLayout,
+#else // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+		uint64_t srcLayout,
+#endif // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+		AVSampleFormat srcFormat,
+		int srcRate,
+#if DA_FFMPEG_NEW_CHANNEL_LAYOUT
+		AVChannelLayout *dstLayout,
+#else // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+		uint64_t dstLayout,
+#endif // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+		AVSampleFormat dstFormat,
+		int dstRate,
+		SwresamplePointer *existing) {
+	// We have to use custom caching for SwsContext, because
+	// sws_getCachedContext checks passed flags with existing context flags,
+	// and re-creates context if they're different, but in the process of
+	// context creation the passed flags are modified before being written
+	// to the resulting context, so the caching doesn't work.
+	if (existing && (*existing) != nullptr) {
+		const auto &deleter = existing->get_deleter();
+		if (true
+#if DA_FFMPEG_NEW_CHANNEL_LAYOUT
+			&& srcLayout->nb_channels == deleter.srcChannels
+			&& dstLayout->nb_channels == deleter.dstChannels
+#else // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+			&& (av_get_channel_layout_nb_channels(srcLayout)
+				== deleter.srcChannels)
+			&& (av_get_channel_layout_nb_channels(dstLayout)
+				== deleter.dstChannels)
+#endif // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+			&& srcFormat == deleter.srcFormat
+			&& dstFormat == deleter.dstFormat
+			&& srcRate == deleter.srcRate
+			&& dstRate == deleter.dstRate) {
+			return std::move(*existing);
+		}
+	}
+
+	// Initialize audio resampler
+	AvErrorWrap error;
+#if DA_FFMPEG_NEW_CHANNEL_LAYOUT
+	auto result = (SwrContext*)nullptr;
+	error = AvErrorWrap(swr_alloc_set_opts2(
+		&result,
+		dstLayout,
+		dstFormat,
+		dstRate,
+		srcLayout,
+		srcFormat,
+		srcRate,
+		0,
+		nullptr));
+	if (error || !result) {
+		LogError(u"swr_alloc_set_opts2"_q, error);
+		return SwresamplePointer();
+	}
+#else // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+	auto result = swr_alloc_set_opts(
+		existing ? existing->get() : nullptr,
+		dstLayout,
+		dstFormat,
+		dstRate,
+		srcLayout,
+		srcFormat,
+		srcRate,
+		0,
+		nullptr);
+	if (!result) {
+		LogError(u"swr_alloc_set_opts"_q);
+	}
+#endif // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+
+	error = AvErrorWrap(swr_init(result));
+	if (error) {
+		LogError(u"swr_init"_q, error);
+		swr_free(&result);
+		return SwresamplePointer();
+	}
+
+	return SwresamplePointer(
+		result,
+		{
+			srcFormat,
+			srcRate,
+#if DA_FFMPEG_NEW_CHANNEL_LAYOUT
+			srcLayout->nb_channels,
+#else // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+			av_get_channel_layout_nb_channels(srcLayout),
+#endif // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+			dstFormat,
+			dstRate,
+#if DA_FFMPEG_NEW_CHANNEL_LAYOUT
+			dstLayout->nb_channels,
+#else // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+			av_get_channel_layout_nb_channels(dstLayout),
+#endif // DA_FFMPEG_NEW_CHANNEL_LAYOUT
+		});
+}
+
 void SwscaleDeleter::operator()(SwsContext *value) {
 	if (value) {
 		sws_freeContext(value);
 	}
 }
 
-void LogError(const QString &method) {
-	LOG(("Streaming Error: Error in %1.").arg(method));
+void LogError(const QString &method, const QString &details) {
+	LOG(("Streaming Error: Error in %1%2."
+		).arg(method
+		).arg(details.isEmpty() ? QString() : " - " + details));
 }
 
-void LogError(const QString &method, AvErrorWrap error) {
-	LOG(("Streaming Error: Error in %1 (code: %2, text: %3)."
+void LogError(
+		const QString &method,
+		AvErrorWrap error,
+		const QString &details) {
+	LOG(("Streaming Error: Error in %1 (code: %2, text: %3)%4."
 		).arg(method
 		).arg(error.code()
-		).arg(error.text()));
+		).arg(error.text()
+		).arg(details.isEmpty() ? QString() : " - " + details));
 }
 
 crl::time PtsToTime(int64_t pts, AVRational timeBase) {
@@ -503,16 +683,17 @@ int DurationByPacket(const Packet &packet, AVRational timeBase) {
 }
 
 int ReadRotationFromMetadata(not_null<AVStream*> stream) {
-	const auto tag = av_dict_get(stream->metadata, "rotate", nullptr, 0);
-	if (tag && *tag->value) {
-		const auto string = QString::fromUtf8(tag->value);
-		auto ok = false;
-		const auto degrees = string.toInt(&ok);
-		if (ok && (degrees == 90 || degrees == 180 || degrees == 270)) {
-			return degrees;
-		}
+	const auto displaymatrix = av_stream_get_side_data(
+		stream,
+		AV_PKT_DATA_DISPLAYMATRIX,
+		nullptr);
+	auto theta = 0;
+	if (displaymatrix) {
+		theta = -round(av_display_rotation_get((int32_t*)displaymatrix));
 	}
-	return 0;
+	theta -= 360 * floor(theta / 360 + 0.9 / 360);
+	const auto result = int(base::SafeRound(theta));
+	return (result == 90 || result == 180 || result == 270) ? result : 0;
 }
 
 AVRational ValidateAspectRatio(AVRational aspect) {

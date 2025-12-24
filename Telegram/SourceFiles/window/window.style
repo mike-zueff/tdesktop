@@ -43,9 +43,7 @@ notifyClose: IconButton {
 
 	rippleAreaPosition: point(5px, 5px);
 	rippleAreaSize: 20px;
-	ripple: RippleAnimation(defaultRippleAnimation) {
-		color: windowBgOver;
-	}
+	ripple: defaultRippleAnimationBgOver;
 }
 notifyItemTop: 12px;
 notifyTextLeft: 12px;
@@ -61,7 +59,7 @@ notifyActionsDuration: 200;
 notifyHideAllHeight: 36px;
 
 notifyReplyArea: InputField(defaultInputField) {
-	font: normalFont;
+	style: defaultTextStyle;
 	textMargins: margins(8px, 8px, 8px, 6px);
 	heightMin: 36px;
 	heightMax: 72px;
@@ -235,8 +233,6 @@ createThemeLink: InputField(defaultInputField) {
 	placeholderFont: boxTextFont;
 
 	heightMin: 34px;
-
-	font: boxTextFont;
 }
 
 windowFiltersWidth: 72px;
@@ -289,8 +285,9 @@ windowFilterSmallRemoveRight: 10px;
 windowFilterNameInput: InputField(defaultInputField) {
 	textMargins: margins(0px, 26px, 36px, 4px);
 }
+windowFilterStaticTitlePosition: point(0px, 5px);
 windowFilterIconToggleSize: size(36px, 36px);
-windowFilterIconTogglePosition: point(-4px, 12px);
+windowFilterIconTogglePosition: point(-4px, 18px);
 windwoFilterIconPanelPosition: point(-2px, -1px);
 windowFilterIconSingle: size(44px, 42px);
 windowFilterIconPadding: margins(10px, 36px, 10px, 8px);
@@ -303,6 +300,8 @@ windowFilterTypeBots: icon {{ "folders/folders_type_bots", historyPeerUserpicFg 
 windowFilterTypeNoMuted: icon {{ "folders/folders_type_muted", historyPeerUserpicFg }};
 windowFilterTypeNoArchived: icon {{ "folders/folders_type_archived", historyPeerUserpicFg }};
 windowFilterTypeNoRead: icon {{ "folders/folders_type_read", historyPeerUserpicFg }};
+windowFilterTypeNewChats: icon {{ "folders/folder_new_chats", historyPeerUserpicFg }};
+windowFilterTypeExistingChats: icon {{ "folders/folder_existing_chats", historyPeerUserpicFg }};
 windowFilterChatsSectionSubtitleHeight: 28px;
 windowFilterChatsSectionSubtitle: FlatLabel(defaultFlatLabel) {
 	style: TextStyle(defaultTextStyle) {
@@ -316,6 +315,52 @@ windowArchiveToast: Toast(defaultToast) {
 	minWidth: boxWideWidth;
 	maxWidth: boxWideWidth;
 }
+
+windowFeeItem: Menu(defaultMenu) {
+	itemPadding: margins(17px, 3px, 17px, 4px);
+	itemRightSkip: 0px;
+	itemStyle: whenReadStyle;
+	itemFgOver: windowFg;
+	itemFgDisabled: windowFg;
+}
+
+ivWidthMin: 380px;
+ivHeightMin: 480px;
+ivWidthDefault: 600px;
+ivHeightDefault: 800px;
+
+maxWidthSharedMediaWindow: 419px;
+
+chatSwitchMargins: margins(16px, 16px, 16px, 16px);
+chatSwitchPadding: margins(12px, 12px, 12px, 12px);
+chatSwitchSize: size(72px, 104px);
+chatSwitchUserpic: UserpicButton(defaultUserpicButton) {
+	size: size(56px, 56px);
+	photoSize: 56px;
+}
+chatSwitchUserpicSublist: UserpicButton(defaultUserpicButton) {
+	size: size(40px, 40px);
+	photoSize: 40px;
+}
+chatSwitchUserpicSmall: UserpicButton(defaultUserpicButton) {
+	size: size(24px, 24px);
+	photoSize: 24px;
+}
+chatSwitchUserpicTop: 8px;
+chatSwitchNameLabel: FlatLabel(defaultFlatLabel) {
+	style: TextStyle(defaultTextStyle) {
+		font: font(11px);
+	}
+	align: align(top);
+	minWidth: 56px;
+	maxHeight: 36px;
+}
+chatSwitchNameSkip: 6px;
+chatSwitchSelectLine: 3px;
+
+// Windows specific
+
+winQuitIcon: icon {{ "win_quit", windowFg }};
 
 // Mac specific
 

@@ -86,7 +86,8 @@ rpl::producer<Ui::RequestsBarContent> RequestsBarContentByPeer(
 		state->someUserpicsNotLoaded = false;
 		for (auto &userpic : state->userpics) {
 			userpic.peer->loadUserpic();
-			auto image = userpic.peer->generateUserpicImage(
+			auto image = PeerData::GenerateUserpicImage(
+				userpic.peer,
 				userpic.view,
 				userpicSize * style::DevicePixelRatio());
 			userpic.uniqueKey = userpic.peer->userpicUniqueKey(userpic.view);
@@ -108,7 +109,9 @@ rpl::producer<Ui::RequestsBarContent> RequestsBarContentByPeer(
 		auto state = lifetime.make_state<State>(peer);
 
 		const auto pushNext = [=](bool now = false) {
-			if ((!showInForum && peer->isForum())
+			if ((!showInForum
+				&& peer->isForum()
+				&& !peer->asChannel()->useSubsectionTabs())
 				|| (std::min(state->current.count, kRecentRequestsLimit)
 					!= state->users.size())) {
 				return;

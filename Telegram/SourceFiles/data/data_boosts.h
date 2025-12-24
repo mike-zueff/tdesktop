@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Data {
 
 struct BoostsOverview final {
+	bool group = false;
 	int mine = 0;
 	int level = 0;
 	int boostCount = 0;
@@ -26,10 +27,6 @@ struct GiftCodeLink final {
 };
 
 struct Boost final {
-	bool isGift = false;
-	bool isGiveaway = false;
-	bool isUnclaimed = false;
-
 	QString id;
 	UserId userId = UserId(0);
 	FullMsgId giveawayMessage;
@@ -38,6 +35,11 @@ struct Boost final {
 	int expiresAfterMonths = 0;
 	GiftCodeLink giftCodeLink;
 	int multiplier = 0;
+	uint64 credits = 0;
+
+	bool isGift = false;
+	bool isGiveaway = false;
+	bool isUnclaimed = false;
 };
 
 struct BoostsListSlice final {
@@ -52,10 +54,12 @@ struct BoostsListSlice final {
 };
 
 struct BoostPrepaidGiveaway final {
-	int months = 0;
-	uint64 id = 0;
-	int quantity = 0;
 	QDateTime date;
+	uint64 id = 0;
+	uint64 credits = 0;
+	int months = 0;
+	int quantity = 0;
+	int boosts = 0;
 };
 
 struct BoostStatus final {

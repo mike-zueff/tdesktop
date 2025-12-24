@@ -39,41 +39,55 @@ namespace Data {
 class CloudImage;
 class WallPaper;
 class Session;
+struct UniqueGift;
 
-enum class CallFinishReason : char {
+enum class CallState : char {
 	Missed,
 	Busy,
 	Disconnected,
 	Hangup,
+	MigrateConferenceCall,
+	Invitation,
+	Active,
 };
 
-struct SharedContact {
+struct SharedContact final {
 	UserId userId = 0;
 	QString firstName;
 	QString lastName;
 	QString phoneNumber;
+
+	enum class VcardItemType {
+		Phone,
+		PhoneMain,
+		PhoneHome,
+		PhoneMobile,
+		PhoneWork,
+		PhoneOther,
+		Email,
+		Address,
+		Url,
+		Note,
+		Birthday,
+		Organization,
+		Name,
+	};
+
+	using VcardItems = base::flat_map<VcardItemType, QString>;
+	static VcardItems ParseVcard(const QString &);
+
+	VcardItems vcardItems;
 };
 
 struct Call {
-	using FinishReason = CallFinishReason;
+	using State = CallState;
 
+	std::vector<not_null<PeerData*>> otherParticipants;
+	CallId conferenceId = 0;
 	int duration = 0;
-	FinishReason finishReason = FinishReason::Missed;
+	State state = State::Missed;
 	bool video = false;
 
-};
-
-struct ExtendedPreview {
-	QByteArray inlineThumbnailBytes;
-	QSize dimensions;
-	TimeId videoDuration = -1;
-
-	[[nodiscard]] bool empty() const {
-		return dimensions.isEmpty();
-	}
-	explicit operator bool() const {
-		return !empty();
-	}
 };
 
 class Media;
@@ -84,11 +98,14 @@ struct Invoice {
 	QString currency;
 	QString title;
 	TextWithEntities description;
-	ExtendedPreview extendedPreview;
-	std::unique_ptr<Media> extendedMedia;
+	std::vector<std::unique_ptr<Media>> extendedMedia;
 	PhotoData *photo = nullptr;
+	bool isPaidMedia = false;
 	bool isTest = false;
 };
+[[nodiscard]] bool HasExtendedMedia(const Invoice &invoice);
+[[nodiscard]] bool HasUnpaidMedia(const Invoice &invoice);
+[[nodiscard]] bool IsFirstVideo(const Invoice &invoice);
 
 struct GiveawayStart {
 	std::vector<not_null<ChannelData*>> channels;
@@ -97,6 +114,7 @@ struct GiveawayStart {
 	TimeId untilDate = 0;
 	int quantity = 0;
 	int months = 0;
+	uint64 credits = 0;
 	bool all = false;
 };
 
@@ -110,16 +128,50 @@ struct GiveawayResults {
 	int winnersCount = 0;
 	int unclaimedCount = 0;
 	int months = 0;
+	uint64 credits = 0;
 	bool refunded = false;
 	bool all = false;
 };
 
+enum class GiftType : uchar {
+	Premium, // count - months
+	Credits, // count - credits
+	Ton, // count - nano tons
+	StarGift, // count - stars
+	ChatTheme,
+};
+
 struct GiftCode {
 	QString slug;
+	uint64 stargiftId = 0;
+	DocumentData *document = nullptr;
+	PeerData *stargiftReleasedBy = nullptr;
+	std::shared_ptr<UniqueGift> unique;
+	TextWithEntities message;
 	ChannelData *channel = nullptr;
-	int months = 0;
-	bool viaGiveaway = false;
-	bool unclaimed = false;
+	PeerData *channelFrom = nullptr;
+	uint64 channelSavedId = 0;
+	QString giftPrepayUpgradeHash;
+	MsgId giveawayMsgId = 0;
+	MsgId realGiftMsgId = 0;
+	int starsConverted = 0;
+	int starsToUpgrade = 0;
+	int starsUpgradedBySender = 0;
+	int limitedCount = 0;
+	int limitedLeft = 0;
+	int64 count = 0;
+	GiftType type = GiftType::Premium;
+	bool viaGiveaway : 1 = false;
+	bool transferred : 1 = false;
+	bool upgradeSeparate : 1 = false;
+	bool upgradable : 1 = false;
+	bool unclaimed : 1 = false;
+	bool anonymous : 1 = false;
+	bool converted : 1 = false;
+	bool upgraded : 1 = false;
+	bool refunded : 1 = false;
+	bool upgrade : 1 = false;
+	bool saved : 1 = false;
 };
 
 class Media {
@@ -136,6 +188,9 @@ public:
 	virtual std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) = 0;
 
 	virtual DocumentData *document() const;
+	virtual PhotoData *videoCover() const;
+	virtual TimeId videoTimestamp() const;
+	virtual bool hasQualitiesList() const;
 	virtual PhotoData *photo() const;
 	virtual WebPageData *webpage() const;
 	virtual MediaWebPageFlags webpageFlags() const;
@@ -143,8 +198,10 @@ public:
 	virtual const Call *call() const;
 	virtual GameData *game() const;
 	virtual const Invoice *invoice() const;
+	virtual const GiftCode *gift() const;
 	virtual CloudImage *location() const;
 	virtual PollData *poll() const;
+	virtual TodoListData *todolist() const;
 	virtual const WallPaper *paper() const;
 	virtual bool paperForBoth() const;
 	virtual FullStoryId storyId() const;
@@ -186,7 +243,7 @@ public:
 	virtual bool updateSentMedia(const MTPMessageMedia &media) = 0;
 	virtual bool updateExtendedMedia(
 			not_null<HistoryItem*> item,
-			const MTPMessageExtendedMedia &media) {
+			const QVector<MTPMessageExtendedMedia> &media) {
 		return false;
 	}
 	virtual std::unique_ptr<HistoryView::Media> createView(
@@ -253,17 +310,27 @@ private:
 
 class MediaFile final : public Media {
 public:
+	struct Args {
+		crl::time ttlSeconds = 0;
+		PhotoData *videoCover = nullptr;
+		TimeId videoTimestamp = 0;
+		bool hasQualitiesList = false;
+		bool skipPremiumEffect = false;
+		bool spoiler = false;
+	};
+
 	MediaFile(
 		not_null<HistoryItem*> parent,
 		not_null<DocumentData*> document,
-		bool skipPremiumEffect,
-		bool spoiler,
-		crl::time ttlSeconds);
+		Args &&args);
 	~MediaFile();
 
 	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
 
 	DocumentData *document() const override;
+	PhotoData *videoCover() const override;
+	TimeId videoTimestamp() const override;
+	bool hasQualitiesList() const override;
 
 	bool uploading() const override;
 	Storage::SharedMediaTypesMask sharedMediaTypes() const override;
@@ -292,12 +359,16 @@ public:
 
 private:
 	not_null<DocumentData*> _document;
-	QString _emoji;
-	bool _skipPremiumEffect = false;
-	bool _spoiler = false;
+	PhotoData *_videoCover = nullptr;
 
 	// Video (unsupported) / Voice / Round.
 	crl::time _ttlSeconds = 0;
+
+	QString _emoji;
+	TimeId _videoTimestamp = 0;
+	bool _skipPremiumEffect = false;
+	bool _hasQualitiesList = false;
+	bool _spoiler = false;
 
 };
 
@@ -308,7 +379,8 @@ public:
 		UserId userId,
 		const QString &firstName,
 		const QString &lastName,
-		const QString &phoneNumber);
+		const QString &phoneNumber,
+		const SharedContact::VcardItems &vcardItems);
 	~MediaContact();
 
 	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
@@ -331,10 +403,14 @@ private:
 };
 
 class MediaLocation final : public Media {
+	struct PrivateTag {
+	};
+
 public:
 	MediaLocation(
 		not_null<HistoryItem*> parent,
-		const LocationPoint &point);
+		const LocationPoint &point,
+		TimeId livePeriod = 0);
 	MediaLocation(
 		not_null<HistoryItem*> parent,
 		const LocationPoint &point,
@@ -356,9 +432,21 @@ public:
 		not_null<HistoryItem*> realParent,
 		HistoryView::Element *replacing = nullptr) override;
 
+	MediaLocation(
+		PrivateTag,
+		not_null<HistoryItem*> parent,
+		const LocationPoint &point,
+		TimeId livePeriod,
+		const QString &title,
+		const QString &description);
+
 private:
+
+	[[nodiscard]] QString typeString() const;
+
 	LocationPoint _point;
 	not_null<CloudImage*> _location;
+	TimeId _livePeriod = 0;
 	QString _title;
 	QString _description;
 
@@ -384,9 +472,10 @@ public:
 		not_null<HistoryItem*> realParent,
 		HistoryView::Element *replacing = nullptr) override;
 
-	static QString Text(
+	[[nodiscard]] static QString Text(
 		not_null<HistoryItem*> item,
-		CallFinishReason reason,
+		CallState state,
+		bool conference,
 		bool video);
 
 private:
@@ -408,6 +497,8 @@ public:
 	PhotoData *photo() const override;
 	WebPageData *webpage() const override;
 	MediaWebPageFlags webpageFlags() const override;
+
+	Storage::SharedMediaTypesMask sharedMediaTypes() const override;
 
 	bool hasReplyPreview() const override;
 	Image *replyPreview() const override;
@@ -479,6 +570,7 @@ public:
 	Image *replyPreview() const override;
 	bool replyPreviewLoaded() const override;
 	TextWithEntities notificationText() const override;
+	ItemPreview toPreview(ToPreviewOptions way) const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
 
@@ -486,7 +578,7 @@ public:
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	bool updateExtendedMedia(
 		not_null<HistoryItem*> item,
-		const MTPMessageExtendedMedia &media) override;
+		const QVector<MTPMessageExtendedMedia> &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent,
@@ -521,6 +613,34 @@ public:
 
 private:
 	not_null<PollData*> _poll;
+
+};
+
+class MediaTodoList final : public Media {
+public:
+	MediaTodoList(
+		not_null<HistoryItem*> parent,
+		not_null<TodoListData*> todolist);
+	~MediaTodoList();
+
+	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
+
+	TodoListData *todolist() const override;
+
+	TextWithEntities notificationText() const override;
+	QString pinnedTextSubstring() const override;
+	TextForMimeData clipboardText() const override;
+	bool allowsEdit() const override;
+
+	bool updateInlineResultMedia(const MTPMessageMedia &media) override;
+	bool updateSentMedia(const MTPMessageMedia &media) override;
+	std::unique_ptr<HistoryView::Media> createView(
+		not_null<HistoryView::Element*> message,
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
+
+private:
+	not_null<TodoListData*> _todolist;
 
 };
 
@@ -562,7 +682,8 @@ public:
 	MediaGiftBox(
 		not_null<HistoryItem*> parent,
 		not_null<PeerData*> from,
-		int months);
+		GiftType type,
+		int64 count);
 	MediaGiftBox(
 		not_null<HistoryItem*> parent,
 		not_null<PeerData*> from,
@@ -571,7 +692,7 @@ public:
 	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
 
 	[[nodiscard]] not_null<PeerData*> from() const;
-	[[nodiscard]] const GiftCode &data() const;
+	[[nodiscard]] const GiftCode *gift() const override;
 
 	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
@@ -709,15 +830,19 @@ private:
 
 };
 
-[[nodiscard]] TextForMimeData WithCaptionClipboardText(
-	const QString &attachType,
-	TextForMimeData &&caption);
-
 [[nodiscard]] Invoice ComputeInvoiceData(
 	not_null<HistoryItem*> item,
 	const MTPDmessageMediaInvoice &data);
+[[nodiscard]] Invoice ComputeInvoiceData(
+	not_null<HistoryItem*> item,
+	const MTPDmessageMediaPaidMedia &data);
 
-[[nodiscard]] Call ComputeCallData(const MTPDmessageActionPhoneCall &call);
+[[nodiscard]] Call ComputeCallData(
+	not_null<Session*> owner,
+	const MTPDmessageActionPhoneCall &call);
+[[nodiscard]] Call ComputeCallData(
+	not_null<Session*> owner,
+	const MTPDmessageActionConferenceCall &call);
 
 [[nodiscard]] GiveawayStart ComputeGiveawayStartData(
 	not_null<HistoryItem*> item,

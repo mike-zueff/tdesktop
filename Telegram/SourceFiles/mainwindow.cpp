@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/shadow.h"
 #include "ui/widgets/tooltip.h"
 #include "ui/emoji_config.h"
+#include "ui/ui_utility.h"
 #include "lang/lang_cloud_manager.h"
 #include "lang/lang_instance.h"
 #include "core/sandbox.h"
@@ -77,8 +78,8 @@ base::options::toggle AutoScrollInactiveChat({
 
 } // namespace
 
-const char kOptionAutoScrollInactiveChat[] =
-	"auto-scroll-inactive-chat";
+const char kOptionAutoScrollInactiveChat[]
+	= "auto-scroll-inactive-chat";
 
 MainWindow::MainWindow(not_null<Window::Controller*> controller)
 : Platform::MainWindow(controller) {
@@ -139,7 +140,9 @@ void MainWindow::finishFirstShow() {
 	applyInitialWorkMode();
 	createGlobalMenu();
 
-	windowDeactivateEvents(
+	windowActiveValue(
+	) | rpl::skip(1) | rpl::filter(
+		!rpl::mappers::_1
 	) | rpl::start_with_next([=] {
 		Ui::Tooltip::Hide();
 	}, lifetime());
@@ -191,7 +194,7 @@ void MainWindow::setupPasscodeLock() {
 		setInnerFocus();
 	}
 	if (const auto sessionController = controller().sessionController()) {
-		sessionController->session().attachWebView().cancel();
+		sessionController->session().attachWebView().closeAll();
 	}
 }
 
@@ -256,7 +259,7 @@ void MainWindow::setupMain(
 	const auto animated = _intro
 		|| (_passcodeLock && !Core::App().passcodeLocked());
 	const auto weakAnimatedLayer = (_main && _layer && !_passcodeLock)
-		? Ui::MakeWeak(_layer.get())
+		? base::make_weak(_layer.get())
 		: nullptr;
 	if (weakAnimatedLayer) {
 		Assert(!animated);
@@ -267,13 +270,11 @@ void MainWindow::setupMain(
 	auto created = object_ptr<MainWidget>(bodyWidget(), sessionController());
 	clearWidgets();
 	_main = std::move(created);
-	if (const auto peer = singlePeer()) {
-		updateControlsGeometry();
-		_main->controller()->showPeerHistory(
-			peer,
-			Window::SectionShow::Way::ClearStack,
-			singlePeerShowAtMsgId);
-	}
+	updateControlsGeometry();
+	Ui::SendPendingMoveResizeEvents(_main);
+	_main->controller()->showByInitialId(
+		Window::SectionShow::Way::ClearStack,
+		singlePeerShowAtMsgId);
 	if (_passcodeLock) {
 		_main->hide();
 	} else {
@@ -287,7 +288,7 @@ void MainWindow::setupMain(
 		Core::App().checkStartUrl();
 	}
 	fixOrder();
-	if (const auto strong = weakAnimatedLayer.data()) {
+	if (const auto strong = weakAnimatedLayer.get()) {
 		strong->hideAllAnimatedRun();
 	}
 }
@@ -517,6 +518,7 @@ bool MainWindow::markingAsRead() const {
 		&& !_layer
 		&& !isHidden()
 		&& !isMinimized()
+		&& windowHandle()->isExposed()
 		&& (AutoScrollInactiveChat.value()
 			|| (isActive() && !_main->session().updates().isIdle()));
 }
@@ -593,7 +595,7 @@ bool MainWindow::eventFilter(QObject *object, QEvent *e) {
 	case QEvent::ApplicationActivate: {
 		if (object == QCoreApplication::instance()) {
 			InvokeQueued(this, [=] {
-				handleActiveChanged();
+				handleActiveChanged(isActiveWindow());
 			});
 		}
 	} break;

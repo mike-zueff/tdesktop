@@ -103,8 +103,8 @@ void View::reportRequested() {
 	_controller->reportRequested();
 }
 
-void View::togglePinnedRequested(bool pinned) {
-	_controller->togglePinnedRequested(pinned);
+void View::toggleInProfileRequested(bool inProfile) {
+	_controller->toggleInProfileRequested(inProfile);
 }
 
 bool View::ignoreWindowMove(QPoint position) const {
@@ -168,6 +168,10 @@ RepostClickHandler View::lookupRepostHandler(QPoint position) const {
 
 void View::showFullCaption() {
 	_controller->showFullCaption();
+}
+
+std::shared_ptr<ChatHelpers::Show> View::uiShow() const {
+	return _controller->uiShow();
 }
 
 rpl::lifetime &View::lifetime() {

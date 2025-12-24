@@ -17,6 +17,7 @@ class Show;
 class RpWidget;
 class GenericBox;
 class VerticalLayout;
+class FlatLabel;
 
 struct BoostCounters {
 	int level = 0;
@@ -30,10 +31,27 @@ struct BoostCounters {
 		BoostCounters) = default;
 };
 
+struct BoostFeatures {
+	base::flat_map<int, int> nameColorsByLevel;
+	base::flat_map<int, int> linkStylesByLevel;
+	int linkLogoLevel = 0;
+	int autotranslateLevel = 0;
+	int transcribeLevel = 0;
+	int emojiPackLevel = 0;
+	int emojiStatusLevel = 0;
+	int wallpaperLevel = 0;
+	int wallpapersCount = 0;
+	int customWallpaperLevel = 0;
+	int sponsoredLevel = 0;
+};
+
 struct BoostBoxData {
 	QString name;
 	BoostCounters boost;
+	BoostFeatures features;
+	int lifting = 0;
 	bool allowMulti = false;
+	bool group = false;
 };
 
 void BoostBox(
@@ -41,24 +59,37 @@ void BoostBox(
 	BoostBoxData data,
 	Fn<void(Fn<void(BoostCounters)>)> boost);
 
-void BoostBoxAlready(not_null<GenericBox*> box);
+void BoostBoxAlready(not_null<GenericBox*> box, bool group);
 void GiftForBoostsBox(
 	not_null<GenericBox*> box,
 	QString channel,
 	int receive,
 	bool again);
-void GiftedNoBoostsBox(not_null<GenericBox*> box);
-void PremiumForBoostsBox(not_null<GenericBox*> box, Fn<void()> buyPremium);
+void GiftedNoBoostsBox(not_null<GenericBox*> box, bool group);
+void PremiumForBoostsBox(
+	not_null<GenericBox*> box,
+	bool group,
+	Fn<void()> buyPremium);
 
 struct AskBoostChannelColor {
 	int requiredLevel = 0;
 };
 
-struct AskBoostWallpaper {
+struct AskBoostAutotranslate {
 	int requiredLevel = 0;
 };
 
+struct AskBoostWallpaper {
+	int requiredLevel = 0;
+	bool group = false;
+};
+
 struct AskBoostEmojiStatus {
+	int requiredLevel = 0;
+	bool group = false;
+};
+
+struct AskBoostEmojiPack {
 	int requiredLevel = 0;
 };
 
@@ -66,18 +97,32 @@ struct AskBoostCustomReactions {
 	int count = 0;
 };
 
+struct AskBoostCpm {
+	int requiredLevel = 0;
+};
+
+struct AskBoostWearCollectible {
+	int requiredLevel = 0;
+};
+
 struct AskBoostReason {
 	std::variant<
 		AskBoostChannelColor,
+		AskBoostAutotranslate,
 		AskBoostWallpaper,
 		AskBoostEmojiStatus,
-		AskBoostCustomReactions> data;
+		AskBoostEmojiPack,
+		AskBoostCustomReactions,
+		AskBoostCpm,
+		AskBoostWearCollectible> data;
 };
 
 struct AskBoostBoxData {
 	QString link;
 	BoostCounters boost;
+	BoostFeatures features;
 	AskBoostReason reason;
+	bool group = false;
 };
 
 void AskBoostBox(
@@ -98,5 +143,10 @@ void FillBoostLimit(
 	not_null<VerticalLayout*> container,
 	rpl::producer<BoostCounters> data,
 	style::margins limitLinePadding);
+
+[[nodiscard]] object_ptr<Ui::FlatLabel> MakeBoostFeaturesBadge(
+	not_null<QWidget*> parent,
+	rpl::producer<QString> text,
+	Fn<QBrush(QRect)> bg);
 
 } // namespace Ui

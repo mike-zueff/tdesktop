@@ -23,7 +23,8 @@ namespace Data {
 
 class Session;
 class Thread;
-class PhotoMedia;
+class MediaPreload;
+struct SendError;
 
 enum class StoryPrivacy : uchar {
 	Public,
@@ -81,6 +82,7 @@ struct StoryViews {
 struct StoryArea {
 	QRectF geometry;
 	float64 rotation = 0;
+	float64 radius = 0;
 
 	friend inline bool operator==(
 		const StoryArea &,
@@ -122,6 +124,26 @@ struct ChannelPost {
 		const ChannelPost &) = default;
 };
 
+struct UrlArea {
+	StoryArea area;
+	QString url;
+
+	friend inline bool operator==(
+		const UrlArea &,
+		const UrlArea &) = default;
+};
+
+struct WeatherArea {
+	StoryArea area;
+	QString emoji;
+	QColor color;
+	int millicelsius = 0;
+
+	friend inline bool operator==(
+		const WeatherArea &,
+		const WeatherArea &) = default;
+};
+
 class Story final {
 public:
 	Story(
@@ -153,8 +175,11 @@ public:
 	[[nodiscard]] Image *replyPreview() const;
 	[[nodiscard]] TextWithEntities inReplyText() const;
 
-	void setPinned(bool pinned);
-	[[nodiscard]] bool pinned() const;
+	void setPinnedToTop(bool pinned);
+	bool pinnedToTop() const;
+
+	void setInProfile(bool value);
+	[[nodiscard]] bool inProfile() const;
 	[[nodiscard]] StoryPrivacy privacy() const;
 	[[nodiscard]] bool forbidsForward() const;
 	[[nodiscard]] bool edited() const;
@@ -167,7 +192,7 @@ public:
 	[[nodiscard]] bool canReport() const;
 
 	[[nodiscard]] bool hasDirectLink() const;
-	[[nodiscard]] std::optional<QString> errorTextForForward(
+	[[nodiscard]] Data::SendError errorTextForForward(
 		not_null<Thread*> to) const;
 
 	void setCaption(TextWithEntities &&caption);
@@ -194,6 +219,10 @@ public:
 		-> const std::vector<SuggestedReaction> &;
 	[[nodiscard]] auto channelPosts() const
 		-> const std::vector<ChannelPost> &;
+	[[nodiscard]] auto urlAreas() const
+		-> const std::vector<UrlArea> &;
+	[[nodiscard]] auto weatherAreas() const
+		-> const std::vector<WeatherArea> &;
 
 	void applyChanges(
 		StoryMedia media,
@@ -207,6 +236,11 @@ public:
 	[[nodiscard]] PeerData *repostSourcePeer() const;
 	[[nodiscard]] QString repostSourceName() const;
 	[[nodiscard]] StoryId repostSourceId() const;
+
+	[[nodiscard]] const base::flat_set<int> &albumIds() const;
+	void setAlbumIds(base::flat_set<int> ids);
+
+	[[nodiscard]] PeerData *fromPeer() const;
 
 private:
 	struct ViewsCounts {
@@ -234,6 +268,8 @@ private:
 	PeerData * const _repostSourcePeer = nullptr;
 	const QString _repostSourceName;
 	const StoryId _repostSourceId = 0;
+	base::flat_set<int> _albumIds;
+	PeerData * const _fromPeer = nullptr;
 	Data::ReactionId _sentReactionId;
 	StoryMedia _media;
 	TextWithEntities _caption;
@@ -241,13 +277,16 @@ private:
 	std::vector<StoryLocation> _locations;
 	std::vector<SuggestedReaction> _suggestedReactions;
 	std::vector<ChannelPost> _channelPosts;
+	std::vector<UrlArea> _urlAreas;
+	std::vector<WeatherArea> _weatherAreas;
 	StoryViews _views;
 	StoryViews _channelReactions;
 	const TimeId _date = 0;
 	const TimeId _expires = 0;
 	TimeId _lastUpdateTime = 0;
 	bool _out : 1 = false;
-	bool _pinned : 1 = false;
+	bool _inProfile : 1 = false;
+	bool _pinnedToTop : 1 = false;
 	bool _privacyPublic : 1 = false;
 	bool _privacyCloseFriends : 1 = false;
 	bool _privacyContacts : 1 = false;
@@ -267,19 +306,21 @@ public:
 	[[nodiscard]] not_null<Story*> story() const;
 
 private:
-	class LoadTask;
-
-	void start();
-	void load();
-	void callDone();
-
 	const not_null<Story*> _story;
-	Fn<void()> _done;
 
-	std::shared_ptr<Data::PhotoMedia> _photo;
-	std::unique_ptr<LoadTask> _task;
-	rpl::lifetime _lifetime;
+	std::unique_ptr<MediaPreload> _task;
 
+};
+
+struct StoryAlbum {
+	int id = 0;
+	QString title;
+	PhotoData *iconPhoto = nullptr;
+	DocumentData *iconVideo = nullptr;
+
+	friend inline bool operator==(
+		const StoryAlbum &,
+		const StoryAlbum &) = default;
 };
 
 } // namespace Data
